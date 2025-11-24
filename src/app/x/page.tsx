@@ -109,7 +109,7 @@ export default function ProfilePage() {
           .select('*')
           .eq('id', user.id)
           .single();
-          console.log('Fetched profile:', profileData);
+        console.log('Fetched profile:', profileData);
 
         if (profileError && profileError.code !== 'PGRST116') { // PGRST116 is no row found
           console.error('Error fetching profile:', profileError);
@@ -162,6 +162,28 @@ export default function ProfilePage() {
     };
 
     fetchData();
+
+    // Subscribe to profile changes
+    const channel = supabase
+      .channel('profile-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${user.id}`
+        },
+        (payload) => {
+          console.log('Profile updated:', payload);
+          setProfile(payload.new as Profile);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, supabase]);
 
   if (loading) {
@@ -172,8 +194,8 @@ export default function ProfilePage() {
   const displayAvatar = profile?.avatar_url || defaultAvatar;
   const displayBio = profile?.bio || defaultBio;
   const displayLocation = defaultLocation; // No location in schema, using default
-  const displayJoinDate = profile?.created_at 
-    ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) 
+  const displayJoinDate = profile?.created_at
+    ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     : defaultJoinDate;
 
   return (
@@ -184,7 +206,7 @@ export default function ProfilePage() {
           <div className="relative h-48 bg-gradient-to-r from-blue-500 to-blue-600">
             <div className="absolute inset-0 bg-black/20"></div>
             <div className="absolute top-4 right-4">
-              <Link 
+              <Link
                 href="/profile/edit"
                 className="flex items-center gap-2 px-4 py-2 bg-white/20 backdrop-blur-sm text-white rounded-lg hover:bg-white/30 transition-colors"
               >
@@ -193,7 +215,7 @@ export default function ProfilePage() {
               </Link>
             </div>
           </div>
-          
+
           <div className="relative px-6 pb-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4 -mt-16">
               <img
@@ -269,11 +291,10 @@ export default function ProfilePage() {
                       <h3 className="font-semibold text-slate-900">{trek.title}</h3>
                       <p className="text-sm text-slate-600">{trek.date}</p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className={`text-xs px-2 py-1 rounded-full ${
-                          trek.role === 'Organizer' 
-                            ? 'bg-blue-100 text-blue-800' 
+                        <span className={`text-xs px-2 py-1 rounded-full ${trek.role === 'Organizer'
+                            ? 'bg-blue-100 text-blue-800'
                             : 'bg-green-100 text-green-800'
-                        }`}>
+                          }`}>
                           {trek.role}
                         </span>
                         <div className="flex items-center gap-1">
@@ -302,11 +323,10 @@ export default function ProfilePage() {
                       <h3 className="font-semibold text-slate-900">{trek.title}</h3>
                       <p className="text-sm text-slate-600">{trek.date}</p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className={`text-xs px-2 py-1 rounded-full ${
-                          trek.role === 'Organizer' 
-                            ? 'bg-blue-100 text-blue-800' 
+                        <span className={`text-xs px-2 py-1 rounded-full ${trek.role === 'Organizer'
+                            ? 'bg-blue-100 text-blue-800'
                             : 'bg-green-100 text-green-800'
-                        }`}>
+                          }`}>
                           {trek.role}
                         </span>
                         <div className="flex items-center gap-1 text-xs text-slate-600">

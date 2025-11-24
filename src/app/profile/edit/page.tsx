@@ -1,28 +1,85 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Camera, Save } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Camera, Save, Loader2 } from 'lucide-react';
+import { createClient } from '@/utils/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
+import { useRouter } from 'next/navigation';
 
 export default function EditProfilePage() {
+  const supabase = createClient();
+  const { user } = useAuth();
+  const router = useRouter();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
   const [formData, setFormData] = useState({
-    name: 'Alex Doe',
-    age: 28,
-    gender: 'Male',
-    email: 'alex.doe@example.com',
+    name: '',
+    email: '',
     experience: 'Intermediate',
-    bio: 'Passionate about mountains and exploring new trails. Always up for a challenge!',
+    bio: '',
     favoriteTypes: {
-      forest: true,
-      mountain: true,
+      forest: false,
+      mountain: false,
       waterfall: false
     },
     emergencyContact: {
-      name: 'Jane Doe',
-      relationship: 'Partner',
-      phone: '+1234567890'
+      name: '',
+      relationship: '',
+      phone: ''
     },
-    privacy: 'joined-treks'
+    privacy: 'Public'
   });
+
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const fetchProfile = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+
+        if (error) throw error;
+
+        if (data) {
+          // Parse favorite trek types from array to object
+          const favorites = {
+            forest: data.favorite_trek_types?.includes('Forest') || false,
+            mountain: data.favorite_trek_types?.includes('Mountain') || false,
+            waterfall: data.favorite_trek_types?.includes('Waterfall') || false,
+          };
+
+          setFormData({
+            name: data.full_name || '',
+            email: data.email || user.email || '',
+            experience: data.experience_level || 'Intermediate',
+            bio: data.bio || '',
+            favoriteTypes: favorites,
+            emergencyContact: {
+              name: data.emergency_contact_name || '',
+              relationship: data.emergency_contact_relationship || '',
+              phone: data.emergency_contact_phone || ''
+            },
+            privacy: data.privacy_setting || 'Public'
+          });
+          setAvatarUrl(data.avatar_url);
+        }
+      } catch (error) {
+        console.error('Error fetching profile:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProfile();
+  }, [user, supabase]);
 
   const handleInputChange = (field: string, value: any) => {
     setFormData(prev => ({
@@ -51,10 +108,96 @@ export default function EditProfilePage() {
     }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    alert('Profile updated successfully!');
+  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) {
+      return;
+    }
+    const file = e.target.files[0];
+    setAvatarFile(file);
+    setAvatarPreview(URL.createObjectURL(file));
   };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user) return;
+
+    setSaving(true);
+    try {
+      let currentAvatarUrl = avatarUrl;
+
+      // Upload new avatar if selected
+      if (avatarFile) {
+        const fileExt = avatarFile.name.split('.').pop();
+        // Use consistent filename to avoid filling storage
+        const fileName = `${user.id}.${fileExt}`;
+
+        const { error: uploadError, data } = await supabase.storage
+          .from('avatars') // Changed from 'trek-profile' to 'avatars'
+          .upload(fileName, avatarFile, { upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(fileName);
+
+        currentAvatarUrl = publicUrl;
+      }
+
+      // Convert favorite types object back to array
+      const favoriteTrekTypes = Object.entries(formData.favoriteTypes)
+        .filter(([_, isSelected]) => isSelected)
+        .map(([type]) => type.charAt(0).toUpperCase() + type.slice(1)); // Capitalize
+
+      const updates = {
+        id: user.id,
+        full_name: formData.name,
+        email: formData.email,
+        experience_level: formData.experience,
+        bio: formData.bio,
+        favorite_trek_types: favoriteTrekTypes,
+        emergency_contact_name: formData.emergencyContact.name,
+        emergency_contact_relationship: formData.emergencyContact.relationship,
+        emergency_contact_phone: formData.emergencyContact.phone,
+        privacy_setting: formData.privacy,
+        avatar_url: currentAvatarUrl,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('profiles')
+        .upsert(updates);
+
+      if (error) throw error;
+
+      alert('Profile updated successfully!');
+      router.push('/x'); // Redirect to profile page
+      router.refresh();
+    } catch (error: any) {
+      console.error('Error updating profile:', error);
+      // Log detailed error properties if available
+      if (typeof error === 'object' && error !== null) {
+        console.error('Error details:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+          fullError: JSON.stringify(error, null, 2)
+        });
+      }
+      alert(`Error updating profile: ${error.message || 'Unknown error'}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -71,24 +214,36 @@ export default function EditProfilePage() {
             <div className="flex flex-col items-center lg:items-start">
               <div className="relative mb-4 size-40 rounded-full bg-cover bg-center bg-slate-300">
                 <img
-                  src="https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=160&h=160&fit=crop&crop=face"
+                  src={avatarPreview || avatarUrl || "https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/avatars/image.jpg"}
                   alt="Profile"
                   className="w-full h-full rounded-full object-cover"
                 />
-                <button className="absolute bottom-1 right-1 flex size-10 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors">
+                <label className="absolute bottom-1 right-1 flex size-10 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 cursor-pointer transition-colors">
                   <Camera className="w-5 h-5" />
-                </button>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*"
+                    onChange={handlePhotoSelect}
+                  />
+                </label>
               </div>
-              <button className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-10 px-5 bg-slate-200 text-slate-800 text-sm font-bold leading-normal tracking-wide hover:bg-slate-300 transition-colors">
+              <label className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-10 px-5 bg-slate-200 text-slate-800 text-sm font-bold leading-normal tracking-wide hover:bg-slate-300 transition-colors">
                 Upload Photo
-              </button>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handlePhotoSelect}
+                />
+              </label>
             </div>
 
             {/* Form Section */}
             <div className="lg:col-span-2">
               <form onSubmit={handleSubmit} className="space-y-8">
                 {/* Basic Information */}
-                <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-6">
                   <label className="flex flex-col">
                     <p className="text-slate-600 text-sm font-medium pb-2">Name</p>
                     <input
@@ -98,31 +253,8 @@ export default function EditProfilePage() {
                       className="form-input w-full rounded-xl border-slate-300 bg-white text-slate-800 focus:border-blue-500 focus:ring-blue-500 placeholder:text-slate-400"
                     />
                   </label>
-                  
-                  <div className="grid grid-cols-2 gap-6">
-                    <label className="flex flex-col">
-                      <p className="text-slate-600 text-sm font-medium pb-2">Age</p>
-                      <input
-                        type="number"
-                        value={formData.age}
-                        onChange={(e) => handleInputChange('age', parseInt(e.target.value))}
-                        className="form-input w-full rounded-xl border-slate-300 bg-white text-slate-800 focus:border-blue-500 focus:ring-blue-500 placeholder:text-slate-400"
-                      />
-                    </label>
-                    
-                    <label className="flex flex-col">
-                      <p className="text-slate-600 text-sm font-medium pb-2">Gender</p>
-                      <select
-                        value={formData.gender}
-                        onChange={(e) => handleInputChange('gender', e.target.value)}
-                        className="form-select w-full rounded-xl border-slate-300 bg-white text-slate-800 focus:border-blue-500 focus:ring-blue-500"
-                      >
-                        <option value="Male">Male</option>
-                        <option value="Female">Female</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </label>
-                  </div>
+
+                  {/* Removed Age and Gender as they are not in the current schema */}
                 </div>
 
                 {/* Contact Information */}
@@ -176,7 +308,7 @@ export default function EditProfilePage() {
                       />
                       <p className="text-slate-600 text-sm font-medium">Forest</p>
                     </label>
-                    
+
                     <label className="flex items-center gap-x-3 cursor-pointer">
                       <input
                         type="checkbox"
@@ -186,7 +318,7 @@ export default function EditProfilePage() {
                       />
                       <p className="text-slate-600 text-sm font-medium">Mountain</p>
                     </label>
-                    
+
                     <label className="flex items-center gap-x-3 cursor-pointer">
                       <input
                         type="checkbox"
@@ -214,7 +346,7 @@ export default function EditProfilePage() {
                         className="form-input w-full rounded-xl border-slate-300 bg-white text-slate-800 focus:border-blue-500 focus:ring-blue-500 placeholder:text-slate-400"
                       />
                     </label>
-                    
+
                     <label className="flex flex-col">
                       <p className="text-slate-600 text-sm font-medium pb-2">Relationship</p>
                       <input
@@ -224,7 +356,7 @@ export default function EditProfilePage() {
                         className="form-input w-full rounded-xl border-slate-300 bg-white text-slate-800 focus:border-blue-500 focus:ring-blue-500 placeholder:text-slate-400"
                       />
                     </label>
-                    
+
                     <label className="col-span-full flex flex-col">
                       <p className="text-slate-600 text-sm font-medium pb-2">Contact Information</p>
                       <input
@@ -243,14 +375,13 @@ export default function EditProfilePage() {
                     Privacy Settings
                   </h3>
                   <div className="space-y-4">
-                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${
-                      formData.privacy === 'joined-treks' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
-                    }`}>
+                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${formData.privacy === 'Joined Treks Only' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
+                      }`}>
                       <input
                         type="radio"
                         name="privacy"
-                        value="joined-treks"
-                        checked={formData.privacy === 'joined-treks'}
+                        value="Joined Treks Only"
+                        checked={formData.privacy === 'Joined Treks Only'}
                         onChange={(e) => handleInputChange('privacy', e.target.value)}
                         className="form-radio h-5 w-5 border-slate-300 text-blue-500 checked:bg-blue-500 checked:border-transparent focus:ring-blue-500"
                       />
@@ -258,29 +389,27 @@ export default function EditProfilePage() {
                         Show profile only to joined treks
                       </p>
                     </label>
-                    
-                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${
-                      formData.privacy === 'public' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
-                    }`}>
+
+                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${formData.privacy === 'Public' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
+                      }`}>
                       <input
                         type="radio"
                         name="privacy"
-                        value="public"
-                        checked={formData.privacy === 'public'}
+                        value="Public"
+                        checked={formData.privacy === 'Public'}
                         onChange={(e) => handleInputChange('privacy', e.target.value)}
                         className="form-radio h-5 w-5 border-slate-300 text-blue-500 checked:bg-blue-500 checked:border-transparent focus:ring-blue-500"
                       />
                       <p className="text-slate-600 text-sm font-medium">Public</p>
                     </label>
-                    
-                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${
-                      formData.privacy === 'private' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
-                    }`}>
+
+                    <label className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${formData.privacy === 'Private' ? 'border-blue-500 bg-blue-50' : 'border-slate-300'
+                      }`}>
                       <input
                         type="radio"
                         name="privacy"
-                        value="private"
-                        checked={formData.privacy === 'private'}
+                        value="Private"
+                        checked={formData.privacy === 'Private'}
                         onChange={(e) => handleInputChange('privacy', e.target.value)}
                         className="form-radio h-5 w-5 border-slate-300 text-blue-500 checked:bg-blue-500 checked:border-transparent focus:ring-blue-500"
                       />
@@ -293,10 +422,15 @@ export default function EditProfilePage() {
                 <div className="flex justify-end pt-4">
                   <button
                     type="submit"
-                    className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-full h-12 px-6 bg-blue-500 text-white text-base font-bold leading-normal tracking-wide shadow-md hover:bg-blue-600 transition-colors"
+                    disabled={saving}
+                    className="flex min-w-[84px] max-w-[480px] cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-full h-12 px-6 bg-blue-500 text-white text-base font-bold leading-normal tracking-wide shadow-md hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <Save className="w-5 h-5" />
-                    Save Changes
+                    {saving ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Save className="w-5 h-5" />
+                    )}
+                    {saving ? 'Saving...' : 'Save Changes'}
                   </button>
                 </div>
               </form>

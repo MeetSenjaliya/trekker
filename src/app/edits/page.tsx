@@ -11,15 +11,13 @@ export default function EditProfilePage() {
 
   const defaultFormData = {
     full_name: '',
-    age: '',
-    gender: '',
     email: '',
     experience_level: '',
     bio: '',
     avatar_url: '',
     favoriteTypes: { forest: false, mountain: false, waterfall: false },
     emergencyContact: { name: '', relationship: '', phone: '' },
-    privacy: 'joined-treks',
+    privacy: 'Public',
   };
 
   const [formData, setFormData] = useState(defaultFormData);
@@ -34,25 +32,31 @@ export default function EditProfilePage() {
       setLoading(true);
       const { data, error } = await supabase
         .from('profiles')
-        .select('full_name, age, Gender, email, experience_level, bio, emergency_contact, emergency_no, avatar_url')
+        .select('*')
         .eq('id', user.id)
         .single();
 
       if (!error && data) {
+        const favorites = {
+          forest: data.favorite_trek_types?.includes('Forest') || false,
+          mountain: data.favorite_trek_types?.includes('Mountain') || false,
+          waterfall: data.favorite_trek_types?.includes('Waterfall') || false,
+        };
+
         setFormData({
           ...defaultFormData,
           full_name: data.full_name || '',
-          age: data.age || '',
-          gender: data.Gender || '',
           email: data.email || user.email || '',
           experience_level: data.experience_level || '',
           bio: data.bio || '',
           avatar_url: data.avatar_url || '',
+          favoriteTypes: favorites,
           emergencyContact: {
-            name: data.emergency_contact || '',
-            relationship: '',
-            phone: data.emergency_no || '',
+            name: data.emergency_contact_name || '',
+            relationship: data.emergency_contact_relationship || '',
+            phone: data.emergency_contact_phone || '',
           },
+          privacy: data.privacy_setting || 'Public',
         });
       }
       setLoading(false);
@@ -73,15 +77,16 @@ export default function EditProfilePage() {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    const fileExt = file.name.split('.').pop() ?? 'png'; // default to png if no extension
-    const fileName = `${user.id}.${fileExt}`;
+    const fileExt = file.name.split('.').pop() ?? 'png';
+    const fileName = `${user.id}.${fileExt}`; // Consistent filename
 
     // Upload file
     const { error: uploadError } = await supabase.storage
-      .from('avatars')
+      .from('avatars') // Changed to avatars
       .upload(fileName, file, { upsert: true });
 
     if (uploadError) {
+      console.error('Upload error:', uploadError);
       alert('Upload failed: ' + uploadError.message);
       return;
     }
@@ -92,14 +97,22 @@ export default function EditProfilePage() {
     // Update user profile with new avatar URL
     const { error: updateError } = await supabase
       .from('profiles')
-      .update({ avatar_url: data.publicUrl })
+      .update({
+        avatar_url: data.publicUrl,
+        updated_at: new Date().toISOString()
+      })
       .eq('id', user.id);
 
     if (updateError) {
+      console.error('Profile update error:', updateError);
+      if (typeof updateError === 'object' && updateError !== null) {
+        console.error('Error details:', JSON.stringify(updateError, null, 2));
+      }
       alert('Failed to update profile: ' + updateError.message);
       return;
     }
 
+    setFormData(prev => ({ ...prev, avatar_url: data.publicUrl }));
     alert('Photo uploaded successfully!');
   };
 
@@ -108,21 +121,28 @@ export default function EditProfilePage() {
     e.preventDefault();
     if (!user) return;
 
+    // Convert favorite types object back to array
+    const favoriteTrekTypes = Object.entries(formData.favoriteTypes)
+      .filter(([_, isSelected]) => isSelected)
+      .map(([type]) => type.charAt(0).toUpperCase() + type.slice(1));
+
     const { error } = await supabase.from('profiles').upsert({
       id: user.id,
       full_name: formData.full_name || null,
-      age: formData.age ? Number(formData.age) : null,
-      Gender: formData.gender || null,
       email: formData.email || null,
       experience_level: formData.experience_level || null,
       bio: formData.bio || null,
       avatar_url: formData.avatar_url || null,
-      emergency_contact: formData.emergencyContact.name || null,
-      emergency_no: formData.emergencyContact.phone || null,
+      favorite_trek_types: favoriteTrekTypes,
+      emergency_contact_name: formData.emergencyContact.name || null,
+      emergency_contact_relationship: formData.emergencyContact.relationship || null,
+      emergency_contact_phone: formData.emergencyContact.phone || null,
+      privacy_setting: formData.privacy,
+      updated_at: new Date().toISOString(),
     }, { onConflict: 'id' });
 
     if (error) {
-      alert('Could not save profile.');
+      alert('Could not save profile: ' + error.message);
       return;
     }
 
@@ -149,7 +169,7 @@ export default function EditProfilePage() {
                 />
                 <label
                   htmlFor="photo-upload"
-                  className="absolute bottom-1 right-1 flex size-10 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+                  className="absolute bottom-1 right-1 flex size-10 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors cursor-pointer"
                 >
                   <Camera className="w-5 h-5" />
                 </label>
@@ -181,30 +201,7 @@ export default function EditProfilePage() {
                   />
                 </label>
 
-                <div className="grid grid-cols-2 gap-6">
-                  <label className="flex flex-col">
-                    <span className="text-slate-600 text-sm font-medium pb-2">Age</span>
-                    <input
-                      type="number"
-                      value={formData.age}
-                      onChange={e => handleInputChange('age', e.target.value)}
-                      className="form-input w-full rounded-xl border-slate-300"
-                    />
-                  </label>
-                  <label className="flex flex-col">
-                    <span className="text-slate-600 text-sm font-medium pb-2">Gender</span>
-                    <select
-                      value={formData.gender}
-                      onChange={e => handleInputChange('gender', e.target.value)}
-                      className="form-select w-full rounded-xl border-slate-300"
-                    >
-                      <option value="">Select</option>
-                      <option value="Male">Male</option>
-                      <option value="Female">Female</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </label>
-                </div>
+                {/* Removed Age and Gender as they are not in schema */}
 
                 <label className="flex flex-col">
                   <span className="text-slate-600 text-sm font-medium pb-2">Email</span>
@@ -290,4 +287,3 @@ export default function EditProfilePage() {
     </div>
   );
 }
-

@@ -36,43 +36,49 @@ const Header = () => {
 
           {/* Desktop Navigation */}
           <nav className="hidden md:flex items-center gap-6">
-            <Link 
-              href="/" 
+            <Link
+              href="/"
               className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
             >
               Home
             </Link>
-            <Link 
-              href="/about" 
+            <Link
+              href="/about"
               className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
             >
               About
             </Link>
-            <Link 
-              href="/explore" 
+            <Link
+              href="/explore"
               className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
             >
               Explore Treks
             </Link>
             {user && (
               <>
-                <Link 
-                  href="/favorites" 
+                <Link
+                  href="/favorites"
                   className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
                 >
                   Favorites
                 </Link>
-                <Link 
-                  href="/profile" 
+                <Link
+                  href="/profile"
                   className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
                 >
                   Profile
                 </Link>
-                <Link 
-                  href="/review" 
+                <Link
+                  href="/review"
                   className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
                 >
                   Reviews
+                </Link>
+                <Link
+                  href="/messages"
+                  className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors"
+                >
+                  Messages
                 </Link>
               </>
             )}
@@ -93,12 +99,12 @@ const Header = () => {
                 <Bell className="w-5 h-5" />
               </button>
             )}
-            
+
             {loading ? (
               <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
             ) : user ? (
               <div className="flex items-center gap-2">
-                <Link 
+                <Link
                   href="/profile"
                   className="flex items-center gap-2 text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors px-3 py-2"
                 >
@@ -115,13 +121,13 @@ const Header = () => {
               </div>
             ) : (
               <>
-                <Link 
+                <Link
                   href="/auth/login"
                   className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors px-3 py-2"
                 >
                   Login
                 </Link>
-                <Link 
+                <Link
                   href="/auth/signup"
                   className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-md hover:shadow-lg"
                 >
@@ -154,22 +160,22 @@ const Header = () => {
                   className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
-              <Link 
-                href="/" 
+              <Link
+                href="/"
                 className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                 onClick={() => setIsMenuOpen(false)}
               >
                 Home
               </Link>
-              <Link 
-                href="/about" 
+              <Link
+                href="/about"
                 className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                 onClick={() => setIsMenuOpen(false)}
               >
                 About
               </Link>
-              <Link 
-                href="/explore" 
+              <Link
+                href="/explore"
                 className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                 onClick={() => setIsMenuOpen(false)}
               >
@@ -177,26 +183,33 @@ const Header = () => {
               </Link>
               {user && (
                 <>
-                  <Link 
-                    href="/favorites" 
+                  <Link
+                    href="/favorites"
                     className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                     onClick={() => setIsMenuOpen(false)}
                   >
                     Favorites
                   </Link>
-                  <Link 
-                    href="/profile" 
+                  <Link
+                    href="/profile"
                     className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                     onClick={() => setIsMenuOpen(false)}
                   >
                     Profile
                   </Link>
-                  <Link 
-                    href="/review" 
+                  <Link
+                    href="/review"
                     className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
                     onClick={() => setIsMenuOpen(false)}
                   >
                     Reviews
+                  </Link>
+                  <Link
+                    href="/messages"
+                    className="text-slate-700 hover:text-blue-500 font-medium py-2 transition-colors"
+                    onClick={() => setIsMenuOpen(false)}
+                  >
+                    Messages
                   </Link>
                 </>
               )}
@@ -206,7 +219,7 @@ const Header = () => {
                     <Bell className="w-5 h-5" />
                   </button>
                 )}
-                
+
                 {loading ? (
                   <div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse"></div>
                 ) : user ? (
@@ -224,14 +237,14 @@ const Header = () => {
                   </div>
                 ) : (
                   <>
-                    <Link 
+                    <Link
                       href="/auth/login"
                       className="text-slate-700 hover:text-blue-500 text-sm font-medium transition-colors px-3 py-2"
                       onClick={() => setIsMenuOpen(false)}
                     >
                       Login
                     </Link>
-                    <Link 
+                    <Link
                       href="/auth/signup"
                       className="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors text-center"
                       onClick={() => setIsMenuOpen(false)}

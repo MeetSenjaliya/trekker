@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Heart, Share2, MessageCircle, Camera } from 'lucide-react';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
@@ -25,6 +25,7 @@ const getDifficultyColor = (level: string) => {
 
 export default function TrekDetailPage() {
   const { id } = useParams();
+  const router = useRouter();
   const [trek, setTrek] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -105,13 +106,120 @@ export default function TrekDetailPage() {
     }
   };
 
-  
+
   const handleCheckboxChange = (item: string) => {
     setCheckedItems(prev => ({ ...prev, [item]: !prev[item] }));
   };
 
   const handleJoinTrek = () => setIsModalOpen(true);
-  const handleConfirmJoin = () => alert(`Successfully joined ${trek?.title}!`);
+  const handleConfirmJoin = async () => {
+    if (!userId) {
+      alert('Please log in to join this trek.');
+      return;
+    }
+
+    try {
+      // 1. Add to trek_participants
+      const { error: joinError } = await supabase
+        .from('trek_participants')
+        .insert({
+          trek_id: id,
+          user_id: userId
+        });
+
+      if (joinError) {
+        // Check for duplicate key error (already joined)
+        if (joinError.code === '23505') {
+          alert('You have already joined this trek!');
+        } else {
+          throw joinError;
+        }
+      }
+
+      alert(`Successfully joined ${trek?.title}!`);
+      setIsModalOpen(false);
+
+      // Refresh trek data to update participant count
+      const { data: refreshedTrek } = await supabase
+        .from('treks')
+        .select('*')
+        .eq('id', id)
+        .single();
+      if (refreshedTrek) setTrek(refreshedTrek);
+
+    } catch (error: any) {
+      console.error('Error joining trek:', error);
+      alert('Failed to join trek. Please try again.');
+    }
+  };
+
+  const handleChat = async () => {
+    if (!userId) {
+      alert('Please log in to chat.');
+      return;
+    }
+
+    try {
+      let conversationId: string | null = null;
+
+      // 1. Check if conversation exists
+      const { data: existingConv, error: convFetchError } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('trek_id', id)
+        .single();
+
+      if (existingConv) {
+        conversationId = existingConv.id;
+      } else if (!convFetchError || convFetchError.code === 'PGRST116') {
+        // 2. Create new conversation if not found
+        const { data: newConv, error: createConvError } = await supabase
+          .from('conversations')
+          .insert({
+            trek_id: id,
+            name: trek.title
+          })
+          .select('id')
+          .single();
+
+        if (createConvError) throw createConvError;
+        conversationId = newConv.id;
+      }
+
+      if (!conversationId) throw new Error('Failed to resolve conversation ID');
+
+      // 3. Check if user is a participant
+      const { data: participantData } = await supabase
+        .from('conversation_participants')
+        .select('user_id')
+        .eq('conversation_id', conversationId)
+        .eq('user_id', userId)
+        .single();
+
+      // 4. Join if not a participant
+      if (!participantData) {
+        const { error: chatJoinError } = await supabase
+          .from('conversation_participants')
+          .insert({
+            conversation_id: conversationId,
+            user_id: userId
+          });
+
+        if (chatJoinError && chatJoinError.code !== '23505') {
+          console.error('Error joining chat:', chatJoinError);
+          alert('Failed to join chat.');
+          return;
+        }
+      }
+
+      // 5. Navigate to messages
+      router.push(`/messages?conversationId=${conversationId}`);
+
+    } catch (error: any) {
+      console.error('Error handling chat:', error);
+      alert('Failed to open chat. Please try again.');
+    }
+  };
 
   if (loading) return <p className="text-center py-10 text-gray-500">Loading trek...</p>;
   if (!trek) return <p className="text-center py-10 text-red-500">Trek not found.</p>;
@@ -162,12 +270,12 @@ export default function TrekDetailPage() {
                       valueElement={
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${trek.difficulty === 'Easy'
-                              ? 'bg-green-100 text-green-800'
-                              : trek.difficulty === 'Moderate'
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : trek.difficulty === 'Hard'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-purple-100 text-purple-800'
+                            ? 'bg-green-100 text-green-800'
+                            : trek.difficulty === 'Moderate'
+                              ? 'bg-yellow-100 text-yellow-800'
+                              : trek.difficulty === 'Hard'
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-purple-100 text-purple-800'
                             }`}
                         >
                           {trek.difficulty}
@@ -251,7 +359,10 @@ export default function TrekDetailPage() {
                   </button>
 
                   <div className="flex gap-3 mt-4">
-                    <button className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50">
+                    <button
+                      onClick={handleChat}
+                      className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50"
+                    >
                       <MessageCircle className="w-5 h-5 text-slate-600" />
                       <span className="text-sm text-slate-600">Chat</span>
                     </button>

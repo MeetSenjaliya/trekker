@@ -154,3 +154,167 @@ INSERT INTO treks (title, description, difficulty, distance, duration, location,
 ('Himalayan Heights', 'Experience the majestic beauty of the Himalayas on this challenging trek.', 'Hard', 12.0, '6 hours', 'Nepal', '2024-06-15 06:00:00+00', (SELECT id FROM profiles LIMIT 1), 12, 300.00, ARRAY['Hiking boots', 'Warm clothing', 'Sleeping bag', 'Trekking poles'], 'Kathmandu base camp'),
 ('Rocky Mountain Adventure', 'Explore the stunning Rocky Mountains with experienced guides.', 'Medium', 8.0, '4 hours', 'Colorado, USA', '2024-05-20 09:00:00+00', (SELECT id FROM profiles LIMIT 1), 10, 150.00, ARRAY['Hiking boots', 'Water bottle', 'Snacks', 'Rain jacket'], 'Rocky Mountain National Park entrance');
 
+-- Chat Feature Tables
+
+-- Create conversations table
+CREATE TABLE IF NOT EXISTS conversations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  type TEXT CHECK (type IN ('direct', 'group')) DEFAULT 'direct',
+  name TEXT, -- For group chats
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Create conversation_participants table
+CREATE TABLE IF NOT EXISTS conversation_participants (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  last_read_at TIMESTAMPTZ DEFAULT NOW(),
+  joined_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(conversation_id, user_id)
+);
+
+-- Create messages table
+CREATE TABLE IF NOT EXISTS messages (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  conversation_id UUID REFERENCES conversations(id) ON DELETE CASCADE NOT NULL,
+  sender_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable RLS
+ALTER TABLE conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE conversation_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policies
+
+-- Helper function to check participation (prevents RLS recursion)
+CREATE OR REPLACE FUNCTION public.is_conversation_participant(_conversation_id UUID)
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 
+    FROM conversation_participants 
+    WHERE conversation_id = _conversation_id 
+    AND user_id = auth.uid()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- RLS Policies
+
+-- Conversations: Users can see conversations they are participants in
+CREATE POLICY "Users can view their own conversations" ON conversations
+  FOR SELECT USING (
+    is_conversation_participant(id)
+  );
+
+CREATE POLICY "Users can create conversations" ON conversations
+  FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+
+-- Participants: Users can see participants of conversations they belong to
+CREATE POLICY "Users can view participants of their conversations" ON conversation_participants
+  FOR SELECT USING (
+    is_conversation_participant(conversation_id)
+  );
+
+CREATE POLICY "Users can join conversations" ON conversation_participants
+  FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+
+-- Messages: Users can see messages in conversations they belong to
+CREATE POLICY "Users can view messages in their conversations" ON messages
+  FOR SELECT USING (
+    is_conversation_participant(conversation_id)
+  );
+
+CREATE POLICY "Users can insert messages in their conversations" ON messages
+  FOR INSERT WITH CHECK (
+    auth.uid() = sender_id AND
+    is_conversation_participant(conversation_id)
+  );
+
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
+
+-- Trek Group Chat Enhancements
+
+-- Add trek_id to conversations
+ALTER TABLE conversations 
+ADD COLUMN IF NOT EXISTS trek_id UUID REFERENCES treks(id) ON DELETE CASCADE;
+
+-- Ensure one conversation per trek
+ALTER TABLE conversations 
+ADD CONSTRAINT unique_trek_conversation UNIQUE (trek_id);
+
+-- Function to create conversation when a trek is created
+CREATE OR REPLACE FUNCTION public.create_trek_conversation()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO conversations (type, name, trek_id)
+  VALUES ('group', NEW.title, NEW.id);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to create conversation on trek creation
+DROP TRIGGER IF EXISTS on_trek_created ON treks;
+CREATE TRIGGER on_trek_created
+  AFTER INSERT ON treks
+  FOR EACH ROW EXECUTE PROCEDURE public.create_trek_conversation();
+
+-- Function to add organizer to the chat
+CREATE OR REPLACE FUNCTION public.add_organizer_to_chat()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_conversation_id UUID;
+BEGIN
+  SELECT id INTO v_conversation_id FROM conversations WHERE trek_id = NEW.id;
+  
+  -- If conversation exists (it should due to previous trigger, but safety check)
+  IF v_conversation_id IS NOT NULL THEN
+      INSERT INTO conversation_participants (conversation_id, user_id)
+      VALUES (v_conversation_id, NEW.organizer_id)
+      ON CONFLICT DO NOTHING;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to add organizer when conversation is created
+DROP TRIGGER IF EXISTS on_trek_conversation_created ON conversations;
+CREATE TRIGGER on_trek_conversation_created
+  AFTER INSERT ON conversations
+  FOR EACH ROW 
+  WHEN (NEW.trek_id IS NOT NULL)
+  EXECUTE PROCEDURE public.add_organizer_to_chat();
+
+-- Function to sync trek participants to chat
+CREATE OR REPLACE FUNCTION public.sync_trek_participant_to_chat()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_conversation_id UUID;
+BEGIN
+  -- Find the conversation for this trek
+  SELECT id INTO v_conversation_id FROM conversations WHERE trek_id = NEW.trek_id;
+  
+  IF v_conversation_id IS NOT NULL THEN
+    INSERT INTO conversation_participants (conversation_id, user_id)
+    VALUES (v_conversation_id, NEW.user_id)
+    ON CONFLICT DO NOTHING;
+  END IF;
+  
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Trigger to sync participants when they join a trek
+DROP TRIGGER IF EXISTS on_trek_participant_joined ON trek_participants;
+CREATE TRIGGER on_trek_participant_joined
+  AFTER INSERT ON trek_participants
+  FOR EACH ROW EXECUTE PROCEDURE public.sync_trek_participant_to_chat();
+
+
