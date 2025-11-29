@@ -13,13 +13,13 @@ interface Trek {
   title: string;
   description: string;
   cover_image_url: string;
-  date: string;
   location: string;
   difficulty: 'Easy' | 'Moderate' | 'Hard' | 'Expert';
   current_participants: number;
   max_participants: number;
   rating: number;
   estimated_cost: number;
+  trek_batches?: { batch_date: string }[];
 }
 
 export default function HomePage() {
@@ -30,8 +30,7 @@ export default function HomePage() {
     const fetchTreks = async () => {
       const { data, error } = await supabase
         .from('treks')
-        .select('*')
-        .order('date', { ascending: true })
+        .select('*, trek_batches(batch_date)')
         .limit(3);
 
       if (error) {
@@ -59,7 +58,7 @@ export default function HomePage() {
               Upcoming Treks
             </h2>
             <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-              Discover your next adventure with our carefully curated selection of upcoming treks. 
+              Discover your next adventure with our carefully curated selection of upcoming treks.
               From beginner-friendly trails to challenging expeditions.
             </p>
           </div>
@@ -68,27 +67,37 @@ export default function HomePage() {
             <p className="text-center text-slate-500 py-8">Loading treks...</p>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {treks.map((trek) => (
-                <TrekCard
-                  key={trek.id}
-                  id={trek.id}
-                  title={trek.title}
-                  description={trek.description}
-                  image={trek.cover_image_url || DEFAULT_IMAGE_URL}
-                  date={new Date(trek.date).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                  })}
-                  location={trek.location}
-                  difficulty={trek.difficulty}
-                  participants={{
-                    current: trek.current_participants || 0,
-                    max: trek.max_participants,
-                  }}
-                  rating={trek.rating}
-                  price={trek.estimated_cost}
-                />
-              ))}
+              {treks.map((trek) => {
+                // Find the earliest upcoming batch date
+                const upcomingBatches = trek.trek_batches
+                  ?.map(b => b.batch_date)
+                  .sort()
+                  .filter(d => new Date(d) >= new Date());
+
+                const nextDate = upcomingBatches?.[0] || 'No upcoming dates';
+                const dateDisplay = nextDate !== 'No upcoming dates'
+                  ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                  : nextDate;
+
+                return (
+                  <TrekCard
+                    key={trek.id}
+                    id={trek.id}
+                    title={trek.title}
+                    description={trek.description}
+                    image={trek.cover_image_url || DEFAULT_IMAGE_URL}
+                    date={dateDisplay}
+                    location={trek.location}
+                    difficulty={trek.difficulty}
+                    participants={{
+                      current: trek.current_participants || 0,
+                      max: trek.max_participants,
+                    }}
+                    rating={trek.rating}
+                    price={trek.estimated_cost}
+                  />
+                );
+              })}
             </div>
           )}
 

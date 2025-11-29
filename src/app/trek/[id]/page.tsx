@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Heart, Share2, MessageCircle, Camera } from 'lucide-react';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
+import { joinTrekBatchAndChat } from '@/lib/joinTrek';
 // import Chat from '@/components/ui/Chat';
 
 
@@ -39,7 +40,7 @@ export default function TrekDetailPage() {
     const fetchTrek = async () => {
       const { data, error } = await supabase
         .from('treks')
-        .select('*')
+        .select('*, trek_batches(batch_date)')
         .eq('id', id)
         .single();
 
@@ -112,44 +113,40 @@ export default function TrekDetailPage() {
   };
 
   const handleJoinTrek = () => setIsModalOpen(true);
-  const handleConfirmJoin = async () => {
+  const handleConfirmJoin = async (date: string) => {
     if (!userId) {
       alert('Please log in to join this trek.');
       return;
     }
 
-    try {
-      // 1. Add to trek_participants
-      const { error: joinError } = await supabase
-        .from('trek_participants')
-        .insert({
-          trek_id: id,
-          user_id: userId
-        });
+    // Call shared join function
+    const result = await joinTrekBatchAndChat({
+      userId,
+      trekId: id as string,
+      trekTitle: trek?.title || 'this trek',
+      date
+    });
 
-      if (joinError) {
-        // Check for duplicate key error (already joined)
-        if (joinError.code === '23505') {
-          alert('You have already joined this trek!');
-        } else {
-          throw joinError;
-        }
-      }
+    // Show result message
+    alert(result.message);
 
-      alert(`Successfully joined ${trek?.title}!`);
+    if (result.success) {
+      // Close modal
       setIsModalOpen(false);
 
       // Refresh trek data to update participant count
       const { data: refreshedTrek } = await supabase
         .from('treks')
-        .select('*')
+        .select('*, trek_batches(batch_date)')
         .eq('id', id)
         .single();
+
       if (refreshedTrek) setTrek(refreshedTrek);
 
-    } catch (error: any) {
-      console.error('Error joining trek:', error);
-      alert('Failed to join trek. Please try again.');
+      // Optional: Redirect to chat (commented out as per requirements)
+      // if (result.conversationId) {
+      //   router.push(`/messages?conversationId=${result.conversationId}`);
+      // }
     }
   };
 
@@ -160,59 +157,65 @@ export default function TrekDetailPage() {
     }
 
     try {
-      let conversationId: string | null = null;
+      // New optimized logic: Find which batch the user has joined and get the conversation
+      const { data, error } = await supabase
+        .from("trek_participants")
+        .select(`
+          batch_id,
+          trek_batches!inner (
+            trek_id,
+            conversations!inner ( id )
+          )
+        `)
+        .eq("user_id", userId)
+        .eq("trek_batches.trek_id", id)
+        .maybeSingle();
 
-      // 1. Check if conversation exists
-      const { data: existingConv, error: convFetchError } = await supabase
-        .from('conversations')
-        .select('id')
-        .eq('trek_id', id)
-        .single();
+      if (error) {
+        console.error('Error fetching chat info:', error);
+        alert('Failed to access chat. Please try again.');
+        return;
+      }
 
-      if (existingConv) {
-        conversationId = existingConv.id;
-      } else if (!convFetchError || convFetchError.code === 'PGRST116') {
-        // 2. Create new conversation if not found
-        const { data: newConv, error: createConvError } = await supabase
+      if (!data) {
+        alert("Please join a trek batch to access chat.");
+        return;
+      }
+
+      // Check if conversations array exists and has items
+      const batch = Array.isArray(data.trek_batches) ? data.trek_batches[0] : data.trek_batches;
+      const conversations = batch?.conversations;
+      if (!conversations || !Array.isArray(conversations) || conversations.length === 0) {
+        // Fallback: If no conversation exists yet for this batch, we might need to create one or alert
+        // For now, let's assume if they joined, a conversation should exist or be created by the join process
+        // But if it's missing, we can try to find it by batch_id directly or create it.
+        // Let's stick to the user's logic first, but add a safety check.
+        console.warn('No conversation found for this batch via relation.');
+
+        // Fallback attempt: fetch conversation by batch_id directly
+        const { data: directConv } = await supabase
           .from('conversations')
-          .insert({
-            trek_id: id,
-            name: trek.title
-          })
           .select('id')
+          .eq('batch_id', data.batch_id)
           .single();
 
-        if (createConvError) throw createConvError;
-        conversationId = newConv.id;
-      }
-
-      if (!conversationId) throw new Error('Failed to resolve conversation ID');
-
-      // 3. Check if user is a participant
-      const { data: participantData } = await supabase
-        .from('conversation_participants')
-        .select('user_id')
-        .eq('conversation_id', conversationId)
-        .eq('user_id', userId)
-        .single();
-
-      // 4. Join if not a participant
-      if (!participantData) {
-        const { error: chatJoinError } = await supabase
-          .from('conversation_participants')
-          .insert({
-            conversation_id: conversationId,
-            user_id: userId
-          });
-
-        if (chatJoinError && chatJoinError.code !== '23505') {
-          console.error('Error joining chat:', chatJoinError);
-          alert('Failed to join chat.');
+        if (directConv) {
+          router.push(`/messages?conversationId=${directConv.id}`);
           return;
         }
+
+        alert('Chat not initialized for this trek batch yet.');
+        return;
       }
 
-      // 5. Navigate to messages
+      // Access the first conversation
+      // Note: conversations is an array because of the one-to-many relationship definition in Supabase client usually,
+      // even if it's 1:1 logically for batch-conversation.
+      // The user snippet used `data.trek_batches.conversations[0].id`
+      // We need to be careful about the type.
+      const conversationId = conversations[0].id;
+
+      // Redirect user to messages
       router.push(`/messages?conversationId=${conversationId}`);
 
     } catch (error: any) {
@@ -264,7 +267,14 @@ export default function TrekDetailPage() {
                 <div className="flex flex-col gap-4">
                   <h2 className="text-2xl font-bold text-slate-900">Trek Details</h2>
                   <div className="border-t border-slate-200">
-                    <Detail label="Date & Time" value={new Date(trek.date).toLocaleString()} />
+                    <Detail label="Upcoming Dates" value={
+                      trek.trek_batches && trek.trek_batches.length > 0
+                        ? trek.trek_batches
+                          .map((b: any) => new Date(b.batch_date).toLocaleDateString())
+                          .filter((d: string) => new Date(d) >= new Date())
+                          .join(', ') || 'No upcoming dates'
+                        : 'No upcoming dates'
+                    } />
                     <Detail
                       label="Difficulty"
                       valueElement={

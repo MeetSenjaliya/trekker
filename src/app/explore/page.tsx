@@ -14,13 +14,13 @@ type Trek = {
   title: string;
   description: string;
   cover_image_url?: string;
-  date: string;
   location: string;
   difficulty: string;
-  participants_joined?: number; 
+  participants_joined?: number;
   max_participants?: number;
   rating?: number;
   estimated_cost?: number;
+  trek_batches?: { batch_date: string }[];
 };
 
 export default function ExplorePage() {
@@ -41,7 +41,7 @@ export default function ExplorePage() {
   const TREKS_PER_PAGE = 6;
 
   const fetchTreks = async (filterValues: Filters = {}, page = 1) => {
-    let query = supabase.from('treks').select('*', { count: 'exact' });
+    let query = supabase.from('treks').select('*, trek_batches(batch_date)', { count: 'exact' });
 
     if (filterValues.search) {
       query = query.ilike('title', `%${filterValues.search}%`);
@@ -49,9 +49,10 @@ export default function ExplorePage() {
     if (filterValues.location) {
       query = query.ilike('location', `%${filterValues.location}%`);
     }
-    if (filterValues.date) {
-      query = query.gte('date', filterValues.date);
-    }
+    // Date filtering temporarily disabled or needs to be done on related table (complex with Supabase simple query)
+    // if (filterValues.date) {
+    //   query = query.gte('date', filterValues.date);
+    // }
     if (filterValues.difficulty) {
       query = query.eq('difficulty', filterValues.difficulty);
     }
@@ -62,7 +63,7 @@ export default function ExplorePage() {
     const from = (page - 1) * TREKS_PER_PAGE;
     const to = from + TREKS_PER_PAGE - 1;
 
-    const { data, count, error } = await query.range(from, to).order('date', { ascending: true });
+    const { data, count, error } = await query.range(from, to);
 
     if (error) {
       console.error('Error fetching treks:', error.message);
@@ -112,27 +113,38 @@ export default function ExplorePage() {
           <p className="text-center py-10 text-gray-500">No treks found matching your filters.</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
-            {treks.map((trek) => (
-              <TrekCard
-                key={trek.id}
-                id={String(trek.id)}
-                title={trek.title}
-                description={trek.description}
-                image={trek.cover_image_url || DEFAULT_IMAGE_URL}
-                date={new Date(trek.date).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                })}
-                location={trek.location}
-                difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
-                participants={{
-                  current: trek.participants_joined || 0,
-                  max: trek.max_participants ?? 0,
-                }}
-                rating={trek.rating}
-                price={trek.estimated_cost}
-              />
-            ))}
+            {treks.map((trek) => {
+              // Find the earliest upcoming batch date
+              const upcomingBatches = trek.trek_batches
+                ?.map(b => b.batch_date)
+                .sort()
+                .filter(d => new Date(d) >= new Date());
+
+              const nextDate = upcomingBatches?.[0] || 'No upcoming dates';
+              const dateDisplay = nextDate !== 'No upcoming dates'
+                ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : nextDate;
+
+              return (
+                <TrekCard
+                  key={trek.id}
+                  id={String(trek.id)}
+                  title={trek.title}
+                  description={trek.description}
+                  image={trek.cover_image_url || DEFAULT_IMAGE_URL}
+                  date={dateDisplay}
+                  location={trek.location}
+                  difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
+                  participants={{
+                    current: trek.participants_joined || 0,
+                    max: trek.max_participants ?? 0,
+                  }}
+                  rating={trek.rating}
+                  price={trek.estimated_cost}
+                  next_batch_date={nextDate !== 'No upcoming dates' ? nextDate : undefined}
+                />
+              );
+            })}
           </div>
         )}
 
@@ -150,7 +162,7 @@ export default function ExplorePage() {
             Can't find the perfect trek?
           </h2>
           <p className="text-slate-600 mb-6 max-w-2xl mx-auto">
-            Create your own trek and invite fellow adventurers to join you on a custom expedition 
+            Create your own trek and invite fellow adventurers to join you on a custom expedition
             tailored to your preferences and schedule.
           </p>
           <button className="inline-flex items-center justify-center px-8 py-3 bg-blue-500 hover:bg-blue-600 text-white text-base font-semibold rounded-lg shadow-md hover:shadow-lg transition-all duration-200">

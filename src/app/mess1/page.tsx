@@ -41,7 +41,7 @@ type Participant = {
 
 type Conversation = {
     id: string;
-    type: 'direct' | 'group';
+    trek_id?: string;
     name?: string;
     participants: Participant[];
     created_at?: string;
@@ -106,10 +106,7 @@ export default function MessagesPage() {
                     .select('conversation_id')
                     .eq('user_id', user.id);
 
-                if (partsErr) {
-                    console.error('Error fetching user conversations:', partsErr);
-                    throw new Error(`Failed to fetch user conversations: ${partsErr.message || JSON.stringify(partsErr)}`);
-                }
+                if (partsErr) throw partsErr;
 
                 const convIds = (parts || []).map((p: any) => p.conversation_id);
                 if (convIds.length === 0) {
@@ -119,24 +116,16 @@ export default function MessagesPage() {
 
                 const { data: convs, error: convsErr } = await supabase
                     .from('conversations')
-                    .select('id, type, name, created_at')
+                    .select('id, trek_id, name, created_at')
                     .in('id', convIds)
                     .order('created_at', { ascending: false });
 
-                if (convsErr) {
-                    console.error('Error fetching conversations details:', convsErr);
-                    throw new Error(`Failed to fetch conversations details: ${convsErr.message || JSON.stringify(convsErr)}`);
-                }
+                if (convsErr) throw convsErr;
 
-                const { data: allParts, error: allPartsErr } = await supabase
+                const { data: allParts } = await supabase
                     .from('conversation_participants')
                     .select('conversation_id, user_id')
                     .in('conversation_id', convIds);
-
-                if (allPartsErr) {
-                    console.error('Error fetching conversation participants:', allPartsErr);
-                    throw new Error(`Failed to fetch conversation participants: ${allPartsErr.message || JSON.stringify(allPartsErr)}`);
-                }
 
                 const participantIds = Array.from(new Set((allParts || []).map((p: any) => p.user_id)));
                 const profileMap = await fetchProfilesMap(participantIds);
@@ -145,7 +134,7 @@ export default function MessagesPage() {
                     const participantsForConv = (allParts || []).filter((p: any) => p.conversation_id === c.id);
                     return {
                         id: c.id,
-                        type: c.type,
+                        trek_id: c.trek_id,
                         name: c.name,
                         created_at: c.created_at,
                         participants: participantsForConv.map((p: any) => {
@@ -156,7 +145,7 @@ export default function MessagesPage() {
                 });
 
                 if (mounted) setConversations(convObjs);
-            } catch (err: any) {
+            } catch (err) {
                 console.error('Load conversations error:', err);
             } finally {
                 if (mounted) setLoading(false);
@@ -167,11 +156,10 @@ export default function MessagesPage() {
         return () => { mounted = false; };
     }, [user, supabase]);
 
-    // Open conversation from query params (conversationId or startChatWith)
+    // Open conversation from query params (conversationId)
     useEffect(() => {
         if (!user) return;
         const conversationIdParam = searchParams.get('conversationId');
-        const startChatWith = searchParams.get('startChatWith');
 
         const init = async () => {
             if (conversationIdParam) {
@@ -183,7 +171,7 @@ export default function MessagesPage() {
                 try {
                     const { data: conv, error: convErr } = await supabase
                         .from('conversations')
-                        .select('id, type, name, created_at')
+                        .select('id, trek_id, name, created_at')
                         .eq('id', conversationIdParam)
                         .single();
                     if (convErr) throw convErr;
@@ -198,7 +186,7 @@ export default function MessagesPage() {
 
                     const convObj: Conversation = {
                         id: conv.id,
-                        type: conv.type,
+                        trek_id: conv.trek_id,
                         name: conv.name,
                         participants: participantIds.map((id: string) => {
                             const prof = profileMap.get(id);
@@ -213,63 +201,6 @@ export default function MessagesPage() {
                 }
                 return;
             }
-
-            if (startChatWith) {
-                // same as earlier — check existing or create
-                try {
-                    const { data: myParts } = await supabase
-                        .from('conversation_participants')
-                        .select('conversation_id')
-                        .eq('user_id', user.id);
-
-                    const myConvIds = (myParts || []).map((p: any) => p.conversation_id);
-                    if (myConvIds.length > 0) {
-                        const { data: targetParts } = await supabase
-                            .from('conversation_participants')
-                            .select('conversation_id')
-                            .eq('user_id', startChatWith)
-                            .in('conversation_id', myConvIds);
-
-                        if (targetParts && targetParts.length > 0) {
-                            const convId = targetParts[0].conversation_id;
-                            const existingConv = conversations.find(c => c.id === convId);
-                            if (existingConv) {
-                                setSelectedConversation(existingConv);
-                                return;
-                            }
-                        }
-                    }
-
-                    // create new direct conv
-                    const { data: newConv, error: createErr } = await supabase
-                        .from('conversations')
-                        .insert({ type: 'direct' })
-                        .select()
-                        .single();
-                    if (createErr) throw createErr;
-
-                    const { error: pErr } = await supabase
-                        .from('conversation_participants')
-                        .insert([{ conversation_id: newConv.id, user_id: user.id }, { conversation_id: newConv.id, user_id: startChatWith }]);
-                    if (pErr) throw pErr;
-
-                    const profileMap = await fetchProfilesMap([user.id, startChatWith]);
-
-                    const newConversationObj: Conversation = {
-                        id: newConv.id,
-                        type: 'direct',
-                        participants: [
-                            { user_id: user.id, full_name: profileMap.get(user.id)?.full_name, avatar_url: profileMap.get(user.id)?.avatar_url },
-                            { user_id: startChatWith, full_name: profileMap.get(startChatWith)?.full_name, avatar_url: profileMap.get(startChatWith)?.avatar_url }
-                        ]
-                    };
-
-                    setConversations(prev => [newConversationObj, ...prev]);
-                    setSelectedConversation(newConversationObj);
-                } catch (err) {
-                    console.error('Start direct chat error:', err);
-                }
-            }
         };
 
         init();
@@ -283,7 +214,8 @@ export default function MessagesPage() {
         try {
             let query = supabase
                 .from('conversation_messages')
-                .select('id, conversation_id, user_id, message, created_at')
+                .select('conversation_id, user_id, message, created_at') // No ID column
+                .eq('conversation_id', conversationId)
                 .order('created_at', { ascending: false }) // fetch newest first, we'll reverse
                 .limit(pageSize);
 
@@ -305,7 +237,7 @@ export default function MessagesPage() {
             const profileMap = await fetchProfilesMap(profileIds);
 
             const mapped: Msg[] = rows.map((r: any) => ({
-                id: r.id,
+                id: `${r.created_at}-${r.user_id}`, // Synthetic ID
                 content: r.message,
                 sender_id: r.user_id,
                 created_at: r.created_at,
@@ -440,12 +372,13 @@ export default function MessagesPage() {
                     // Remove matching optimistic message(s) (same user & same content) — avoid duplicates
                     setMessages(prev => {
                         const filtered = prev.filter(m => !(m.isOptimistic && m.sender_id === newMsg.user_id && m.content === newMsg.message));
-                        // Don't duplicate if server message already exists
-                        if (filtered.some(m => m.id === newMsg.id)) return filtered;
+                        // Don't duplicate if server message already exists (check synthetic ID match)
+                        const syntheticId = `${newMsg.created_at}-${newMsg.user_id}`;
+                        if (filtered.some(m => m.id === syntheticId)) return filtered;
                         return [
                             ...filtered,
                             {
-                                id: newMsg.id,
+                                id: syntheticId,
                                 content: newMsg.message,
                                 sender_id: newMsg.user_id,
                                 created_at: newMsg.created_at,
@@ -464,7 +397,8 @@ export default function MessagesPage() {
                                 .single();
 
                             if (profile) {
-                                setMessages(prev => prev.map(m => m.id === newMsg.id ? { ...m, full_name: profile.full_name, avatar_url: profile.avatar_url } : m));
+                                const syntheticId = `${newMsg.created_at}-${newMsg.user_id}`;
+                                setMessages(prev => prev.map(m => m.id === syntheticId ? { ...m, full_name: profile.full_name, avatar_url: profile.avatar_url } : m));
                             }
                         } catch (err) {
                             console.error('Error fetching profile for realtime msg:', err);
@@ -544,16 +478,14 @@ export default function MessagesPage() {
         }
     };
 
-    // Helper: display name/avatar for conversation (direct vs group)
+    // Helper: display name/avatar for conversation (always group style)
     const getConversationDisplay = (conv: Conversation) => {
-        if (conv.type === 'group') return { name: conv.name || 'Group Chat', avatar: null };
-        const other = conv.participants.find(p => p.user_id !== user?.id);
-        return { name: other?.full_name || 'Unknown', avatar: other?.avatar_url || null };
+        return { name: conv.name || 'Group Chat', avatar: null };
     };
 
     // Render
-    const groupChats = conversations.filter(c => c.type === 'group');
-    const directChats = conversations.filter(c => c.type === 'direct');
+    // All conversations are treated as groups
+    const groupChats = conversations;
 
     if (!user) {
         return (
@@ -584,7 +516,7 @@ export default function MessagesPage() {
                         <div className="py-2">
                             {groupChats.length > 0 && (
                                 <div className="mb-4">
-                                    <h2 className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">Trek Groups</h2>
+                                    <h2 className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">Conversations</h2>
                                     {groupChats.map(conv => {
                                         const display = getConversationDisplay(conv);
                                         return (
@@ -601,36 +533,6 @@ export default function MessagesPage() {
                                                 <div className="flex-1 text-left">
                                                     <h3 className="font-semibold text-slate-900 truncate">{display.name}</h3>
                                                     <p className="text-sm text-slate-500 truncate">{conv.participants.length} participants</p>
-                                                </div>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            )}
-
-                            {directChats.length > 0 && (
-                                <div>
-                                    <h2 className="px-4 py-2 text-xs font-semibold text-slate-500 uppercase tracking-wider">Direct Messages</h2>
-                                    {directChats.map(conv => {
-                                        const display = getConversationDisplay(conv);
-                                        return (
-                                            <button
-                                                key={conv.id}
-                                                onClick={() => setSelectedConversation(conv)}
-                                                className={`w-full p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors border-l-4 ${selectedConversation?.id === conv.id ? 'bg-blue-50 border-l-blue-500' : 'border-l-transparent'}`}
-                                            >
-                                                <div className="relative">
-                                                    {display.avatar ? (
-                                                        <img src={display.avatar} alt={display.name} className="w-12 h-12 rounded-full object-cover" />
-                                                    ) : (
-                                                        <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center">
-                                                            <User className="w-6 h-6 text-slate-400" />
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="flex-1 text-left">
-                                                    <h3 className="font-semibold text-slate-900 truncate">{display.name}</h3>
-                                                    <p className="text-sm text-slate-500 truncate">Click to view chat</p>
                                                 </div>
                                             </button>
                                         );

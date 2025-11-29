@@ -6,7 +6,7 @@ import { X } from 'lucide-react';
 interface ConfirmationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: (date: string) => void;
   trekTitle?: string;
   whatsappGroupLink?: string;
 }
@@ -20,22 +20,11 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
 }) => {
   const [safetyChecked, setSafetyChecked] = useState(false);
   const [rulesChecked, setRulesChecked] = useState(false);
+  const [selectedDate, setSelectedDate] = useState('');
 
   const handleConfirm = () => {
-    if (safetyChecked && rulesChecked) {
-      onConfirm();
-      
-      // Redirect to WhatsApp group if link is provided
-      if (whatsappGroupLink) {
-        window.open(whatsappGroupLink, '_blank');
-      } else {
-        // Default WhatsApp group link if none provided
-        const defaultMessage = `Hi! I would like to join the ${trekTitle} trek. Please add me to the group.`;
-        const encodedMessage = encodeURIComponent(defaultMessage);
-        const defaultWhatsAppLink = `https://wa.me/?text=${encodedMessage}`;
-        window.open(defaultWhatsAppLink, '_blank');
-      }
-      
+    if (safetyChecked && rulesChecked && selectedDate) {
+      onConfirm(selectedDate);
       onClose();
     }
   };
@@ -57,17 +46,26 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             Join {trekTitle}
           </h1>
           <p className="text-slate-600 text-lg mt-3">
-            By joining, you agree to the organizer's rules and safety instructions. 
-            Please review them carefully.
+            Select a date and agree to the rules to join.
           </p>
         </div>
 
         <div className="space-y-6">
-          <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${
-            safetyChecked 
-              ? 'bg-blue-50 border-blue-500' 
+          <div className="flex flex-col gap-2">
+            <label className="text-slate-700 font-medium">Select Trek Date</label>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              min={new Date().toISOString().split('T')[0]}
+              className="p-4 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
+            />
+          </div>
+
+          <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${safetyChecked
+              ? 'bg-blue-50 border-blue-500'
               : 'border-slate-200 hover:border-slate-300'
-          }`}>
+            }`}>
             <input
               type="checkbox"
               checked={safetyChecked}
@@ -79,11 +77,10 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             </span>
           </label>
 
-          <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${
-            rulesChecked 
-              ? 'bg-blue-50 border-blue-500' 
+          <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${rulesChecked
+              ? 'bg-blue-50 border-blue-500'
               : 'border-slate-200 hover:border-slate-300'
-          }`}>
+            }`}>
             <input
               type="checkbox"
               checked={rulesChecked}
@@ -105,14 +102,13 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </button>
           <button
             onClick={handleConfirm}
-            disabled={!safetyChecked || !rulesChecked}
-            className={`flex-1 h-12 px-6 text-white text-lg font-bold rounded-full transition-all shadow-md hover:shadow-lg ${
-              safetyChecked && rulesChecked
+            disabled={!safetyChecked || !rulesChecked || !selectedDate}
+            className={`flex-1 h-12 px-6 text-white text-lg font-bold rounded-full transition-all shadow-md hover:shadow-lg ${safetyChecked && rulesChecked && selectedDate
                 ? 'bg-green-500 hover:bg-green-600 cursor-pointer'
                 : 'bg-slate-400 cursor-not-allowed'
-            }`}
+              }`}
           >
-            Join WhatsApp Group
+            Confirm & Join
           </button>
         </div>
       </div>
