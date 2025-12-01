@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Send, MessageCircle, User, MoreVertical, Phone, Video, Users, Heart, ThumbsUp, Smile } from 'lucide-react';
+import { Send, MessageCircle, User, MoreVertical, Phone, Video, Users } from 'lucide-react';
 
 /**
  * Enhanced MessagesPage
@@ -57,7 +57,9 @@ type Conversation = {
   created_at?: string;
 };
 
-export default function MessagesPage() {
+export const dynamic = 'force-dynamic';
+
+function MessagesPageContent() {
   const supabase = createClient();
   const { user } = useAuth();
   const searchParams = useSearchParams();
@@ -632,7 +634,7 @@ export default function MessagesPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-64px)] bg-slate-50 flex">
+    <div className="fixed top-16 bottom-0 left-0 right-0 z-40 bg-slate-50 flex">
       {/* Sidebar */}
       <div className={`w-full md:w-80 bg-white border-r border-slate-200 flex flex-col ${selectedConversation ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-4 border-b border-slate-200">
@@ -746,7 +748,7 @@ export default function MessagesPage() {
                       )}
 
                       <div className="flex items-start gap-2">
-                        <div className={`rounded-2xl px-4 py-3 shadow-sm ${isMe ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none'}`}>
+                        <div className={`rounded-2xl px-4 py-3 shadow-sm min-w-0 ${isMe ? 'bg-blue-500 text-white rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-bl-none'}`}>
                           {msg.is_deleted ? (
                             <p className="italic text-slate-400 text-sm">Message deleted</p>
                           ) : (
@@ -757,7 +759,7 @@ export default function MessagesPage() {
                                 </div>
                               )}
 
-                              <p className="text-sm leading-relaxed">{msg.content}
+                              <p className="text-sm leading-relaxed break-all whitespace-pre-wrap">{msg.content}
                                 {msg.updated_at && !msg.is_deleted && (
                                   <span className="text-[10px] ml-1 opacity-70"> (edited)</span>
                                 )}
@@ -825,7 +827,7 @@ export default function MessagesPage() {
             </div>
 
             {/* Input: text is black via text-black class */}
-            <div className="p-4 bg-white border-t border-slate-200">
+            <div className="p-3 sm:p-4 bg-white border-t border-slate-200">
               <form onSubmit={editing ? submitEdit : handleSendMessage} className="flex flex-col gap-2 max-w-4xl mx-auto">
                 {replyTo && (
                   <div className="bg-slate-50 border border-slate-100 px-3 py-2 rounded text-sm">
@@ -838,18 +840,29 @@ export default function MessagesPage() {
                   <div className="text-xs text-blue-600">Editing message… <button type="button" onClick={() => { setEditing(null); setNewMessage(''); }} className="ml-2 text-red-500">Cancel</button></div>
                 )}
 
-                <div className="flex items-center gap-3">
-                  <input
-                    type="text"
+                <div className="flex items-center gap-2 sm:gap-3">
+                  <textarea
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        if (newMessage.trim()) {
+                          // Create a synthetic event or call handler directly if possible
+                          // Since handleSendMessage expects FormEvent, we can just call the form submit logic
+                          // But handleSendMessage uses e.preventDefault(), so passing a synthetic event is fine
+                          const syntheticEvent = { preventDefault: () => { } } as React.FormEvent;
+                          editing ? submitEdit(syntheticEvent) : handleSendMessage(syntheticEvent);
+                        }
+                      }
+                    }}
                     placeholder="Type a message..."
-                    className="flex-1 py-3 px-4 bg-slate-100 border-0 rounded-full focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-black"
+                    className="flex-1 py-2 sm:py-3 px-3 sm:px-4 bg-slate-100 border-0 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all text-black resize-none h-12 min-h-[3rem] max-h-[3rem] overflow-y-auto leading-normal break-words whitespace-pre-wrap text-sm sm:text-base"
                   />
                   <button
                     type="submit"
                     disabled={!newMessage.trim()}
-                    className="p-3 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all hover:shadow-lg transform active:scale-95"
+                    className="p-2 sm:p-3 bg-blue-500 text-white rounded-full hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-all hover:shadow-lg transform active:scale-95"
                   >
                     <Send className="w-5 h-5 ml-0.5" />
                   </button>
@@ -868,5 +881,13 @@ export default function MessagesPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function MessagesPage() {
+  return (
+    <Suspense fallback={<div className="h-screen flex items-center justify-center">Loading...</div>}>
+      <MessagesPageContent />
+    </Suspense>
   );
 }

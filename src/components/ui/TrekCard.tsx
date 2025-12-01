@@ -268,7 +268,6 @@ const TrekCard: React.FC<TrekCardProps> = ({
         onClose={() => setIsModalOpen(false)}
         onConfirm={handleConfirmJoin}
         trekTitle={title}
-        whatsappGroupLink={whatsappGroupLink}
       />
     </div>
   );

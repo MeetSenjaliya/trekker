@@ -11,7 +11,7 @@ export default function LoginPage() {
     rememberMe: false
   });
   const [showPassword, setShowPassword] = useState(false);
-  const [errors, setErrors] = useState<{[key: string]: string}>({});
+  const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = e.target;
@@ -29,7 +29,7 @@ export default function LoginPage() {
   };
 
   const validateForm = () => {
-    const newErrors: {[key: string]: string} = {};
+    const newErrors: { [key: string]: string } = {};
 
     if (!formData.email.trim()) {
       newErrors.email = 'Email is required';
@@ -134,11 +134,10 @@ export default function LoginPage() {
                   onChange={handleInputChange}
                   placeholder="you@example.com"
                   autoComplete="email"
-                  className={`block w-full rounded-xl border-0 py-3 px-4 text-slate-900 ring-1 ring-inset placeholder:text-slate-400 focus:ring-2 focus:ring-inset sm:text-sm sm:leading-6 transition-shadow duration-200 ${
-                    errors.email 
-                      ? 'ring-red-300 focus:ring-red-600' 
+                  className={`block w-full rounded-xl border-0 py-3 px-4 text-slate-900 ring-1 ring-inset placeholder:text-slate-400 focus:ring-2 focus:ring-inset sm:text-sm sm:leading-6 transition-shadow duration-200 ${errors.email
+                      ? 'ring-red-300 focus:ring-red-600'
                       : 'ring-slate-300 focus:ring-blue-600'
-                  }`}
+                    }`}
                 />
                 {errors.email && (
                   <p className="mt-1 text-sm text-red-600">{errors.email}</p>
@@ -159,11 +158,10 @@ export default function LoginPage() {
                     onChange={handleInputChange}
                     placeholder="••••••••"
                     autoComplete="current-password"
-                    className={`block w-full rounded-xl border-0 py-3 px-4 pr-12 text-slate-900 ring-1 ring-inset placeholder:text-slate-400 focus:ring-2 focus:ring-inset sm:text-sm sm:leading-6 transition-shadow duration-200 ${
-                      errors.password 
-                        ? 'ring-red-300 focus:ring-red-600' 
+                    className={`block w-full rounded-xl border-0 py-3 px-4 pr-12 text-slate-900 ring-1 ring-inset placeholder:text-slate-400 focus:ring-2 focus:ring-inset sm:text-sm sm:leading-6 transition-shadow duration-200 ${errors.password
+                        ? 'ring-red-300 focus:ring-red-600'
                         : 'ring-slate-300 focus:ring-blue-600'
-                    }`}
+                      }`}
                   />
                   <button
                     type="button"
@@ -194,8 +192,8 @@ export default function LoginPage() {
                   </label>
                 </div>
                 <div className="text-sm">
-                  <Link 
-                    href="/auth/forgot-password" 
+                  <Link
+                    href="/auth/forgot-password"
                     className="font-semibold text-blue-600 hover:text-blue-500 transition-colors"
                   >
                     Forgot Password?
@@ -214,7 +212,7 @@ export default function LoginPage() {
 
             {/* Signup Link */}
             <p className="text-slate-600 text-sm font-normal leading-normal pt-6 text-center">
-              Don't have an account?{' '}
+              Don&apos;t have an account?{' '}
               <Link href="/auth/signup" className="font-semibold text-blue-600 hover:text-blue-700 transition-colors">
                 Sign up
               </Link>

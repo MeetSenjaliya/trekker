@@ -14,9 +14,9 @@ interface ReviewData {
   photos: File[];
 }
 
-const ReviewForm: React.FC<ReviewFormProps> = ({ 
-  trekTitle = "Your Trek Experience", 
-  onSubmit 
+const ReviewForm: React.FC<ReviewFormProps> = ({
+  trekTitle = "Your Trek Experience",
+  onSubmit
 }) => {
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
@@ -57,7 +57,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (rating === 0) {
       alert('Please provide a rating.');
       return;
@@ -83,7 +83,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
       setReview('');
       setPhotos([]);
       alert('Review submitted successfully!');
-    } catch (error) {
+    } catch (_error) {
       alert('Failed to submit review. Please try again.');
     } finally {
       setIsSubmitting(false);
@@ -121,11 +121,10 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
                   className="text-3xl transition-colors duration-200 hover:scale-110 transform"
                 >
                   <Star
-                    className={`w-8 h-8 ${
-                      starValue <= displayRating
+                    className={`w-8 h-8 ${starValue <= displayRating
                         ? 'text-yellow-400 fill-yellow-400'
                         : 'text-gray-300'
-                    }`}
+                      }`}
                   />
                 </button>
               ))}
@@ -162,7 +161,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
           <label className="block text-sm font-semibold text-slate-700 mb-2">
             Upload Photos (Optional)
           </label>
-          
+
           {/* Upload Area */}
           <div className="relative">
             <input
@@ -173,22 +172,19 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               disabled={photos.length >= 5}
             />
-            <div className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${
-              photos.length >= 5 
-                ? 'border-gray-200 bg-gray-50 cursor-not-allowed' 
+            <div className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${photos.length >= 5
+                ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
                 : 'border-slate-300 hover:border-blue-400 cursor-pointer group'
-            }`}>
-              <Upload className={`w-12 h-12 transition-colors ${
-                photos.length >= 5 
-                  ? 'text-gray-400' 
+              }`}>
+              <Upload className={`w-12 h-12 transition-colors ${photos.length >= 5
+                  ? 'text-gray-400'
                   : 'text-slate-400 group-hover:text-blue-500'
-              }`} />
+                }`} />
               <div className="text-center">
-                <p className={`text-base font-semibold transition-colors ${
-                  photos.length >= 5 
-                    ? 'text-gray-500' 
+                <p className={`text-base font-semibold transition-colors ${photos.length >= 5
+                    ? 'text-gray-500'
                     : 'text-slate-700 group-hover:text-blue-600'
-                }`}>
+                  }`}>
                   {photos.length >= 5 ? 'Maximum photos reached' : 'Drag and drop photos here'}
                 </p>
                 <p className="text-slate-500 text-sm mt-1">

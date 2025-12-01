@@ -7,16 +7,39 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Calendar, MapPin, Star, Users, Camera, Edit, Settings } from 'lucide-react';
 
 // Define Profile interface based on schema
+// Define Profile interface based on schema
 interface Profile {
   id: string;
   full_name: string | null;
   avatar_url: string | null;
   bio: string | null;
   created_at: string | null;
-  // Other fields like email, age, etc., can be added if needed
 }
 
-// Sample data for badges and treks (since schemas not provided, keeping as constants; replace with DB fetches when schemas available)
+interface RecentTrek {
+  id: string;
+  title: string;
+  image: string;
+  date: string;
+  location: string;
+  rating: number;
+  role: string;
+}
+
+interface UpcomingTrek {
+  id: string;
+  title: string;
+  date: string;
+  image: string;
+  location: string;
+  participants: {
+    current: number;
+    max: number;
+  };
+  role?: string;
+}
+
+// Sample data for badges (keeping as constants)
 const badges = [
   { name: 'Mountain Master', icon: '🏔️', description: 'Completed 20+ mountain treks' },
   { name: 'Group Leader', icon: '👥', description: 'Successfully organized 5+ treks' },
@@ -24,62 +47,19 @@ const badges = [
   { name: 'Review Star', icon: '⭐', description: 'Received 4.5+ average rating' }
 ];
 
-const recentTreks = [
-  {
-    id: '1',
-    title: 'Himalayan Heights',
-    date: 'June 2024',
-    image: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80',
-    role: 'Participant',
-    rating: 5
-  },
-  {
-    id: '2',
-    title: 'Alps Adventure',
-    date: 'May 2024',
-    image: 'https://images.unsplash.com/photo-1464822759844-d150baec0494?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80',
-    role: 'Organizer',
-    rating: 4.8
-  },
-  {
-    id: '3',
-    title: 'Coastal Trail',
-    date: 'April 2024',
-    image: 'https://images.unsplash.com/photo-1506197603052-3cc9c3a201bd?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80',
-    role: 'Participant',
-    rating: 4.5
-  }
-];
-
-const upcomingTreks = [
-  {
-    id: '4',
-    title: 'Patagonia Expedition',
-    date: 'August 15, 2024',
-    image: 'https://images.unsplash.com/photo-1551632811-561732d1e306?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80',
-    role: 'Organizer',
-    participants: { current: 6, max: 10 }
-  },
-  {
-    id: '5',
-    title: 'Rocky Mountain Trail',
-    date: 'September 3, 2024',
-    image: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80',
-    role: 'Participant',
-    participants: { current: 8, max: 12 }
-  }
-];
-
 const defaultLocation = 'San Francisco, CA'; // Fallback since not in profiles schema
 const defaultAvatar = 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?ixlib=rb-4.0.3&auto=format&fit=crop&w=256&q=80';
 const defaultBio = 'Passionate trekker and outdoor enthusiast with over 5 years of experience exploring mountains around the world. Love sharing adventures with fellow hikers!';
 const defaultJoinDate = 'March 2019';
+const defaultTrekImage = 'https://images.unsplash.com/photo-1551632811-561732d1e306?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80';
 
 export default function ProfilePage() {
   const supabase = createClient();
   const { user } = useAuth();
 
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [recentTreks, setRecentTreks] = useState<RecentTrek[]>([]);
+  const [upcomingTreks, setUpcomingTreks] = useState<UpcomingTrek[]>([]);
   const [stats, setStats] = useState({
     treksCompleted: 0,
     treksOrganized: 0,
@@ -109,7 +89,7 @@ export default function ProfilePage() {
           .select('*')
           .eq('id', user.id)
           .single();
-          console.log('Fetched profile:', profileData);
+        console.log('Fetched profile:', profileData);
 
         if (profileError && profileError.code !== 'PGRST116') { // PGRST116 is no row found
           console.error('Error fetching profile:', profileError);
@@ -154,6 +134,93 @@ export default function ProfilePage() {
             distance_km: monthlyData.distance_km || 0
           });
         }
+
+        // -------------------- RECENT TREKS JOINED -----------------------
+
+        const { data: joinedTreks } = await supabase
+          .from("trek_participants")
+          .select(
+            `
+            id,
+            trek_batches!inner (
+              batch_date,
+              treks (
+                id,
+                title,
+                cover_image_url,
+                rating,
+                location
+              )
+            )
+          `
+          )
+          .eq("user_id", user.id)
+          .lt("trek_batches.batch_date", new Date().toISOString())
+          .order("trek_batches(batch_date)", { ascending: false })
+          .limit(3);
+
+        setRecentTreks(
+          joinedTreks?.map((t: any) => {
+            const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
+            const trek = batch?.treks;
+
+            return {
+              id: trek?.id,
+              title: trek?.title,
+              image: trek?.cover_image_url,
+              date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
+              role: "Participant",
+              rating: trek?.rating || 0,
+              location: trek?.location || "Unknown Location",
+            };
+          }) || []
+        );
+
+        // ------------------------- UPCOMING TREKS ------------------------
+        const { data: upcoming } = await supabase
+          .from("trek_participants")
+          .select(
+            `
+            id,
+            trek_batches!inner (
+              batch_date,
+              treks (
+                id,
+                title,
+                cover_image_url,
+                location,
+                participants_joined,
+                max_participants
+              )
+            )
+          `
+          )
+          .eq("user_id", user.id)
+          .gte("trek_batches.batch_date", new Date().toISOString())
+          .order("trek_batches(batch_date)", { ascending: true })
+          .limit(3);
+
+        setUpcomingTreks(
+          upcoming?.map((t: any) => {
+            const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
+            const trek = batch?.treks;
+
+            return {
+              id: trek?.id,
+              title: trek?.title,
+              date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
+              image: trek?.cover_image_url,
+              location: trek?.location || "Unknown Location",
+              participants: {
+                current: trek?.participants_joined || 0,
+                max: trek?.max_participants || 0,
+              },
+              role: "Participant",
+            };
+          }) || []
+        );
+
+
       } catch (error) {
         console.error('Error fetching data:', error);
       } finally {
@@ -172,8 +239,8 @@ export default function ProfilePage() {
   const displayAvatar = profile?.avatar_url || defaultAvatar;
   const displayBio = profile?.bio || defaultBio;
   const displayLocation = defaultLocation; // No location in schema, using default
-  const displayJoinDate = profile?.created_at 
-    ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) 
+  const displayJoinDate = profile?.created_at
+    ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     : defaultJoinDate;
 
   return (
@@ -184,7 +251,7 @@ export default function ProfilePage() {
           <div className="relative h-48 bg-gradient-to-r from-blue-500 to-blue-600">
             <div className="absolute inset-0 bg-black/20"></div>
             <div className="absolute top-4 right-4">
-              <Link 
+              <Link
                 href="/profile/edit"
                 className="flex items-center gap-2 px-4 py-2 bg-white/20 backdrop-blur-sm text-white rounded-lg hover:bg-white/30 transition-colors"
               >
@@ -193,7 +260,7 @@ export default function ProfilePage() {
               </Link>
             </div>
           </div>
-          
+
           <div className="relative px-6 pb-6">
             <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4 -mt-16">
               <img
@@ -261,7 +328,7 @@ export default function ProfilePage() {
                 {recentTreks.map((trek) => (
                   <div key={trek.id} className="flex items-center gap-4 p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
                     <img
-                      src={trek.image}
+                      src={trek.image || defaultTrekImage}
                       alt={trek.title}
                       className="w-16 h-16 rounded-lg object-cover"
                     />
@@ -269,11 +336,10 @@ export default function ProfilePage() {
                       <h3 className="font-semibold text-slate-900">{trek.title}</h3>
                       <p className="text-sm text-slate-600">{trek.date}</p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className={`text-xs px-2 py-1 rounded-full ${
-                          trek.role === 'Organizer' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : 'bg-green-100 text-green-800'
-                        }`}>
+                        <span className={`text-xs px-2 py-1 rounded-full ${trek.role === 'Organizer'
+                          ? 'bg-blue-100 text-blue-800'
+                          : 'bg-green-100 text-green-800'
+                          }`}>
                           {trek.role}
                         </span>
                         <div className="flex items-center gap-1">
@@ -294,7 +360,7 @@ export default function ProfilePage() {
                 {upcomingTreks.map((trek) => (
                   <div key={trek.id} className="flex items-center gap-4 p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
                     <img
-                      src={trek.image}
+                      src={trek.image || defaultTrekImage}
                       alt={trek.title}
                       className="w-16 h-16 rounded-lg object-cover"
                     />
@@ -302,11 +368,10 @@ export default function ProfilePage() {
                       <h3 className="font-semibold text-slate-900">{trek.title}</h3>
                       <p className="text-sm text-slate-600">{trek.date}</p>
                       <div className="flex items-center gap-2 mt-1">
-                        <span className={`text-xs px-2 py-1 rounded-full ${
-                          trek.role === 'Organizer' 
-                            ? 'bg-blue-100 text-blue-800' 
-                            : 'bg-green-100 text-green-800'
-                        }`}>
+                        <span className={`text-xs px-2 py-1 rounded-full ${trek.role === 'Organizer'
+                          ? 'bg-blue-100 text-blue-800'
+                          : 'bg-green-100 text-green-800'
+                          }`}>
                           {trek.role}
                         </span>
                         <div className="flex items-center gap-1 text-xs text-slate-600">
@@ -375,7 +440,7 @@ export default function ProfilePage() {
 
             {/* Activity Summary */}
             <div className="bg-white rounded-xl shadow-lg p-6">
-              <h2 className="text-xl font-semibold text-slate-900 mb-6">This Month's</h2>
+              <h2 className="text-xl font-semibold text-slate-900 mb-6">This Month&apos;s</h2>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-200">

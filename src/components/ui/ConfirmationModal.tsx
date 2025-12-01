@@ -8,15 +8,13 @@ interface ConfirmationModalProps {
   onClose: () => void;
   onConfirm: (date: string) => void;
   trekTitle?: string;
-  whatsappGroupLink?: string;
 }
 
 const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   isOpen,
   onClose,
   onConfirm,
-  trekTitle = "this trek",
-  whatsappGroupLink
+  trekTitle = "this trek"
 }) => {
   const [safetyChecked, setSafetyChecked] = useState(false);
   const [rulesChecked, setRulesChecked] = useState(false);
@@ -63,8 +61,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </div>
 
           <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${safetyChecked
-              ? 'bg-blue-50 border-blue-500'
-              : 'border-slate-200 hover:border-slate-300'
+            ? 'bg-blue-50 border-blue-500'
+            : 'border-slate-200 hover:border-slate-300'
             }`}>
             <input
               type="checkbox"
@@ -78,8 +76,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
           </label>
 
           <label className={`flex items-center gap-x-4 p-4 rounded-xl border transition-all cursor-pointer ${rulesChecked
-              ? 'bg-blue-50 border-blue-500'
-              : 'border-slate-200 hover:border-slate-300'
+            ? 'bg-blue-50 border-blue-500'
+            : 'border-slate-200 hover:border-slate-300'
             }`}>
             <input
               type="checkbox"
@@ -88,7 +86,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               className="h-6 w-6 shrink-0 rounded-md border-2 border-slate-300 bg-white checked:bg-blue-500 checked:border-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             />
             <span className="text-slate-700 font-medium">
-              I agree to follow the organizer's rules.
+              I agree to follow the organizer&apos;s rules.
             </span>
           </label>
         </div>
@@ -104,8 +102,8 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
             onClick={handleConfirm}
             disabled={!safetyChecked || !rulesChecked || !selectedDate}
             className={`flex-1 h-12 px-6 text-white text-lg font-bold rounded-full transition-all shadow-md hover:shadow-lg ${safetyChecked && rulesChecked && selectedDate
-                ? 'bg-green-500 hover:bg-green-600 cursor-pointer'
-                : 'bg-slate-400 cursor-not-allowed'
+              ? 'bg-green-500 hover:bg-green-600 cursor-pointer'
+              : 'bg-slate-400 cursor-not-allowed'
               }`}
           >
             Confirm & Join

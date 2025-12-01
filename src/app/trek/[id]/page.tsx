@@ -9,7 +9,7 @@ import { joinTrekBatchAndChat } from '@/lib/joinTrek';
 // import Chat from '@/components/ui/Chat';
 
 
-const getDifficultyColor = (level: string) => {
+const _getDifficultyColor = (level: string) => {
   switch (level) {
     case 'Easy':
       return 'bg-green-100 text-green-800';

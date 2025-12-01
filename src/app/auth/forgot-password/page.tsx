@@ -22,12 +22,12 @@ export default function ForgotPasswordPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!email.trim()) {
       setError('Email is required');
       return;
     }
-    
+
     if (!validateEmail(email)) {
       setError('Please enter a valid email address');
       return;
@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
   if (isSubmitted) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col">
- 
+
 
 
         {/* Success Message */}
@@ -66,12 +66,12 @@ export default function ForgotPasswordPage() {
                   Check your email
                 </h2>
                 <p className="mt-2 text-gray-600">
-                  We've sent a password reset link to <strong>{email}</strong>
+                  We&apos;ve sent a password reset link to <strong>{email}</strong>
                 </p>
               </div>
               <div className="space-y-4">
                 <p className="text-sm text-gray-500">
-                  Didn't receive the email? Check your spam folder or try again.
+                  Didn&apos;t receive the email? Check your spam folder or try again.
                 </p>
                 <button
                   onClick={() => setIsSubmitted(false)}
@@ -80,7 +80,7 @@ export default function ForgotPasswordPage() {
                   Try a different email
                 </button>
               </div>
-              <Link 
+              <Link
                 href="/auth/login"
                 className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-500 font-medium text-sm"
               >
@@ -142,7 +142,7 @@ export default function ForgotPasswordPage() {
                 No worries! Enter your email below to reset it.
               </p>
             </div>
-            
+
             <form onSubmit={handleSubmit} className="space-y-6">
               <div>
                 <label htmlFor="email-address" className="sr-only">
@@ -157,17 +157,16 @@ export default function ForgotPasswordPage() {
                   value={email}
                   onChange={handleInputChange}
                   placeholder="Email or Username"
-                  className={`relative block w-full appearance-none rounded-xl border px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-none sm:text-sm transition-colors ${
-                    error 
-                      ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-500' 
+                  className={`relative block w-full appearance-none rounded-xl border px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-none sm:text-sm transition-colors ${error
+                      ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-500'
                       : 'border-gray-300 bg-gray-50 focus:border-blue-500 focus:ring-blue-500'
-                  }`}
+                    }`}
                 />
                 {error && (
                   <p className="mt-2 text-sm text-red-600">{error}</p>
                 )}
               </div>
-              
+
               <div>
                 <button
                   type="submit"
@@ -177,10 +176,10 @@ export default function ForgotPasswordPage() {
                 </button>
               </div>
             </form>
-            
+
             <div className="text-center text-sm">
-              <Link 
-                href="/auth/login" 
+              <Link
+                href="/auth/login"
                 className="font-medium text-blue-600 hover:text-blue-500 transition-colors"
               >
                 Remembered your password? Log in
