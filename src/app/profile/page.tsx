@@ -54,8 +54,8 @@ const defaultJoinDate = 'March 2019';
 const defaultTrekImage = 'https://images.unsplash.com/photo-1551632811-561732d1e306?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80';
 
 export default function ProfilePage() {
-  const supabase = createClient();
-  const { user } = useAuth();
+  const [supabase] = useState(() => createClient());
+  const { user, loading: isLoading } = useAuth();
 
   const [profile, setProfile] = useState<Profile | null>(null);
   const [recentTreks, setRecentTreks] = useState<RecentTrek[]>([]);
@@ -75,6 +75,8 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (isLoading) return;
+
     if (!user) {
       setLoading(false);
       return;
@@ -83,16 +85,19 @@ export default function ProfilePage() {
 
     const fetchData = async () => {
       try {
+        // Refresh session
+        await supabase.auth.getSession();
+
         // Fetch profile from DB
         const { data: profileData, error: profileError } = await supabase
           .from('profiles')
-          .select('*')
+          .select('id, full_name, avatar_url, bio, created_at')
           .eq('id', user.id)
           .single();
         console.log('Fetched profile:', profileData);
 
         if (profileError && profileError.code !== 'PGRST116') { // PGRST116 is no row found
-          console.error('Error fetching profile:', profileError);
+          console.error('Profile RLS/Fetch error:', profileError);
         }
         setProfile(profileData);
 
@@ -136,90 +141,96 @@ export default function ProfilePage() {
         }
 
         // -------------------- RECENT TREKS JOINED -----------------------
-
-        const { data: joinedTreks } = await supabase
-          .from("trek_participants")
-          .select(
-            `
-            id,
-            trek_batches!inner (
-              batch_date,
-              treks (
+        try {
+          const { data: joinedTreks } = await supabase
+            .from("trek_participants")
+            .select(
+              `
                 id,
-                title,
-                cover_image_url,
-                rating,
-                location
-              )
+                trek_batches!inner (
+                batch_date,
+                treks (
+                    id,
+                    title,
+                    cover_image_url,
+                    rating,
+                    location
+                )
+                )
+            `
             )
-          `
-          )
-          .eq("user_id", user.id)
-          .lt("trek_batches.batch_date", new Date().toISOString())
-          .order("trek_batches(batch_date)", { ascending: false })
-          .limit(3);
+            .eq("user_id", user.id)
+            .lt("trek_batches.batch_date", new Date().toISOString())
+            .order("trek_batches(batch_date)", { ascending: false })
+            .limit(3);
 
-        setRecentTreks(
-          joinedTreks?.map((t: any) => {
-            const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
-            const trek = batch?.treks;
+          setRecentTreks(
+            joinedTreks?.map((t: any) => {
+              const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
+              const trek = batch?.treks;
 
-            return {
-              id: trek?.id,
-              title: trek?.title,
-              image: trek?.cover_image_url,
-              date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
-              role: "Participant",
-              rating: trek?.rating || 0,
-              location: trek?.location || "Unknown Location",
-            };
-          }) || []
-        );
+              return {
+                id: trek?.id,
+                title: trek?.title,
+                image: trek?.cover_image_url,
+                date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
+                role: "Participant",
+                rating: trek?.rating || 0,
+                location: trek?.location || "Unknown Location",
+              };
+            }) || []
+          );
+        } catch (err: any) {
+          console.error('Error fetching recent treks:', err);
+        }
 
         // ------------------------- UPCOMING TREKS ------------------------
-        const { data: upcoming } = await supabase
-          .from("trek_participants")
-          .select(
-            `
-            id,
-            trek_batches!inner (
-              batch_date,
-              treks (
+        try {
+          const { data: upcoming } = await supabase
+            .from("trek_participants")
+            .select(
+              `
                 id,
-                title,
-                cover_image_url,
-                location,
-                participants_joined,
-                max_participants
-              )
+                trek_batches!inner (
+                batch_date,
+                treks (
+                    id,
+                    title,
+                    cover_image_url,
+                    location,
+                    participants_joined,
+                    max_participants
+                )
+                )
+            `
             )
-          `
-          )
-          .eq("user_id", user.id)
-          .gte("trek_batches.batch_date", new Date().toISOString())
-          .order("trek_batches(batch_date)", { ascending: true })
-          .limit(3);
+            .eq("user_id", user.id)
+            .gte("trek_batches.batch_date", new Date().toISOString())
+            .order("trek_batches(batch_date)", { ascending: true })
+            .limit(3);
 
-        setUpcomingTreks(
-          upcoming?.map((t: any) => {
-            const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
-            const trek = batch?.treks;
+          setUpcomingTreks(
+            upcoming?.map((t: any) => {
+              const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
+              const trek = batch?.treks;
 
-            return {
-              id: trek?.id,
-              title: trek?.title,
-              date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
-              image: trek?.cover_image_url,
-              location: trek?.location || "Unknown Location",
-              participants: {
-                current: trek?.participants_joined || 0,
-                max: trek?.max_participants || 0,
-              },
-              role: "Participant",
-            };
-          }) || []
-        );
-
+              return {
+                id: trek?.id,
+                title: trek?.title,
+                date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
+                image: trek?.cover_image_url,
+                location: trek?.location || "Unknown Location",
+                participants: {
+                  current: trek?.participants_joined || 0,
+                  max: trek?.max_participants || 0,
+                },
+                role: "Participant",
+              };
+            }) || []
+          );
+        } catch (err: any) {
+          console.error('Error fetching upcoming treks:', err);
+        }
 
       } catch (error) {
         console.error('Error fetching data:', error);

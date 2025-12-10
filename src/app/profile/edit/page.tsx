@@ -7,11 +7,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 
 export default function EditProfilePage() {
-  const supabase = createClient();
-  const { user } = useAuth();
+  const [supabase] = useState(() => createClient());
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -36,7 +38,8 @@ export default function EditProfilePage() {
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) return;
+    if (authLoading) return;
+    if (!user || !supabase) return; // Auth guard
 
     const fetchProfile = async () => {
       try {
@@ -46,7 +49,7 @@ export default function EditProfilePage() {
           .eq('id', user.id)
           .single();
 
-        if (error) throw error;
+        if (error && error.code !== 'PGRST116') throw error;
 
         if (data) {
           // Parse favorite trek types from array to object
@@ -113,6 +116,18 @@ export default function EditProfilePage() {
       return;
     }
     const file = e.target.files[0];
+
+    // Validation
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file.');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) { // 5MB
+      alert('File size must be less than 5MB.');
+      return;
+    }
+
     setAvatarFile(file);
     setAvatarPreview(URL.createObjectURL(file));
   };
@@ -126,14 +141,26 @@ export default function EditProfilePage() {
       let currentAvatarUrl = avatarUrl;
 
       // Upload new avatar if selected
+      // Upload new avatar if selected
       if (avatarFile) {
+        setUploading(true);
         const fileExt = avatarFile.name.split('.').pop();
         // Use consistent filename to avoid filling storage
-        const fileName = `${user.id}.${fileExt}`;
+        // Add timestamp to force cache refresh
+        const fileName = `${user.id}-${Date.now()}.${fileExt}`;
+
+        // Remove old avatar if exists (optional cleanup)
+        // const { data: oldFiles } = await supabase.storage.from('avatars').list(user.id);
+        // if (oldFiles && oldFiles.length > 0) {
+        //   await supabase.storage.from('avatars').remove(oldFiles.map(f => `${user.id}/${f.name}`));
+        // }
 
         const { error: uploadError, data } = await supabase.storage
-          .from('avatars') // Changed from 'trek-profile' to 'avatars'
-          .upload(fileName, avatarFile, { upsert: true });
+          .from('avatars')
+          .upload(fileName, avatarFile, {
+            upsert: true,
+            cacheControl: '3600'
+          });
 
         if (uploadError) throw uploadError;
 
@@ -142,6 +169,7 @@ export default function EditProfilePage() {
           .getPublicUrl(fileName);
 
         currentAvatarUrl = publicUrl;
+        setUploading(false);
       }
 
       // Convert favorite types object back to array
@@ -171,7 +199,7 @@ export default function EditProfilePage() {
       if (error) throw error;
 
       alert('Profile updated successfully!');
-      router.push('/x'); // Redirect to profile page
+      router.push('/profile'); // Redirect to profile page
       router.refresh();
     } catch (error: any) {
       console.error('Error updating profile:', error);
@@ -188,10 +216,11 @@ export default function EditProfilePage() {
       alert(`Error updating profile: ${error.message || 'Unknown error'}`);
     } finally {
       setSaving(false);
+      setUploading(false);
     }
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
@@ -216,8 +245,13 @@ export default function EditProfilePage() {
                 <img
                   src={avatarPreview || avatarUrl || "https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/avatars/image.jpg"}
                   alt="Profile"
-                  className="w-full h-full rounded-full object-cover"
+                  className={`w-full h-full rounded-full object-cover ${uploading ? 'opacity-50' : ''}`}
                 />
+                {uploading && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Loader2 className="w-8 h-8 animate-spin text-white" />
+                  </div>
+                )}
                 <label className="absolute bottom-1 right-1 flex size-10 items-center justify-center rounded-full bg-blue-500 text-white hover:bg-blue-600 cursor-pointer transition-colors">
                   <Camera className="w-5 h-5" />
                   <input
@@ -225,6 +259,7 @@ export default function EditProfilePage() {
                     className="hidden"
                     accept="image/*"
                     onChange={handlePhotoSelect}
+                    disabled={uploading || saving}
                   />
                 </label>
               </div>
@@ -430,7 +465,7 @@ export default function EditProfilePage() {
                     ) : (
                       <Save className="w-5 h-5" />
                     )}
-                    {saving ? 'Saving...' : 'Save Changes'}
+                    {saving || uploading ? 'Saving...' : 'Save Changes'}
                   </button>
                 </div>
               </form>
