@@ -1,5 +1,5 @@
-import { supabase } from './supabase'
-import { AuthError, User } from '@supabase/supabase-js'
+import { createClient } from '@/utils/supabase/client'
+import { AuthError, User, Session } from '@supabase/supabase-js'
 
 export interface SignUpData {
   email: string
@@ -14,11 +14,13 @@ export interface SignInData {
 
 export interface AuthResponse {
   user: User | null
+  session: Session | null
   error: AuthError | null
 }
 
 // Sign up new user
 export async function signUp({ email, password, fullName }: SignUpData): Promise<AuthResponse> {
+  const supabase = createClient()
   try {
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -31,7 +33,7 @@ export async function signUp({ email, password, fullName }: SignUpData): Promise
     })
 
     if (error) {
-      return { user: null, error }
+      return { user: null, session: null, error }
     }
 
     // If signup successful, create user profile
@@ -53,32 +55,33 @@ export async function signUp({ email, password, fullName }: SignUpData): Promise
       if (profileError) {
         console.error('Error creating profile:', profileError);
         // Profile creation failed, but auth was successful
-        // You might want to handle this differently based on your requirements
       }
     }
 
-    return { user: data.user, error: null }
+    return { user: data.user, session: data.session, error: null }
   } catch (error) {
-    return { user: null, error: error as AuthError }
+    return { user: null, session: null, error: error as AuthError }
   }
 }
 
 // Sign in existing user
 export async function signIn({ email, password }: SignInData): Promise<AuthResponse> {
+  const supabase = createClient()
   try {
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
 
-    return { user: data.user, error }
+    return { user: data.user, session: data.session, error }
   } catch (error) {
-    return { user: null, error: error as AuthError }
+    return { user: null, session: null, error: error as AuthError }
   }
 }
 
 // Sign out user
 export async function signOut(): Promise<{ error: AuthError | null }> {
+  const supabase = createClient()
   try {
     const { error } = await supabase.auth.signOut()
     return { error }
@@ -89,6 +92,7 @@ export async function signOut(): Promise<{ error: AuthError | null }> {
 
 // Reset password
 export async function resetPassword(email: string): Promise<{ error: AuthError | null }> {
+  const supabase = createClient()
   try {
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/auth/reset-password`,
@@ -99,21 +103,26 @@ export async function resetPassword(email: string): Promise<{ error: AuthError |
   }
 }
 
-// Get current user
-export async function getCurrentUser(): Promise<User | null> {
+// Get current user and session
+export async function getCurrentUser(): Promise<{ user: User | null; session: Session | null }> {
+  const supabase = createClient()
   try {
+    // getUser() is safer as it validates the token with the server
     const { data: { user } } = await supabase.auth.getUser()
-    return user
+    const { data: { session } } = await supabase.auth.getSession()
+
+    return { user, session }
   } catch (error) {
     console.error('Error getting current user:', error)
-    return null
+    return { user: null, session: null }
   }
 }
 
 // Listen to auth state changes
-export function onAuthStateChange(callback: (user: User | null) => void) {
+export function onAuthStateChange(callback: (user: User | null, session: Session | null) => void) {
+  const supabase = createClient()
   return supabase.auth.onAuthStateChange((event, session) => {
-    callback(session?.user ?? null)
+    // Forward the session to the callback as requested
+    callback(session?.user ?? null, session)
   })
 }
-

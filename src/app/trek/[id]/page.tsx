@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase';
+import { createClient } from '@/utils/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 import { Heart, Share2, MessageCircle, Camera } from 'lucide-react';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat } from '@/lib/joinTrek';
@@ -27,12 +28,13 @@ const _getDifficultyColor = (level: string) => {
 export default function TrekDetailPage() {
   const { id } = useParams();
   const router = useRouter();
+  const { user } = useAuth();
+  const [supabase] = useState(() => createClient());
   const [trek, setTrek] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: string]: boolean }>({});
-  const [userId, setUserId] = useState<string | null>(null);
 
   const DEFAULT_IMAGE = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
@@ -54,16 +56,11 @@ export default function TrekDetailPage() {
     };
 
     if (id) fetchTrek();
-  }, [id]);
+  }, [id, supabase]);
 
   useEffect(() => {
     const initFavoriteStatus = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
       if (user) {
-        setUserId(user.id);
         const { data, error } = await supabase
           .from('favorites')
           .select('*')
@@ -78,10 +75,10 @@ export default function TrekDetailPage() {
     };
 
     initFavoriteStatus();
-  }, [id]);
+  }, [id, user, supabase]);
 
   const toggleFavorite = async () => {
-    if (!userId) {
+    if (!user) {
       alert('Please log in to favorite this trek.');
       return;
     }
@@ -90,7 +87,7 @@ export default function TrekDetailPage() {
       const { error } = await supabase
         .from('favorites')
         .delete()
-        .eq('user_id', userId)
+        .eq('user_id', user.id)
         .eq('trek_id', id);
 
       if (!error) {
@@ -99,7 +96,7 @@ export default function TrekDetailPage() {
     } else {
       const { error } = await supabase
         .from('favorites')
-        .insert([{ user_id: userId, trek_id: id }]);
+        .insert([{ user_id: user.id, trek_id: id }]);
 
       if (!error) {
         setIsLiked(true);
@@ -114,14 +111,14 @@ export default function TrekDetailPage() {
 
   const handleJoinTrek = () => setIsModalOpen(true);
   const handleConfirmJoin = async (date: string) => {
-    if (!userId) {
+    if (!user) {
       alert('Please log in to join this trek.');
       return;
     }
 
     // Call shared join function
     const result = await joinTrekBatchAndChat({
-      userId,
+      userId: user.id,
       trekId: id as string,
       trekTitle: trek?.title || 'this trek',
       date
@@ -151,7 +148,7 @@ export default function TrekDetailPage() {
   };
 
   const handleChat = async () => {
-    if (!userId) {
+    if (!user) {
       alert('Please log in to chat.');
       return;
     }
@@ -167,7 +164,7 @@ export default function TrekDetailPage() {
             conversations!inner ( id )
           )
         `)
-        .eq("user_id", userId)
+        .eq("user_id", user.id)
         .eq("trek_batches.trek_id", id)
         .maybeSingle();
 
@@ -376,7 +373,8 @@ export default function TrekDetailPage() {
                       <MessageCircle className="w-5 h-5 text-slate-600" />
                       <span className="text-sm text-slate-600">Chat</span>
                     </button>
-                    <button className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50">
+                    <button className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50"
+                    >
                       <Camera className="w-5 h-5 text-slate-600" />
                       <span className="text-sm text-slate-600">Photos</span>
                     </button>

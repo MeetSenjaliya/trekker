@@ -66,9 +66,9 @@ export default function EditProfilePage() {
             bio: data.bio || '',
             favoriteTypes: favorites,
             emergencyContact: {
-              name: data.emergency_contact_name || '',
-              relationship: data.emergency_contact_relationship || '',
-              phone: data.emergency_contact_phone || ''
+              name: data.emergency_contact || '',
+              relationship: '', // Not in schema
+              phone: data.emergency_no || ''
             },
             privacy: data.privacy_setting || 'Public'
           });
@@ -183,13 +183,14 @@ export default function EditProfilePage() {
         email: formData.email,
         experience_level: formData.experience,
         bio: formData.bio,
-        favorite_trek_types: favoriteTrekTypes,
-        emergency_contact_name: formData.emergencyContact.name,
-        emergency_contact_relationship: formData.emergencyContact.relationship,
-        emergency_contact_phone: formData.emergencyContact.phone,
-        privacy_setting: formData.privacy,
+        // favorite_trek_types: favoriteTrekTypes, // Not in schema
+        emergency_contact: formData.emergencyContact.name,
+        // emergency_contact_relationship: formData.emergencyContact.relationship, // Not in schema
+        emergency_no: formData.emergencyContact.phone,
+        // privacy_setting: formData.privacy, // Not in schema
         avatar_url: currentAvatarUrl,
-        updated_at: new Date().toISOString(),
+        // favorite_trek_types: favoriteTrekTypes, // Not in schema
+        // updated_at: new Date().toISOString(), // TRIGGER will handle this or default
       };
 
       const { error } = await supabase

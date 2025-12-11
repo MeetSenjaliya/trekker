@@ -1,11 +1,12 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { User } from '@supabase/supabase-js'
-import { getCurrentUser, onAuthStateChange } from '@/lib/auth'
+import { User, Session } from '@supabase/supabase-js'
+import { createClient } from '@/utils/supabase/client'
 
 interface AuthContextType {
   user: User | null
+  session: Session | null
   loading: boolean
   signOut: () => Promise<void>
 }
@@ -13,41 +14,40 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const supabase = createClient()
+
   const [user, setUser] = useState<User | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Get initial user
-    getCurrentUser().then((user) => {
-      setUser(user)
+    // Get initial session
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      setUser(data.session?.user ?? null)
       setLoading(false)
     })
 
     // Listen for auth changes
-    const { data: { subscription } } = onAuthStateChange((user) => {
-      setUser(user)
-      setLoading(false)
-    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setSession(session)
+        setUser(session?.user ?? null)
+        setLoading(false)
+      }
+    )
 
-    return () => {
-      subscription.unsubscribe()
-    }
+    return () => subscription.unsubscribe()
   }, [])
 
   const signOut = async () => {
-    const { signOut: authSignOut } = await import('@/lib/auth')
-    await authSignOut()
+    await supabase.auth.signOut()
     setUser(null)
-  }
-
-  const value = {
-    user,
-    loading,
-    signOut,
+    setSession(null)
   }
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider value={{ user, session, loading, signOut }}>
       {children}
     </AuthContext.Provider>
   )
@@ -55,9 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext)
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider')
-  }
+  if (!context) throw new Error('useAuth must be used inside AuthProvider')
+
   return context
 }
-
