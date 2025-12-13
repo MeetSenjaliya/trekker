@@ -145,28 +145,52 @@ export default function EditProfilePage() {
       if (avatarFile) {
         setUploading(true);
         const fileExt = avatarFile.name.split('.').pop();
-        // Use consistent filename to avoid filling storage
-        // Add timestamp to force cache refresh
-        const fileName = `${user.id}-${Date.now()}.${fileExt}`;
+        const fileName = `${Date.now()}.${fileExt}`;
+        const filePath = `${user.id}/${fileName}`;
 
-        // Remove old avatar if exists (optional cleanup)
-        // const { data: oldFiles } = await supabase.storage.from('avatars').list(user.id);
-        // if (oldFiles && oldFiles.length > 0) {
-        //   await supabase.storage.from('avatars').remove(oldFiles.map(f => `${user.id}/${f.name}`));
-        // }
+        // 1. Remove old avatar(s) if exists
+        try {
+          const { data: oldFiles, error: listError } = await supabase.storage
+            .from('avatars')
+            .list(user.id);
+
+          if (listError) {
+            console.warn('Error listing old files (ignoring):', listError);
+          } else if (oldFiles && oldFiles.length > 0) {
+            const filesToRemove = oldFiles.map(f => `${user.id}/${f.name}`);
+            console.log('Removing old avatars:', filesToRemove);
+
+            const { error: removeError } = await supabase.storage
+              .from('avatars')
+              .remove(filesToRemove);
+
+            if (removeError) {
+              console.warn('Error removing old files:', removeError);
+            }
+          }
+        } catch (err) {
+          console.warn('Unexpected error during cleanup:', err);
+        }
+
+        console.log('Uploading file:', filePath);
 
         const { error: uploadError, data } = await supabase.storage
           .from('avatars')
-          .upload(fileName, avatarFile, {
+          .upload(filePath, avatarFile, {
             upsert: true,
             cacheControl: '3600'
           });
 
-        if (uploadError) throw uploadError;
+        if (uploadError) {
+          console.error('Upload Error:', uploadError);
+          throw new Error(`Upload failed: ${uploadError.message}`);
+        }
 
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
-          .getPublicUrl(fileName);
+          .getPublicUrl(filePath);
+
+        console.log('File uploaded, public URL:', publicUrl);
 
         currentAvatarUrl = publicUrl;
         setUploading(false);
