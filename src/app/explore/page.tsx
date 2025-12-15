@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import TrekCard from '@/components/ui/TrekCard';
 import FilterSection from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
+import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 
 const DEFAULT_IMAGE_URL =
   'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
@@ -16,11 +17,14 @@ type Trek = {
   cover_image_url?: string;
   location: string;
   difficulty: string;
-  participants_joined?: number;
+  current_participants?: number;
   max_participants?: number;
   rating?: number;
   estimated_cost?: number;
-  trek_batches?: { batch_date: string }[];
+  trek_batches?: {
+    batch_date: string;
+  }[];
+  real_participant_count?: number;
 };
 
 export default function ExplorePage() {
@@ -57,7 +61,7 @@ export default function ExplorePage() {
       query = query.eq('difficulty', filterValues.difficulty);
     }
     if (filterValues.minParticipants) {
-      query = query.gte('participants_joined', parseInt(filterValues.minParticipants));
+      query = query.gte('current_participants', parseInt(filterValues.minParticipants));
     }
 
     const from = (page - 1) * TREKS_PER_PAGE;
@@ -68,7 +72,14 @@ export default function ExplorePage() {
     if (error) {
       console.error('Error fetching treks:', error.message);
     } else {
-      setTreks(data);
+      // Fetch participant counts in parallel
+      const treksWithCounts = await Promise.all(
+        (data || []).map(async (trek) => {
+          const count = await getParticipantCount(trek.id);
+          return { ...trek, real_participant_count: count };
+        })
+      );
+      setTreks(treksWithCounts);
       setTotalPages(Math.ceil((count || 0) / TREKS_PER_PAGE));
       setTotalCount(count || 0);
     }
@@ -114,13 +125,15 @@ export default function ExplorePage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
             {treks.map((trek) => {
-              // Find the earliest upcoming batch date
-              const upcomingBatches = trek.trek_batches
-                ?.map(b => b.batch_date)
-                .sort()
-                .filter(d => new Date(d) >= new Date());
+              // Find the earliest upcoming batch
+              const batches = trek.trek_batches || [];
+              const upcomingBatches = batches
+                .filter(b => new Date(b.batch_date) >= new Date())
+                .sort((a, b) => new Date(a.batch_date).getTime() - new Date(b.batch_date).getTime());
 
-              const nextDate = upcomingBatches?.[0] || 'No upcoming dates';
+              const nextBatch = upcomingBatches[0];
+              const nextDate = nextBatch ? nextBatch.batch_date : 'No upcoming dates';
+
               const dateDisplay = nextDate !== 'No upcoming dates'
                 ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                 : nextDate;
@@ -136,7 +149,7 @@ export default function ExplorePage() {
                   location={trek.location}
                   difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
                   participants={{
-                    current: trek.participants_joined || 0,
+                    current: trek.real_participant_count || 0,
                     max: trek.max_participants ?? 0,
                   }}
                   rating={trek.rating}

@@ -7,6 +7,7 @@ import { Calendar, MapPin, Users, Star, ArrowRight } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { joinTrekBatchAndChat } from '@/lib/joinTrek';
 import ConfirmationModal from './ConfirmationModal';
+import { getDisplayParticipantCount } from '@/lib/utils';
 
 interface TrekCardProps {
   id: string;
@@ -205,7 +206,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
           </div>
           <div className="flex items-center text-sm text-slate-600">
             <Users className="w-4 h-4 mr-2 text-slate-400" />
-            {participants.current}/{participants.max} joined
+            {getDisplayParticipantCount(participants.current)}/{participants.max} joined
             {isFull && <span className="ml-2 text-red-600 font-medium">(Full)</span>}
           </div>
         </div>

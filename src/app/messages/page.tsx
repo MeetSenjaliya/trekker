@@ -4,7 +4,8 @@ import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Send, MessageCircle, User, MoreVertical, Phone, Video, Users } from 'lucide-react';
+import { Send, MessageCircle, User, MoreVertical, Phone, Video, Users, Trash2 } from 'lucide-react';
+import { leaveTrek } from '@/lib/joinTrek';
 
 /**
  * Enhanced MessagesPage
@@ -625,6 +626,28 @@ function MessagesPageContent() {
     return { name: conv.name || 'Group Chat', avatar: null };
   };
 
+  // Handle leaving a trek
+  const handleLeaveTrek = async (e: React.MouseEvent, conv: Conversation) => {
+    e.stopPropagation();
+    if (!confirm('Are you sure you want to leave this trek? You will be removed from the group chat.')) {
+      return;
+    }
+
+    const result = await leaveTrek(user!.id, conv.batch_id, conv.id);
+
+    if (result.success) {
+      // Update local state
+      setConversations(prev => prev.filter(c => c.id !== conv.id));
+      if (selectedConversation?.id === conv.id) {
+        setSelectedConversation(null);
+      }
+      alert(result.message);
+    } else {
+      alert(result.message);
+    }
+  };
+
+
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -658,21 +681,33 @@ function MessagesPageContent() {
                   {conversations.map(conv => {
                     const display = getConversationDisplay(conv);
                     return (
-                      <button
+                      <div
                         key={conv.id}
-                        onClick={() => setSelectedConversation(conv)}
-                        className={`w-full p-4 flex items-center gap-3 hover:bg-slate-50 transition-colors border-l-4 ${selectedConversation?.id === conv.id ? 'bg-blue-50 border-l-blue-500' : 'border-l-transparent'}`}
+                        className={`group relative w-full flex items-center hover:bg-slate-50 transition-colors border-l-4 ${selectedConversation?.id === conv.id ? 'bg-blue-50 border-l-blue-500' : 'border-l-transparent'}`}
                       >
-                        <div className="relative">
-                          <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
-                            <Users className="w-6 h-6 text-blue-600" />
+                        <button
+                          onClick={() => setSelectedConversation(conv)}
+                          className="flex-1 p-4 flex items-center gap-3 text-left w-full"
+                        >
+                          <div className="relative">
+                            <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                              <Users className="w-6 h-6 text-blue-600" />
+                            </div>
                           </div>
-                        </div>
-                        <div className="flex-1 text-left">
-                          <h3 className="font-semibold text-slate-900 truncate">{display.name}</h3>
-                          <p className="text-sm text-slate-500 truncate">{conv.participants.length} participants</p>
-                        </div>
-                      </button>
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-semibold text-slate-900 truncate">{display.name}</h3>
+                            <p className="text-sm text-slate-500 truncate">{conv.participants.length} participants</p>
+                          </div>
+                        </button>
+
+                        <button
+                          onClick={(e) => handleLeaveTrek(e, conv)}
+                          className="absolute right-2 p-2 text-slate-400 hover:text-red-500 hover:bg-slate-100 rounded-full opacity-0 group-hover:opacity-100 transition-all"
+                          title="Leave Trek"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>

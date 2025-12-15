@@ -5,6 +5,7 @@ import Link from 'next/link';
 import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
 import { supabase } from '@/lib/supabase';
+import { getParticipantCount } from '@/lib/utils';
 
 const DEFAULT_IMAGE_URL = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
@@ -19,7 +20,10 @@ interface Trek {
   max_participants: number;
   rating: number;
   estimated_cost: number;
-  trek_batches?: { batch_date: string }[];
+  trek_batches?: {
+    batch_date: string;
+  }[];
+  real_participant_count?: number;
 }
 
 export default function HomePage() {
@@ -35,8 +39,15 @@ export default function HomePage() {
 
       if (error) {
         console.error('Error fetching treks:', error.message);
-      } else {
-        setTreks(data as Trek[]);
+      } else if (data) {
+        // Fetch participant counts in parallel
+        const treksWithCounts = await Promise.all(
+          data.map(async (trek) => {
+            const count = await getParticipantCount(trek.id);
+            return { ...trek, real_participant_count: count };
+          })
+        );
+        setTreks(treksWithCounts as Trek[]);
       }
 
       setLoading(false);
@@ -68,16 +79,19 @@ export default function HomePage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
               {treks.map((trek) => {
-                // Find the earliest upcoming batch date
-                const upcomingBatches = trek.trek_batches
-                  ?.map(b => b.batch_date)
-                  .sort()
-                  .filter(d => new Date(d) >= new Date());
+                // Find the earliest upcoming batch
+                const batches = trek.trek_batches || [];
+                const upcomingBatches = batches
+                  .filter(b => new Date(b.batch_date) >= new Date())
+                  .sort((a, b) => new Date(a.batch_date).getTime() - new Date(b.batch_date).getTime());
 
-                const nextDate = upcomingBatches?.[0] || 'No upcoming dates';
+                const nextBatch = upcomingBatches[0];
+                const nextDate = nextBatch ? nextBatch.batch_date : 'No upcoming dates';
                 const dateDisplay = nextDate !== 'No upcoming dates'
                   ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                   : nextDate;
+
+
 
                 return (
                   <TrekCard
@@ -90,11 +104,12 @@ export default function HomePage() {
                     location={trek.location}
                     difficulty={trek.difficulty}
                     participants={{
-                      current: trek.current_participants || 0,
+                      current: trek.real_participant_count || 0,
                       max: trek.max_participants,
                     }}
                     rating={trek.rating}
                     price={trek.estimated_cost}
+                    next_batch_date={nextDate !== 'No upcoming dates' ? nextDate : undefined}
                   />
                 );
               })}

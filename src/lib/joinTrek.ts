@@ -63,3 +63,78 @@ export async function joinTrekBatchAndChat(
         };
     }
 }
+
+/**
+ * Shared function to leave a trek batch and automatically remove user from chat
+ * @param userId - User ID
+ * @param batchId - Trek Batch ID
+ * @param conversationId - Optional Conversation ID (if known, saves a query)
+ * @returns Result object with success status
+ */
+export async function leaveTrek(
+    userId: string,
+    batchId?: string,
+    conversationId?: string
+): Promise<{ success: boolean; message: string }> {
+    const supabase = createClient();
+
+    try {
+        if (!userId) throw new Error("User ID is required");
+
+        // 1. If conversationId is missing but batchId is present, try to find it
+        // This is important because removing from chat is a separate table operation
+        let targetConversationId = conversationId;
+
+        if (!targetConversationId && batchId) {
+            const { data: convData } = await supabase
+                .from('conversations')
+                .select('id')
+                .eq('batch_id', batchId)
+                .single();
+            if (convData) {
+                targetConversationId = convData.id;
+            }
+        }
+
+        // 2. Remove from conversation_participants if we have a conversation ID
+        if (targetConversationId) {
+            const { error: convError } = await supabase
+                .from('conversation_participants')
+                .delete()
+                .eq('conversation_id', targetConversationId)
+                .eq('user_id', userId);
+
+            if (convError) {
+                console.error('Error leaving conversation:', convError);
+                // We continue to try removing from trek participants even if chat fails
+                // But ideally this should be a transaction if possible, or we warn.
+            }
+        }
+
+        // 3. Remove from trek_participants (if batch_id exists)
+        // Note: Sometimes we might just have conversationId (from messages page) and need to find batchId?
+        // But for safe deletion, usually we want batchId.
+        // If batchId is provided, delete from trek_participants
+        if (batchId) {
+            const { error: trekError } = await supabase
+                .from('trek_participants')
+                .delete()
+                .eq('batch_id', batchId)
+                .eq('user_id', userId);
+
+            if (trekError) {
+                console.error('Error leaving trek participant:', trekError);
+                throw trekError;
+            }
+        } else if (!targetConversationId) {
+            // If we have neither batchId nor conversationId resolved, we can't do anything
+            throw new Error("Insufficient information to leave trek (missing batchId and conversationId)");
+        }
+
+        return { success: true, message: "Successfully left the trek." };
+
+    } catch (error: any) {
+        console.error('Unexpected error leaving trek:', error);
+        return { success: false, message: "Failed to leave trek. " + error.message };
+    }
+}

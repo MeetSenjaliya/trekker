@@ -6,7 +6,8 @@ import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Heart, Share2, MessageCircle, Camera } from 'lucide-react';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
-import { joinTrekBatchAndChat } from '@/lib/joinTrek';
+import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
+import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 // import Chat from '@/components/ui/Chat';
 
 
@@ -35,6 +36,8 @@ export default function TrekDetailPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: string]: boolean }>({});
+  const [joinedBatchId, setJoinedBatchId] = useState<string | null>(null);
+  const [realParticipantCount, setRealParticipantCount] = useState<number>(0);
 
   const DEFAULT_IMAGE = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
@@ -50,6 +53,9 @@ export default function TrekDetailPage() {
         console.error('Error fetching trek:', error.message);
       } else {
         setTrek(data);
+        // Fetch real participant count
+        const count = await getParticipantCount(id as string);
+        setRealParticipantCount(count);
       }
 
       setLoading(false);
@@ -57,6 +63,28 @@ export default function TrekDetailPage() {
 
     if (id) fetchTrek();
   }, [id, supabase]);
+
+  // Check if already joined
+  useEffect(() => {
+    if (!user || !id) return;
+
+    const checkJoinStatus = async () => {
+      const { data, error } = await supabase
+        .from('trek_participants')
+        .select('batch_id, trek_batches!inner(trek_id)')
+        .eq('user_id', user.id)
+        .eq('trek_batches.trek_id', id)
+        .maybeSingle();
+
+      if (data) {
+        setJoinedBatchId(data.batch_id);
+      } else {
+        setJoinedBatchId(null);
+      }
+    };
+
+    checkJoinStatus();
+  }, [id, user, supabase, isModalOpen]); // Re-check when modal closes (after join)
 
   useEffect(() => {
     const initFavoriteStatus = async () => {
@@ -346,24 +374,60 @@ export default function TrekDetailPage() {
                   <div className="mb-6">
                     <p className="text-sm text-slate-600 mb-1">Participants</p>
                     <p className="text-sm text-slate-600 mb-2">
-                      {trek.current_participants || 0}/{trek.max_participants} slots filled
+                      {getDisplayParticipantCount(realParticipantCount)}/{trek.max_participants} slots filled
                     </p>
                     <div className="w-full bg-slate-200 rounded-full h-2">
                       <div
                         className="bg-blue-500 h-2 rounded-full"
                         style={{
-                          width: `${((trek.current_participants || 0) / trek.max_participants) * 100}%`,
+                          width: `${(getDisplayParticipantCount(realParticipantCount) / trek.max_participants) * 100}%`,
                         }}
                       />
                     </div>
                   </div>
 
-                  <button
-                    onClick={handleJoinTrek}
-                    className="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 rounded-full font-semibold text-base"
-                  >
-                    Join Trek
-                  </button>
+                  {joinedBatchId ? (
+                    <div className="flex gap-2">
+                      <button
+                        className="flex-1 bg-green-500 text-white py-3 rounded-full font-semibold text-base cursor-default"
+                      >
+                        Joined
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm("Are you sure you want to leave this trek?")) return;
+
+                          const result = await leaveTrek(user!.id, joinedBatchId);
+
+                          if (result.success) {
+                            setJoinedBatchId(null);
+
+                            // Refresh participant count
+                            const { data: refreshedTrek } = await supabase
+                              .from('treks')
+                              .select('*, trek_batches(batch_date)')
+                              .eq('id', id)
+                              .single();
+                            if (refreshedTrek) setTrek(refreshedTrek);
+
+                            alert(result.message);
+                          } else {
+                            alert(result.message);
+                          }
+                        }}
+                        className="px-6 bg-red-100 hover:bg-red-200 text-red-600 py-3 rounded-full font-semibold text-base transition-colors"
+                      >
+                        Leave
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleJoinTrek}
+                      className="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 rounded-full font-semibold text-base"
+                    >
+                      Join Trek
+                    </button>
+                  )}
 
                   <div className="flex gap-3 mt-4">
                     <button
