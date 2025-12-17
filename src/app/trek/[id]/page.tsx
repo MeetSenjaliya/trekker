@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Heart, Share2, MessageCircle, Camera } from 'lucide-react';
+import SnowEffect from '@/components/ui/SnowEffect';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
@@ -14,15 +15,15 @@ import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 const _getDifficultyColor = (level: string) => {
   switch (level) {
     case 'Easy':
-      return 'bg-green-100 text-green-800';
+      return 'bg-green-500/20 text-green-300 border border-green-500/30';
     case 'Moderate':
-      return 'bg-purple-100 text-purple-800';
+      return 'bg-purple-500/20 text-purple-300 border border-purple-500/30';
     case 'Hard':
-      return 'bg-red-100 text-red-800';
+      return 'bg-red-500/20 text-red-300 border border-red-500/30';
     case 'Expert':
-      return 'bg-black text-white';
+      return 'bg-black/50 text-white border border-white/20';
     default:
-      return 'bg-gray-100 text-gray-800';
+      return 'bg-gray-500/20 text-gray-300 border border-gray-500/30';
   }
 };
 
@@ -249,12 +250,23 @@ export default function TrekDetailPage() {
     }
   };
 
-  if (loading) return <p className="text-center py-10 text-gray-500">Loading trek...</p>;
-  if (!trek) return <p className="text-center py-10 text-red-500">Trek not found.</p>;
+  if (loading) return (
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+      <SnowEffect />
+      <p className="text-center py-10 text-blue-100/70 relative z-10">Loading trek...</p>
+    </div>
+  );
+  if (!trek) return (
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+      <SnowEffect />
+      <p className="text-center py-10 text-red-400 relative z-10">Trek not found.</p>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <main className="flex-1">
+    <div className="min-h-screen relative overflow-hidden text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+      <SnowEffect />
+      <main className="flex-1 pt-20 relative z-10">
         <div className="px-4 sm:px-6 lg:px-40 flex justify-center py-12">
           <div className="max-w-6xl w-full flex flex-col gap-8">
             {/* Hero Image */}
@@ -280,8 +292,8 @@ export default function TrekDetailPage() {
 
             {/* Title and Description */}
             <div className="px-4">
-              <h1 className="text-3xl md:text-4xl font-bold text-slate-900 mb-2">{trek.title}</h1>
-              <p className="text-base text-slate-600 leading-relaxed">{trek.description}</p>
+              <h1 className="text-3xl md:text-4xl font-bold text-white mb-2">{trek.title}</h1>
+              <p className="text-base text-gray-300 leading-relaxed">{trek.description}</p>
             </div>
 
             {/* Grid */}
@@ -290,8 +302,8 @@ export default function TrekDetailPage() {
               <div className="flex flex-col gap-10">
                 {/* Trek Info */}
                 <div className="flex flex-col gap-4">
-                  <h2 className="text-2xl font-bold text-slate-900">Trek Details</h2>
-                  <div className="border-t border-slate-200">
+                  <h2 className="text-2xl font-bold text-white">Trek Details</h2>
+                  <div className="border-t border-white/10">
                     <Detail label="Upcoming Dates" value={
                       trek.trek_batches && trek.trek_batches.length > 0
                         ? trek.trek_batches
@@ -305,12 +317,12 @@ export default function TrekDetailPage() {
                       valueElement={
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${trek.difficulty === 'Easy'
-                            ? 'bg-green-100 text-green-800'
+                            ? 'bg-green-500/20 text-green-300 border border-green-500/30'
                             : trek.difficulty === 'Moderate'
-                              ? 'bg-yellow-100 text-yellow-800'
+                              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                               : trek.difficulty === 'Hard'
-                                ? 'bg-red-100 text-red-800'
-                                : 'bg-purple-100 text-purple-800'
+                                ? 'bg-red-500/20 text-red-300 border border-red-500/30'
+                                : 'bg-black/50 text-white border border-white/20'
                             }`}
                         >
                           {trek.difficulty}
@@ -331,8 +343,8 @@ export default function TrekDetailPage() {
                 {/* Plan */}
                 {trek.plan && (
                   <div className="flex flex-col gap-4">
-                    <h2 className="text-2xl font-bold text-slate-900">Trek Plan</h2>
-                    <p className="text-slate-600 text-base">{trek.plan}</p>
+                    <h2 className="text-2xl font-bold text-white">Trek Plan</h2>
+                    <p className="text-gray-300 text-base">{trek.plan}</p>
                   </div>
                 )}
 
@@ -340,8 +352,8 @@ export default function TrekDetailPage() {
                 {/* Gear Checklist */}
                 {trek.gear_checklist?.length > 0 && (
                   <div className="flex flex-col gap-4">
-                    <h2 className="text-2xl font-bold text-slate-900">Gear Checklist</h2>
-                    <p className="text-sm text-slate-600">
+                    <h2 className="text-2xl font-bold text-white">Gear Checklist</h2>
+                    <p className="text-sm text-gray-400">
                       Bring these items. Check them off as you pack:
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -351,9 +363,9 @@ export default function TrekDetailPage() {
                             type="checkbox"
                             checked={checkedItems[item] || false}
                             onChange={() => handleCheckboxChange(item)}
-                            className="h-5 w-5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            className="h-5 w-5 rounded border-white/20 bg-white/5 text-blue-500 focus:ring-blue-500 checked:bg-blue-500 checked:border-transparent"
                           />
-                          <span className="text-slate-700">{item}</span>
+                          <span className="text-gray-300">{item}</span>
                         </label>
                       ))}
                     </div>
@@ -363,20 +375,20 @@ export default function TrekDetailPage() {
 
               {/* RIGHT: Sidebar */}
               <aside className="flex flex-col gap-8">
-                <div className="rounded-2xl border border-slate-200 bg-white p-6 sticky top-12">
+                <div className="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md p-6 sticky top-24 shadow-xl">
                   <div className="mb-6">
-                    <p className="text-sm text-slate-600">Estimated Cost</p>
-                    <p className="text-3xl font-bold text-slate-900">
-                      ₹{trek.estimated_cost} <span className="text-base text-slate-500">/ person</span>
+                    <p className="text-sm text-gray-400">Estimated Cost</p>
+                    <p className="text-3xl font-bold text-white">
+                      ₹{trek.estimated_cost} <span className="text-base text-gray-500">/ person</span>
                     </p>
                   </div>
 
                   <div className="mb-6">
-                    <p className="text-sm text-slate-600 mb-1">Participants</p>
-                    <p className="text-sm text-slate-600 mb-2">
+                    <p className="text-sm text-gray-400 mb-1">Participants</p>
+                    <p className="text-sm text-gray-400 mb-2">
                       {getDisplayParticipantCount(realParticipantCount)}/{trek.max_participants} slots filled
                     </p>
-                    <div className="w-full bg-slate-200 rounded-full h-2">
+                    <div className="w-full bg-white/10 rounded-full h-2">
                       <div
                         className="bg-blue-500 h-2 rounded-full"
                         style={{
@@ -415,7 +427,7 @@ export default function TrekDetailPage() {
                             alert(result.message);
                           }
                         }}
-                        className="px-6 bg-red-100 hover:bg-red-200 text-red-600 py-3 rounded-full font-semibold text-base transition-colors"
+                        className="px-6 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 py-3 rounded-full font-semibold text-base transition-colors"
                       >
                         Leave
                       </button>
@@ -423,7 +435,7 @@ export default function TrekDetailPage() {
                   ) : (
                     <button
                       onClick={handleJoinTrek}
-                      className="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 rounded-full font-semibold text-base"
+                      className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-full font-semibold text-base shadow-lg hover:shadow-blue-500/50 transition-all"
                     >
                       Join Trek
                     </button>
@@ -432,15 +444,15 @@ export default function TrekDetailPage() {
                   <div className="flex gap-3 mt-4">
                     <button
                       onClick={handleChat}
-                      className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50"
+                      className="flex-1 flex items-center justify-center gap-2 bg-white/5 border border-white/10 rounded-full p-2 hover:bg-white/10 transition-colors text-white"
                     >
-                      <MessageCircle className="w-5 h-5 text-slate-600" />
-                      <span className="text-sm text-slate-600">Chat</span>
+                      <MessageCircle className="w-5 h-5 text-gray-300" />
+                      <span className="text-sm text-gray-300">Chat</span>
                     </button>
-                    <button className="flex-1 flex items-center justify-center gap-2 bg-white border rounded-full p-2 hover:bg-slate-50"
+                    <button className="flex-1 flex items-center justify-center gap-2 bg-white/5 border border-white/10 rounded-full p-2 hover:bg-white/10 transition-colors text-white"
                     >
-                      <Camera className="w-5 h-5 text-slate-600" />
-                      <span className="text-sm text-slate-600">Photos</span>
+                      <Camera className="w-5 h-5 text-gray-300" />
+                      <span className="text-sm text-gray-300">Photos</span>
                     </button>
                   </div>
                 </div>
@@ -473,9 +485,9 @@ function Detail({
   valueElement?: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[150px_1fr] gap-4 py-3 border-b border-slate-200">
-      <p className="text-sm text-slate-500">{label}</p>
-      <p className="text-sm text-slate-800">
+    <div className="grid grid-cols-[150px_1fr] gap-4 py-3 border-b border-white/10">
+      <p className="text-sm text-gray-400">{label}</p>
+      <p className="text-sm text-gray-200">
         {valueElement || value}
       </p>
     </div>

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Heart, MapPin, Users, ArrowRight } from 'lucide-react';
+import SnowEffect from '@/components/ui/SnowEffect';
 import Link from 'next/link';
 
 interface Trek {
@@ -96,25 +97,26 @@ export default function FavoritesPage() {
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {
       case 'Easy':
-        return 'bg-green-100 text-green-800';
+        return 'bg-green-500/20 text-green-300 border border-green-500/30';
       case 'Moderate':
-        return 'bg-yellow-100 text-yellow-800';
+        return 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30';
       case 'Hard':
-        return 'bg-red-100 text-red-800';
+        return 'bg-red-500/20 text-red-300 border border-red-500/30';
       case 'Expert':
-        return 'bg-purple-100 text-purple-800';
+        return 'bg-purple-500/20 text-purple-300 border border-purple-500/30';
       default:
-        return 'bg-gray-100 text-gray-800';
+        return 'bg-gray-500/20 text-gray-300 border border-gray-500/30';
     }
   };
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#ffffff] flex items-center justify-center px-4">
-        <div className="text-center">
-          <Heart className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-          <h2 className="text-2xl font-bold text-[#111618] mb-2">Please Log In</h2>
-          <p className="text-[#617d89]">You need to log in to view your favorite treks.</p>
+      <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+        <SnowEffect />
+        <div className="text-center relative z-10 bg-white/5 backdrop-blur-md p-8 rounded-2xl border border-white/10 shadow-2xl">
+          <Heart className="w-16 h-16 text-gray-500 mx-auto mb-4" />
+          <h2 className="text-2xl font-bold text-white mb-2">Please Log In</h2>
+          <p className="text-blue-100/70">You need to log in to view your favorite treks.</p>
         </div>
       </div>
     );
@@ -122,25 +124,28 @@ export default function FavoritesPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#ffffff] flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#27b1ec] mx-auto mb-4"></div>
-          <p className="text-[#617d89]">Loading your favorite treks...</p>
+      <div className="min-h-screen relative overflow-hidden flex items-center justify-center" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+        <SnowEffect />
+        <div className="text-center relative z-10">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
+          <p className="text-blue-100/70">Loading your favorite treks...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#ffffff] text-[#111618]">
+    <div className="min-h-screen relative overflow-hidden text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+      <SnowEffect />
+
       {/* Header */}
-      <div className="bg-white shadow-sm border-b border-[#f0f3f4]">
+      <div className="bg-white/5 backdrop-blur-md border-b border-white/10 relative z-10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-40 py-12">
           <div className="mb-10">
-            <h1 className="text-4xl font-extrabold tracking-tight text-[#111618]">
+            <h1 className="text-4xl font-extrabold tracking-tight text-white drop-shadow-md">
               My Favorite Treks
             </h1>
-            <p className="mt-2 text-lg text-[#617d89]">
+            <p className="mt-2 text-lg text-blue-100/70 font-light">
               Your collection of saved and bookmarked adventures.
             </p>
           </div>
@@ -148,18 +153,18 @@ export default function FavoritesPage() {
       </div>
 
       {/* Content */}
-      <main className="flex-1 px-4 sm:px-6 lg:px-40 py-12">
+      <main className="flex-1 px-4 sm:px-6 lg:px-40 py-12 relative z-10">
         <div className="max-w-5xl mx-auto">
           {!favorites.length ? (
-            <div className="text-center py-16">
-              <Heart className="w-24 h-24 text-gray-300 mx-auto mb-6" />
-              <h2 className="text-2xl font-bold text-[#111618] mb-4">No Favorites Yet</h2>
-              <p className="text-[#617d89] mb-8 max-w-md mx-auto">
+            <div className="text-center py-16 bg-white/5 backdrop-blur-sm rounded-3xl border border-white/10">
+              <Heart className="w-24 h-24 text-gray-400/50 mx-auto mb-6" />
+              <h2 className="text-2xl font-bold text-white mb-4">No Favorites Yet</h2>
+              <p className="text-blue-100/60 mb-8 max-w-md mx-auto">
                 Start exploring treks and click the heart icon to save your favorites here.
               </p>
               <Link
                 href="/explore"
-                className="inline-flex items-center px-6 py-3 bg-[#27b1ec] text-white font-semibold rounded-lg hover:bg-opacity-90 transition-colors"
+                className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white font-semibold rounded-full hover:from-blue-500 hover:to-blue-400 transition-all shadow-lg hover:shadow-blue-500/25"
               >
                 Explore Treks
                 <ArrowRight className="ml-2 w-4 h-4" />
@@ -177,7 +182,7 @@ export default function FavoritesPage() {
                 if (!treks.length) return null;
 
                 return treks.map((trek) => (
-                  <div key={trek.id} className="flex flex-col md:flex-row items-center bg-white rounded-2xl shadow-lg overflow-hidden transition-shadow hover:shadow-2xl">
+                  <div key={trek.id} className="flex flex-col md:flex-row items-center bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl shadow-xl overflow-hidden transition-all hover:bg-white/10 hover:shadow-2xl hover:-translate-y-1">
                     {/* Image Section */}
                     <div className="md:w-1/3 w-full">
                       <img
@@ -195,28 +200,28 @@ export default function FavoritesPage() {
                     <div className="p-6 flex-1 flex flex-col justify-between">
                       <div>
                         <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold uppercase tracking-wider text-[#27b1ec]">
+                          <p className="text-sm font-semibold uppercase tracking-wider text-blue-300">
                             {trek.location}
                           </p>
                           <button
                             onClick={() => removeFavorite(trek.id)}
-                            className="text-[#617d89] hover:text-[#27b1ec] transition-colors"
+                            className="text-gray-400 hover:text-red-500 transition-colors bg-white/5 p-2 rounded-full hover:bg-white/10"
                             title="Remove from favorites"
                           >
                             <Heart className="w-6 h-6 fill-current text-red-500" />
                           </button>
                         </div>
 
-                        <h3 className="mt-2 text-2xl font-bold leading-tight text-[#111618]">
+                        <h3 className="mt-2 text-2xl font-bold leading-tight text-white">
                           {trek.title}
                         </h3>
 
                         <div className="flex flex-wrap gap-4 mt-3 mb-4">
-                          <div className="flex items-center gap-2 text-sm text-[#617d89]">
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
                             <MapPin className="w-4 h-4" />
                             <span>{trek.location}</span>
                           </div>
-                          <div className="flex items-center gap-2 text-sm text-[#617d89]">
+                          <div className="flex items-center gap-2 text-sm text-gray-300">
                             <Users className="w-4 h-4" />
                             <span>{trek.participants_joined || 0} joined</span>
                           </div>
@@ -230,7 +235,7 @@ export default function FavoritesPage() {
                       <div className="mt-6 flex items-center justify-between">
                         <Link
                           href={`/trek/${trek.id}`}
-                          className="inline-block rounded-full bg-[#27b1ec] px-6 py-3 text-base font-bold text-white shadow-md hover:bg-opacity-90 transition"
+                          className="inline-block rounded-full bg-blue-600 px-6 py-3 text-base font-bold text-white shadow-lg hover:bg-blue-500 transition-all hover:shadow-blue-500/50"
                         >
                           View Details
                         </Link>

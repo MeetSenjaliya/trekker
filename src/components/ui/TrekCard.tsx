@@ -16,7 +16,6 @@ interface TrekCardProps {
   image: string;
   date: string;
   location: string;
-
   difficulty: 'Easy' | 'Moderate' | 'Hard' | 'Expert';
   participants: {
     current: number;
@@ -29,7 +28,7 @@ interface TrekCardProps {
     avatar: string;
   };
   whatsappGroupLink?: string;
-  next_batch_date?: string; // ISO date string for next upcoming batch
+  next_batch_date?: string; 
 }
 
 const TrekCard: React.FC<TrekCardProps> = ({
@@ -63,30 +62,30 @@ const TrekCard: React.FC<TrekCardProps> = ({
     getUser();
   }, [supabase]);
 
+  // Updated Colors for Dark Mode (Translucent/Glassy look)
   const getDifficultyColor = (level: string) => {
     switch (level) {
       case 'Easy':
-        return 'bg-green-100 text-green-800';
+        return 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
       case 'Moderate':
-        return 'bg-yellow-100 text-yellow-800';
+        return 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30';
       case 'Hard':
-        return 'bg-red-100 text-red-800';
+        return 'bg-red-500/20 text-red-300 border border-red-500/30';
       case 'Expert':
-        return 'bg-purple-100 text-purple-800';
+        return 'bg-purple-500/20 text-purple-300 border border-purple-500/30';
       default:
-        return 'bg-gray-100 text-gray-800';
+        return 'bg-gray-500/20 text-gray-300 border border-gray-500/30';
     }
   };
 
   const isFull = participants.current >= participants.max;
 
   const handleJoinTrek = async () => {
-    // Re-check authentication at click time
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       alert('Please log in to join this trek.');
-      router.push('/login'); // Redirect to login page
+      router.push('/login'); 
       return;
     }
 
@@ -94,7 +93,6 @@ const TrekCard: React.FC<TrekCardProps> = ({
       return;
     }
 
-    // Check if next_batch_date exists
     if (!next_batch_date || next_batch_date === 'No upcoming dates') {
       alert('No upcoming batch dates available for this trek.');
       return;
@@ -103,7 +101,6 @@ const TrekCard: React.FC<TrekCardProps> = ({
     setJoining(true);
 
     try {
-      // Call shared join function with next batch date
       const result = await joinTrekBatchAndChat({
         userId: user.id,
         trekId: id,
@@ -111,11 +108,9 @@ const TrekCard: React.FC<TrekCardProps> = ({
         date: next_batch_date
       });
 
-      // Show result message
       alert(result.message);
 
       if (result.success && result.conversationId) {
-        // Redirect to chat
         router.push(`/messages?conversationId=${result.conversationId}`);
       }
     } finally {
@@ -123,7 +118,6 @@ const TrekCard: React.FC<TrekCardProps> = ({
     }
   };
 
-  // Keep modal-based join for compatibility (if needed in future)
   const handleConfirmJoin = async (date: string) => {
     if (!userId) {
       alert('Please log in to join this trek.');
@@ -141,129 +135,102 @@ const TrekCard: React.FC<TrekCardProps> = ({
 
     if (result.success) {
       setIsModalOpen(false);
-
       if (result.conversationId) {
         router.push(`/messages?conversationId=${result.conversationId}`);
       }
     }
   };
 
-
-
   return (
-    <div className="bg-white rounded-xl shadow-lg overflow-hidden transition-all duration-300 hover:shadow-2xl group">
+    // Changed: bg-white -> bg-white/5 backdrop-blur-md (Glassmorphism)
+    // Added border-white/10 for subtle edge definition
+    <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-[0_0_30px_rgba(0,0,0,0.5)] group h-full flex flex-col">
+      
       {/* Image Section */}
-      <div className="relative h-48 sm:h-56 overflow-hidden">
+      <div className="relative h-52 sm:h-60 overflow-hidden">
         <img
           src={image}
           alt={title}
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
         />
 
-        <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+        {/* Dark gradient overlay for text readability */}
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0f172a] via-transparent to-transparent opacity-80" />
 
-        {/* Date overlay */}
-        <div className="absolute top-4 left-4 bg-white/90 backdrop-blur-sm rounded-lg px-3 py-1">
-          <p className="text-xs font-medium text-slate-800 flex items-center gap-1">
-            <Calendar className="w-3 h-3" />
+        {/* Date overlay - Darker glass style */}
+        <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/10 rounded-lg px-3 py-1.5 shadow-lg">
+          <p className="text-xs font-semibold text-white flex items-center gap-1.5 tracking-wide">
+            <Calendar className="w-3 h-3 text-blue-400" />
             {date}
           </p>
         </div>
 
-        {/* Price overlay */}
-        {/* {price && (
-          <div className="absolute top-4 right-4 bg-blue-500 text-white rounded-lg px-3 py-1">
-            <p className="text-sm font-semibold">${price}</p>
-          </div>
-        )} */}
-
         {/* Rating overlay */}
         {rating && (
-          <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-sm rounded-lg px-2 py-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-            <div className="flex items-center gap-1">
-              <Star className="w-3 h-3 fill-yellow-400 text-yellow-400" />
-              <span className="text-xs font-medium text-slate-800">{rating}</span>
+          <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-md border border-white/10 rounded-lg px-2.5 py-1 transition-opacity duration-300">
+            <div className="flex items-center gap-1.5">
+              <Star className="w-3.5 h-3.5 fill-yellow-400 text-yellow-400" />
+              <span className="text-xs font-bold text-white">{rating}</span>
             </div>
           </div>
         )}
       </div>
 
       {/* Content Section */}
-      <div className="p-6">
-        <div className="flex items-start justify-between mb-3">
-          <h3 className="text-xl font-semibold text-slate-900 leading-tight group-hover:text-blue-600 transition-colors">
+      <div className="p-6 flex flex-col flex-grow">
+        <div className="flex items-start justify-between mb-4">
+          {/* Title Color: White */}
+          <h3 className="text-xl font-bold text-white leading-tight group-hover:text-blue-400 transition-colors">
             {title}
           </h3>
-          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getDifficultyColor(difficulty)}`}>
+          {/* Difficulty Badge */}
+          <span className={`inline-flex items-center px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getDifficultyColor(difficulty)}`}>
             {difficulty}
           </span>
         </div>
 
-        <div className="space-y-2 mb-4">
-          <div className="flex items-center text-sm text-slate-600">
-            <MapPin className="w-4 h-4 mr-2 text-slate-400" />
+        <div className="space-y-3 mb-5">
+          <div className="flex items-center text-sm text-gray-300">
+            <MapPin className="w-4 h-4 mr-2.5 text-blue-400" />
             {location}
           </div>
-          <div className="flex items-center text-sm text-slate-600">
-            <Users className="w-4 h-4 mr-2 text-slate-400" />
+          <div className="flex items-center text-sm text-gray-300">
+            <Users className="w-4 h-4 mr-2.5 text-blue-400" />
             {getDisplayParticipantCount(participants.current)}/{participants.max} joined
-            {isFull && <span className="ml-2 text-red-600 font-medium">(Full)</span>}
+            {isFull && <span className="ml-2 text-red-400 font-bold tracking-wide text-xs uppercase">(Full)</span>}
           </div>
         </div>
 
-        <p className="text-slate-700 text-sm leading-relaxed mb-4 line-clamp-3">
+        {/* Description: Light Gray text */}
+        <p className="text-gray-400 text-sm leading-relaxed mb-6 line-clamp-2">
           {description}
         </p>
 
-        {/* Organizer */}
-        {/* {organizer && (
-          <div className="flex items-center mb-4 p-3 bg-slate-50 rounded-lg">
-            <img
-              src={organizer.avatar}
-              alt={organizer.name}
-              className="w-8 h-8 rounded-full mr-3"
-            />
-            <div>
-              <p className="text-sm font-medium text-slate-900">Organized by</p>
-              <p className="text-xs text-slate-600">{organizer.name}</p>
-            </div>
-          </div>
-        )} */}
-
         {/* Action Buttons */}
-        <div className="flex gap-3">
+        <div className="mt-auto grid grid-cols-2 gap-3">
           <button
             onClick={handleJoinTrek}
             disabled={isFull || joining}
-            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-semibold transition-colors ${isFull || joining
-              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-              : 'bg-blue-500 hover:bg-blue-600 text-white shadow-md hover:shadow-lg'
+            className={`py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200 
+              ${isFull || joining
+              ? 'bg-gray-700 text-gray-400 cursor-not-allowed border border-gray-600'
+              : 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_20px_rgba(37,99,235,0.6)] border border-transparent'
               }`}
           >
-            {joining ? 'Joining...' : isFull ? 'Full' : 'Join Trek'}
+            {joining ? 'Joining...' : isFull ? 'Full' : 'Join Now'}
           </button>
 
+          {/* View Details: Transparent Glass Button */}
           <Link
             href={`/trek/${id}`}
-            className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-colors text-center"
+            className="py-2.5 px-4 bg-white/5 hover:bg-white/10 text-white border border-white/10 text-sm font-semibold rounded-lg transition-all duration-200 text-center flex items-center justify-center gap-2 group/btn"
           >
-            View Details
+            Details
+            <ArrowRight className="w-4 h-4 text-gray-400 group-hover/btn:text-white transition-colors" />
           </Link>
-
-
         </div>
-
-        {/* Learn More Link */}
-        <Link
-          href={`/trek/${id}`}
-          className="inline-flex items-center text-blue-500 hover:text-blue-600 font-semibold text-sm mt-4 group/link"
-        >
-          Learn More
-          <ArrowRight className="ml-1.5 w-4 h-4 transition-transform duration-200 group-hover/link:translate-x-1" />
-        </Link>
       </div>
 
-      {/* Confirmation Modal */}
       <ConfirmationModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
@@ -275,4 +242,3 @@ const TrekCard: React.FC<TrekCardProps> = ({
 };
 
 export default TrekCard;
-

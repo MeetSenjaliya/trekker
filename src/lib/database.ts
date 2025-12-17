@@ -123,6 +123,7 @@ export async function createReview(review: Omit<Review, 'id' | 'created_at' | 'u
     const { data, error } = await supabase
       .from('reviews')
       .insert([{
+      
         ...review,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

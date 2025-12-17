@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Profile Header Options</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(to bottom, #1b2735 0%, #090a0f 100%);
+            color: white;
+            min-height: 100vh;
+            padding: 40px;
+        }
+        /* Glass Utilities */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.03);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+        .text-glow {
+            text-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+        }
+    </style>
+</head>
+<body class="space-y-20">
+
+    <section class="max-w-4xl mx-auto">
+        <h2 class="text-blue-400 mb-4 font-bold tracking-wider text-sm uppercase">Option 1: Modern Center</h2>
+        
+        <div class="glass-panel rounded-3xl p-8 relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-full h-32 bg-gradient-to-r from-blue-600/20 to-purple-600/20"></div>
+
+            <div class="relative z-10 flex flex-col items-center text-center">
+                <div class="relative mb-4 group cursor-pointer">
+                    <div class="absolute -inset-1 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full opacity-75 blur group-hover:opacity-100 transition duration-200"></div>
+                    <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200" 
+                         alt="Profile" 
+                         class="relative w-32 h-32 rounded-full object-cover border-4 border-[#0f172a] shadow-2xl">
+                    <div class="absolute bottom-1 right-1 bg-blue-500 p-2 rounded-full border-4 border-[#0f172a] text-white">
+                        <i data-lucide="camera" class="w-4 h-4"></i>
+                    </div>
+                </div>
+
+                <h1 class="text-3xl font-bold text-white mb-2">Meet Senjaliya</h1>
+                <span class="px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-semibold uppercase tracking-wide mb-6">
+                    Expert Trekker
+                </span>
+
+                <div class="flex flex-wrap justify-center gap-6 border-t border-white/10 pt-6 w-full max-w-lg">
+                    <div class="flex items-center gap-2 text-gray-400">
+                        <i data-lucide="map-pin" class="w-4 h-4 text-blue-400"></i>
+                        <span>San Francisco, CA</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-gray-400">
+                        <i data-lucide="calendar" class="w-4 h-4 text-purple-400"></i>
+                        <span>Joined July 2025</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-gray-400">
+                        <i data-lucide="star" class="w-4 h-4 text-yellow-400 fill-yellow-400"></i>
+                        <span class="text-white font-semibold">5.0</span>
+                        <span class="text-xs">(12 Reviews)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+
+    <section class="max-w-4xl mx-auto">
+        <h2 class="text-blue-400 mb-4 font-bold tracking-wider text-sm uppercase">Option 2: Landscape Banner</h2>
+
+        <div class="glass-panel rounded-3xl overflow-hidden">
+            <div class="h-48 w-full bg-cover bg-center relative" style="background-image: url('https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1200&q=80');">
+                <div class="absolute inset-0 bg-gradient-to-t from-[#0f172a] via-transparent to-transparent opacity-90"></div>
+                <button class="absolute top-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full backdrop-blur-md transition">
+                    <i data-lucide="image" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <div class="px-8 pb-8">
+                <div class="flex flex-col md:flex-row items-start md:items-end -mt-16 mb-6 gap-6">
+                    <div class="relative">
+                        <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200" 
+                             class="w-32 h-32 md:w-40 md:h-40 rounded-2xl object-cover border-4 border-[#1e293b] shadow-2xl">
+                        <button class="absolute bottom-2 right-2 bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-lg shadow-lg transition">
+                            <i data-lucide="camera" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+
+                    <div class="flex-1">
+                        <h1 class="text-3xl font-bold text-white mb-1">Meet Senjaliya</h1>
+                        <p class="text-blue-200/80 font-light mb-4">Exploring the world, one peak at a time.</p>
+                        
+                        <div class="flex flex-wrap gap-4 text-sm">
+                            <span class="flex items-center gap-1.5 px-3 py-1 rounded-md bg-white/5 border border-white/10 text-gray-300">
+                                <i data-lucide="map-pin" class="w-3 h-3 text-blue-400"></i> San Francisco
+                            </span>
+                            <span class="flex items-center gap-1.5 px-3 py-1 rounded-md bg-white/5 border border-white/10 text-gray-300">
+                                <i data-lucide="star" class="w-3 h-3 text-yellow-400"></i> 5.0 Rating
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-3">
+                        <button class="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg shadow-lg transition">
+                            Save Changes
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+
+    <section class="max-w-4xl mx-auto">
+        <h2 class="text-blue-400 mb-4 font-bold tracking-wider text-sm uppercase">Option 3: Glass Horizontal</h2>
+
+        <div class="glass-panel rounded-3xl p-6 flex flex-col md:flex-row items-center gap-8 relative overflow-hidden group">
+            <div class="absolute -right-20 -top-20 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl group-hover:bg-blue-500/20 transition duration-700"></div>
+
+            <div class="relative shrink-0">
+                <div class="w-32 h-32 rounded-full p-1 bg-gradient-to-br from-blue-400 to-transparent">
+                    <img src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200" 
+                         class="w-full h-full rounded-full object-cover border-4 border-[#0f172a]">
+                </div>
+                <div class="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2">
+                    <span class="px-3 py-0.5 bg-blue-600 text-white text-[10px] font-bold uppercase tracking-wider rounded-full shadow-lg border border-blue-400">
+                        Pro
+                    </span>
+                </div>
+            </div>
+
+            <div class="flex-1 text-center md:text-left z-10">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-2">
+                    <div>
+                        <h1 class="text-2xl font-bold text-white">Meet Senjaliya</h1>
+                        <p class="text-gray-400 text-sm">Joined July 2025</p>
+                    </div>
+                    <div class="flex items-center justify-center md:justify-end gap-1">
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400 fill-yellow-400"></i>
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400 fill-yellow-400"></i>
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400 fill-yellow-400"></i>
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400 fill-yellow-400"></i>
+                        <i data-lucide="star" class="w-5 h-5 text-yellow-400 fill-yellow-400"></i>
+                    </div>
+                </div>
+
+                <div class="h-px bg-gradient-to-r from-white/20 to-transparent my-4"></div>
+
+                <div class="flex flex-wrap justify-center md:justify-start gap-6">
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase font-semibold">Location</p>
+                        <p class="text-gray-200 text-sm flex items-center gap-1">
+                            <i data-lucide="map-pin" class="w-3 h-3"></i> San Francisco
+                        </p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase font-semibold">Last Updated</p>
+                        <p class="text-gray-200 text-sm">Dec 08, 2025</p>
+                    </div>
+                    <div class="md:ml-auto">
+                        <button class="text-blue-400 hover:text-white text-sm font-semibold flex items-center gap-1 transition-colors">
+                            <i data-lucide="camera" class="w-4 h-4"></i> Change Photo
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        lucide.createIcons();
+    </script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Summer Themes</title>
+    <style>
+        /* --- General Reset --- */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 1s ease; /* Smooth transition between gradients */
+            color: white;
+        }
+
+        /* --- THEME GRADIENTS --- */
+        body.theme-fireflies {
+            /* Deep Purple/Navy to dark sunset */
+            background: linear-gradient(to bottom, #2d1b4e 0%, #1c102e 100%);
+        }
+        
+        body.theme-sun {
+            /* Bright Amber/Gold/Orange */
+            background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+        }
+
+        body.theme-ocean {
+            /* Deep Teal/Cyan */
+            background: linear-gradient(to top, #0f2027, #203a43, #2c5364);
+        }
+
+
+        /* --- UI CARD --- */
+        .container {
+            z-index: 20;
+            text-align: center;
+            padding: 2.5rem;
+            max-width: 500px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.5s ease;
+        }
+
+        h1 { font-size: 2.5rem; font-weight: 200; margin-bottom: 0.5rem; letter-spacing: 2px; }
+        p { font-size: 1.1rem; opacity: 0.9; margin-bottom: 2rem; font-weight: 300; }
+
+        /* --- CONTROLS --- */
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s, background 0.2s;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .btn:hover { background: rgba(255, 255, 255, 0.4); transform: scale(1.05); }
+        .btn.active { background: white; color: #333; box-shadow: 0 0 15px rgba(255,255,255,0.4); }
+
+
+        /* =========================================
+           EFFECT 1: FIREFLIES (Drifting & Glowing)
+        ========================================= */
+        .particle-firefly {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background-color: #ffeb3b;
+            border-radius: 50%;
+            pointer-events: none;
+            opacity: 0;
+            box-shadow: 0 0 10px #ffeb3b, 0 0 20px #ff9800;
+            animation: firefly-move ease-in-out infinite, firefly-blink ease-in-out infinite;
+        }
+        @keyframes firefly-move {
+            0% { transform: translate(0, 0); }
+            50% { transform: translate(30px, -40px); }
+            100% { transform: translate(-20px, -80px); }
+        }
+        @keyframes firefly-blink {
+            0%, 100% { opacity: 0; }
+            50% { opacity: 1; scale: 1.2; }
+        }
+
+
+        /* =========================================
+           EFFECT 2: SUN PARTICLES (Rising Dust)
+        ========================================= */
+        .particle-sun {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
+            pointer-events: none;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5); /* Soft glow */
+            animation: sun-rise linear infinite;
+        }
+        @keyframes sun-rise {
+            0% { transform: translateY(0) translateX(0); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 0.8; }
+            100% { transform: translateY(-100vh) translateX(20px); opacity: 0; }
+        }
+
+
+        /* =========================================
+           EFFECT 3: OCEAN BUBBLES (Wobbly Rise)
+        ========================================= */
+        .particle-ocean {
+            position: absolute;
+            border: 1px solid rgba(255, 255, 255, 0.5); /* Hollow bubble look */
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            pointer-events: none;
+            animation: bubble-rise linear infinite, bubble-wobble 2s ease-in-out infinite alternate;
+        }
+        @keyframes bubble-rise {
+            0% { bottom: -50px; opacity: 0; }
+            20% { opacity: 1; }
+            100% { bottom: 100vh; opacity: 0; }
+        }
+        @keyframes bubble-wobble {
+            from { transform: translateX(-5px); }
+            to { transform: translateX(5px); }
+        }
+
+    </style>
+</head>
+<body class="theme-fireflies"> <div id="effect-container"></div>
+
+    <div class="container">
+        <h1 id="title">Golden Hour</h1>
+        <p id="desc">Fireflies dancing in the summer twilight.</p>
+        
+        <div class="controls">
+            <button class="btn active" onclick="setTheme('fireflies')">Fireflies</button>
+            <button class="btn" onclick="setTheme('sun')">Sun-Kissed</button>
+            <button class="btn" onclick="setTheme('ocean')">Ocean</button>
+        </div>
+    </div>
+
+    <script>
+        const body = document.body;
+        const container = document.getElementById('effect-container');
+        const title = document.getElementById('title');
+        const desc = document.getElementById('desc');
+        const buttons = document.querySelectorAll('.btn');
+
+        // Initial Load
+        setTheme('fireflies');
+
+        function setTheme(theme) {
+            // 1. Clear existing effects
+            container.innerHTML = '';
+            
+            // 2. Update Body Class for Gradient
+            body.className = `theme-${theme}`;
+
+            // 3. Update Text Content & Button State
+            buttons.forEach(b => b.classList.remove('active'));
+            
+            if (theme === 'fireflies') {
+                title.innerText = "Golden Hour";
+                desc.innerText = "Warm sunset gradients with glowing, drifting fireflies.";
+                buttons[0].classList.add('active');
+                createFireflies();
+            } else if (theme === 'sun') {
+                title.innerText = "Sun-Kissed";
+                desc.innerText = "Bright amber light with floating dust particles.";
+                buttons[1].classList.add('active');
+                createSunParticles();
+            } else if (theme === 'ocean') {
+                title.innerText = "Ocean Breeze";
+                desc.innerText = "Cool teal waters with gently rising bubbles.";
+                buttons[2].classList.add('active');
+                createBubbles();
+            }
+        }
+
+
+        /* --- GENERATORS --- */
+
+        function createFireflies() {
+            for (let i = 0; i < 40; i++) {
+                const p = document.createElement('div');
+                p.classList.add('particle-firefly');
+                p.style.left = Math.random() * 100 + 'vw';
+                p.style.top = Math.random() * 100 + 'vh';
+                
+                const size = Math.random() * 4 + 2 + 'px';
+                p.style.width = size; p.style.height = size;
+
+                const duration = Math.random() * 10 + 10 + 's';
+                const delay = Math.random() * 5 + 's';
+                
+                // We override animation duration via inline style
+                p.style.animationDuration = `${duration}, ${Math.random() * 3 + 2}s`; // Drift, Blink
+                p.style.animationDelay = delay;
+                
+                container.appendChild(p);
+            }
+        }
+
+        function createSunParticles() {
+            for (let i = 0; i < 60; i++) {
+                const p = document.createElement('div');
+                p.classList.add('particle-sun');
+                p.style.left = Math.random() * 100 + 'vw';
+                p.style.top = Math.random() * 100 + 'vh'; // Start random vertical pos
+                
+                const size = Math.random() * 3 + 1 + 'px';
+                p.style.width = size; p.style.height = size;
+
+                const duration = Math.random() * 20 + 10 + 's'; // Slow rise
+                const delay = Math.random() * 5 + 's';
+
+                p.style.animationDuration = duration;
+                p.style.animationDelay = delay;
+
+                container.appendChild(p);
+            }
+        }
+
+        function createBubbles() {
+            for (let i = 0; i < 50; i++) {
+                const p = document.createElement('div');
+                p.classList.add('particle-ocean');
+                p.style.left = Math.random() * 100 + 'vw';
+                // Bubbles start from bottom
+                
+                const size = Math.random() * 15 + 5 + 'px'; // 5px to 20px
+                p.style.width = size; p.style.height = size;
+
+                const duration = Math.random() * 10 + 5 + 's';
+                const delay = Math.random() * 10 + 's';
+
+                p.style.animationDuration = `${duration}, 3s`; // Rise, Wobble
+                p.style.animationDelay = `${delay}, 0s`;
+
+                container.appendChild(p);
+            }
+        }
+
+    </script>
+</body>
+</html>

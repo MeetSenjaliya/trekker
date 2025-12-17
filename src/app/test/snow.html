@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Winter Wonderland</title>
+    <style>
+        /* --- General Reset & Typography --- */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(to bottom, #1b2735 0%, #090a0f 100%);
+            color: #ffffff;
+            height: 100vh;
+            overflow: hidden; /* Prevents scrollbars from falling snow */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* --- Content Container --- */
+        .container {
+            text-align: center;
+            z-index: 10; /* Ensures text stays above the snow */
+            padding: 2rem;
+            max-width: 600px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            font-weight: 300;
+            letter-spacing: 2px;
+        }
+
+        p {
+            font-size: 1.1rem;
+            line-height: 1.6;
+            margin-bottom: 2rem;
+            color: #e0e0e0;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 12px 30px;
+            background-color: #fff;
+            color: #1b2735;
+            text-decoration: none;
+            border-radius: 50px;
+            font-weight: bold;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(255, 255, 255, 0.4);
+        }
+
+        /* --- Snow Effect CSS --- */
+        .snowflake {
+            position: absolute;
+            top: -10px;
+            background-color: #fff;
+            border-radius: 50%;
+            opacity: 0.8;
+            pointer-events: none;
+            animation: fall linear infinite;
+        }
+
+        @keyframes fall {
+            0% {
+                transform: translateY(0) translateX(0);
+                opacity: 0.8;
+            }
+            100% {
+                transform: translateY(110vh) translateX(20px); /* Falls below screen */
+                opacity: 0.3;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Winter Serenity</h1>
+        <p>
+            Experience the calm of the season. Let the digital snow fall and wash away the noise. 
+            Designed with simplicity and elegance in mind.
+        </p>
+        <a href="#" class="btn">Explore More</a>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const snowContainer = document.body;
+            const snowflakeCount = 50; // Adjust for more/less snow
+
+            for (let i = 0; i < snowflakeCount; i++) {
+                createSnowflake();
+            }
+
+            function createSnowflake() {
+                const flake = document.createElement('div');
+                flake.classList.add('snowflake');
+                
+                // Randomize size, position, and animation duration
+                const size = Math.random() * 5 + 2 + 'px'; // 2px to 7px
+                const posX = Math.random() * 100 + 'vw';
+                const delay = Math.random() * 5 + 's';
+                const duration = Math.random() * 3 + 4 + 's'; // 4s to 7s fall time
+
+                flake.style.width = size;
+                flake.style.height = size;
+                flake.style.left = posX;
+                flake.style.animationDelay = delay;
+                flake.style.animationDuration = duration;
+
+                snowContainer.appendChild(flake);
+                
+                // Optional: Remove and recreate flakes to keep DOM clean if this ran for days,
+                // but for a simple loop, CSS infinite animation handles it fine.
+            }
+        });
+    </script>
+</body>
+</html>

@@ -124,7 +124,7 @@ export default function EditProfilePage() {
         setUploading(true);
         const fileExt = avatarFile.name.split('.').pop();
         const fileName = `${user.id}/${Date.now()}.${fileExt}`;
-
+        
         const { error: uploadError } = await supabase.storage
           .from('avatars')
           .upload(fileName, avatarFile, { upsert: true });
@@ -134,7 +134,7 @@ export default function EditProfilePage() {
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
           .getPublicUrl(fileName);
-
+          
         currentAvatarUrl = publicUrl;
         setUploading(false);
       }
@@ -156,6 +156,7 @@ export default function EditProfilePage() {
         // privacy_setting: formData.privacy, // Uncomment if schema supports it
         // favorite_trek_types: favoriteTrekTypes, // Uncomment if schema supports it
         avatar_url: currentAvatarUrl,
+        updated_at: new Date().toISOString(),
       };
 
       const { error } = await supabase.from('profiles').upsert(updates);
@@ -182,14 +183,14 @@ export default function EditProfilePage() {
   // --- Styles ---
   // Input style that looks carved into the glass
   const inputClass = "w-full pl-10 pr-4 py-3 rounded-xl bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all";
-
+  
   return (
     <div className="min-h-screen relative overflow-hidden flex items-center justify-center py-12 px-4" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
       <SnowEffect />
 
       {/* Main Card Container */}
       <div className="relative z-10 w-full max-w-2xl bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl shadow-2xl overflow-hidden">
-
+        
         {/* Decorative Header Banner */}
         <div className="h-32 bg-gradient-to-r from-blue-600 to-purple-600 relative">
           <div className="absolute inset-0 bg-black/10"></div>
@@ -200,9 +201,9 @@ export default function EditProfilePage() {
           <div className="relative -mt-16 mb-8 text-center">
             <div className="relative inline-block group">
               <div className="w-32 h-32 rounded-full p-1 bg-[#1b2735]">
-                <img
-                  src={avatarPreview || avatarUrl || "https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/avatars/image.jpg"}
-                  alt="Profile"
+                <img 
+                  src={avatarPreview || avatarUrl || "https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/avatars/image.jpg"} 
+                  alt="Profile" 
                   className={`w-full h-full rounded-full object-cover ${uploading ? 'opacity-50' : ''}`}
                 />
               </div>
@@ -221,7 +222,7 @@ export default function EditProfilePage() {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-8">
-
+            
             {/* Section: Basic Info */}
             <div className="space-y-4">
               <div className="relative">
@@ -234,7 +235,7 @@ export default function EditProfilePage() {
                   className={inputClass}
                 />
               </div>
-
+              
               <div className="relative">
                 <Mail className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400" />
                 <input
@@ -247,17 +248,17 @@ export default function EditProfilePage() {
               </div>
 
               <div className="relative">
-                {/* Experience Select */}
-                <div className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400 flex items-center justify-center font-bold text-xs border border-gray-400 rounded px-1">XP</div>
-                <select
-                  value={formData.experience}
-                  onChange={(e) => handleInputChange('experience', e.target.value)}
-                  className={`${inputClass} appearance-none cursor-pointer [&>option]:bg-[#1b2735]`}
-                >
-                  <option value="Beginner">Beginner</option>
-                  <option value="Intermediate">Intermediate</option>
-                  <option value="Expert">Expert</option>
-                </select>
+                 {/* Experience Select */}
+                 <div className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400 flex items-center justify-center font-bold text-xs border border-gray-400 rounded px-1">XP</div>
+                 <select
+                    value={formData.experience}
+                    onChange={(e) => handleInputChange('experience', e.target.value)}
+                    className={`${inputClass} appearance-none cursor-pointer [&>option]:bg-[#1b2735]`}
+                  >
+                    <option value="Beginner">Beginner</option>
+                    <option value="Intermediate">Intermediate</option>
+                    <option value="Expert">Expert</option>
+                  </select>
               </div>
 
               <div className="relative">
@@ -273,94 +274,96 @@ export default function EditProfilePage() {
 
             {/* Section: Favorite Trek Types */}
             <div className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-3">
-              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-                <Heart className="w-4 h-4" /> Favorite Terrains
-              </h3>
-              <div className="flex flex-wrap gap-3">
-                {['forest', 'mountain', 'waterfall'].map((type) => (
-                  <label key={type} className="cursor-pointer group">
-                    <input
-                      type="checkbox"
-                      className="peer sr-only"
-                      checked={formData.favoriteTypes[type as keyof typeof formData.favoriteTypes]}
-                      onChange={() => handleFavoriteTypeChange(type)}
-                    />
-                    <div className="px-4 py-2 rounded-lg bg-black/20 border border-white/10 text-gray-400 peer-checked:bg-blue-500/20 peer-checked:border-blue-500/50 peer-checked:text-blue-300 transition-all text-sm capitalize group-hover:bg-white/5">
-                      {type}
-                    </div>
-                  </label>
-                ))}
-              </div>
+               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                 <Heart className="w-4 h-4" /> Favorite Terrains
+               </h3>
+               <div className="flex flex-wrap gap-3">
+                  {['forest', 'mountain', 'waterfall'].map((type) => (
+                    <label key={type} className="cursor-pointer group">
+                      <input 
+                        type="checkbox" 
+                        className="peer sr-only"
+                        checked={formData.favoriteTypes[type as keyof typeof formData.favoriteTypes]}
+                        onChange={() => handleFavoriteTypeChange(type)}
+                      />
+                      <div className="px-4 py-2 rounded-lg bg-black/20 border border-white/10 text-gray-400 peer-checked:bg-blue-500/20 peer-checked:border-blue-500/50 peer-checked:text-blue-300 transition-all text-sm capitalize group-hover:bg-white/5">
+                        {type}
+                      </div>
+                    </label>
+                  ))}
+               </div>
             </div>
 
             {/* Section: Emergency Contact */}
             <div className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-4">
               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400" /> Emergency Contact
+                 <AlertTriangle className="w-4 h-4 text-red-400" /> Emergency Contact
               </h3>
-
+              
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <input
-                  type="text"
-                  placeholder="Contact Name"
-                  value={formData.emergencyContact.name}
-                  onChange={(e) => handleEmergencyContactChange('name', e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
-                />
-                <input
-                  type="text"
-                  placeholder="Relationship"
-                  value={formData.emergencyContact.relationship}
-                  onChange={(e) => handleEmergencyContactChange('relationship', e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
-                />
-                <div className="col-span-1 md:col-span-2 relative">
-                  <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
-                  <input
-                    type="tel"
-                    placeholder="Emergency Phone Number"
-                    value={formData.emergencyContact.phone}
-                    onChange={(e) => handleEmergencyContactChange('phone', e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                 <input
+                    type="text"
+                    placeholder="Contact Name"
+                    value={formData.emergencyContact.name}
+                    onChange={(e) => handleEmergencyContactChange('name', e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
                   />
-                </div>
+                  <input
+                    type="text"
+                    placeholder="Relationship"
+                    value={formData.emergencyContact.relationship}
+                    onChange={(e) => handleEmergencyContactChange('relationship', e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                  />
+                  <div className="col-span-1 md:col-span-2 relative">
+                     <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
+                     <input
+                        type="tel"
+                        placeholder="Emergency Phone Number"
+                        value={formData.emergencyContact.phone}
+                        onChange={(e) => handleEmergencyContactChange('phone', e.target.value)}
+                        className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                      />
+                  </div>
               </div>
             </div>
 
             {/* Section: Privacy Settings */}
             <div className="p-5 rounded-2xl bg-white/5 border border-white/10 space-y-3">
-              <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-                <Shield className="w-4 h-4 text-emerald-400" /> Privacy Settings
-              </h3>
-
-              <div className="space-y-2">
-                {[
-                  { val: 'Joined Treks Only', label: 'Show profile only to joined treks' },
-                  { val: 'Public', label: 'Public (Visible to everyone)' },
-                  { val: 'Private', label: 'Private (Only me)' }
-                ].map((option) => (
-                  <label key={option.val} className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${formData.privacy === option.val
-                      ? 'bg-blue-500/10 border-blue-500/30'
-                      : 'bg-black/20 border-white/5 hover:bg-white/5'
-                    }`}>
-                    <span className={`text-sm ${formData.privacy === option.val ? 'text-blue-200' : 'text-gray-400'}`}>
-                      {option.label}
-                    </span>
-                    <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${formData.privacy === option.val ? 'border-blue-400' : 'border-gray-500'
+               <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                 <Shield className="w-4 h-4 text-emerald-400" /> Privacy Settings
+               </h3>
+               
+               <div className="space-y-2">
+                 {[
+                   { val: 'Joined Treks Only', label: 'Show profile only to joined treks' },
+                   { val: 'Public', label: 'Public (Visible to everyone)' },
+                   { val: 'Private', label: 'Private (Only me)' }
+                 ].map((option) => (
+                   <label key={option.val} className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-all ${
+                     formData.privacy === option.val 
+                       ? 'bg-blue-500/10 border-blue-500/30' 
+                       : 'bg-black/20 border-white/5 hover:bg-white/5'
+                   }`}>
+                      <span className={`text-sm ${formData.privacy === option.val ? 'text-blue-200' : 'text-gray-400'}`}>
+                        {option.label}
+                      </span>
+                      <div className={`w-5 h-5 rounded-full border flex items-center justify-center ${
+                        formData.privacy === option.val ? 'border-blue-400' : 'border-gray-500'
                       }`}>
-                      {formData.privacy === option.val && <div className="w-2.5 h-2.5 bg-blue-400 rounded-full" />}
-                    </div>
-                    <input
-                      type="radio"
-                      name="privacy"
-                      value={option.val}
-                      checked={formData.privacy === option.val}
-                      onChange={(e) => handleInputChange('privacy', e.target.value)}
-                      className="hidden"
-                    />
-                  </label>
-                ))}
-              </div>
+                        {formData.privacy === option.val && <div className="w-2.5 h-2.5 bg-blue-400 rounded-full" />}
+                      </div>
+                      <input 
+                        type="radio" 
+                        name="privacy" 
+                        value={option.val} 
+                        checked={formData.privacy === option.val}
+                        onChange={(e) => handleInputChange('privacy', e.target.value)}
+                        className="hidden"
+                      />
+                   </label>
+                 ))}
+               </div>
             </div>
 
             {/* Save Button */}

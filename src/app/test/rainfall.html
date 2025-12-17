@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rain on Glass</title>
+    <style>
+        /* --- General Reset --- */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            /* Dark, stormy gradient background */
+            background: linear-gradient(135deg, #1a2a3a 0%, #000000 100%);
+            color: #ffffff;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* --- The Content Card --- */
+        .container {
+            position: relative;
+            z-index: 20;
+            text-align: center;
+            padding: 3rem;
+            max-width: 500px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(8px);
+            border-radius: 24px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 200;
+            letter-spacing: 3px;
+            margin-bottom: 1rem;
+            color: #e2e8f0;
+        }
+
+        p {
+            font-size: 1.1rem;
+            color: #94a3b8;
+            line-height: 1.6;
+        }
+
+        /* =========================================
+           LAYER 1: Background Falling Streaks (Slower)
+        ========================================= */
+        .rain-streak {
+            position: absolute;
+            background: linear-gradient(to bottom, transparent, rgba(173, 216, 230, 0.4), transparent);
+            height: 80px;
+            width: 1px;
+            top: -100px;
+            pointer-events: none;
+            z-index: 1;
+            filter: blur(1px);
+            animation: fall linear infinite;
+        }
+
+        /* =========================================
+           LAYER 2: Foreground Droplets (Faster & Tapered)
+        ========================================= */
+        .window-droplet {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.02);
+
+            /* SHAPE CHANGE: 
+               Top-left/Top-right = 35% (sharper/thinner)
+               Bottom-left/Bottom-right = 50% (rounder/wider) 
+            */
+            border-radius: 35% 35% 50% 50%;
+
+            pointer-events: none;
+            z-index: 10;
+
+            /* Glassy Shadows */
+            box-shadow:
+                inset 2px 2px 4px rgba(255, 255, 255, 0.6),
+                /* Glint */
+                inset -1px -2px 4px rgba(0, 0, 0, 0.4),
+                /* Inner Shadow */
+                1px 2px 4px rgba(0, 0, 0, 0.3);
+            /* Drop Shadow */
+        }
+
+        @keyframes slide-down {
+            0% {
+                transform: translateY(0);
+            }
+
+            100% {
+                transform: translateY(120vh);
+            }
+        }
+
+        @keyframes fall {
+            to {
+                transform: translateY(120vh);
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Storm Watch</h1>
+        <p>Safe inside while the elements rage outside the glass.</p>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const body = document.body;
+
+            // --- PART 1: Background Rain (SLOWER) ---
+            const streakCount = 80;
+            for (let i = 0; i < streakCount; i++) {
+                const streak = document.createElement('div');
+                streak.classList.add('rain-streak');
+                streak.style.left = Math.random() * 100 + 'vw';
+
+                // SPEED CHANGE: 1.5s to 2.5s (Slower fall)
+                streak.style.animationDuration = Math.random() * 1 + 1.5 + 's';
+
+                streak.style.animationDelay = Math.random() * 2 + 's';
+                streak.style.opacity = Math.random() * 0.3 + 0.1;
+                body.appendChild(streak);
+            }
+
+
+            // --- PART 2: Window Droplets (FASTER & SHAPED) ---
+            const dropletCount = 70;
+            for (let i = 0; i < dropletCount; i++) {
+                const droplet = document.createElement('div');
+                droplet.classList.add('window-droplet');
+
+                // 1. Variable Size
+                const width = Math.random() * 12 + 8; // 8px to 20px wide
+
+                // Height is 1.5x the width to create that elongated "heavy" drop look
+                const height = width * 1.5;
+
+                droplet.style.width = `${width}px`;
+                droplet.style.height = `${height}px`;
+
+                droplet.style.left = Math.random() * 100 + 'vw';
+                droplet.style.top = Math.random() * 100 + 'vh';
+
+                // 2. Logic: Some slide, some stay still
+                const isSliding = Math.random() > 0.6; // 40% slide
+
+                if (isSliding) {
+                    // SPEED CHANGE: 2s to 5s (Much faster sliding)
+                    const duration = Math.random() * 3 + 2 + 's';
+                    const delay = Math.random() * 5 + 's';
+
+                    droplet.style.animation = `slide-down ${duration} linear infinite ${delay}`;
+
+                    // Make moving drops slightly more visible
+                    droplet.style.opacity = 0.8;
+                } else {
+                    droplet.style.opacity = Math.random() * 0.5 + 0.3;
+                }
+
+                body.appendChild(droplet);
+            }
+        });
+    </script>
+</body>
+
+</html>
