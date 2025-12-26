@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Star, Upload, X } from 'lucide-react';
+import { compressImage } from '@/utils/imageCompression';
 
 interface ReviewFormProps {
   trekTitle?: string;
@@ -36,18 +37,36 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
     setHoverRating(0);
   };
 
-  const handlePhotoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePhotoUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files || []);
-    const validFiles = files.filter(file => {
-      const isValidType = file.type.startsWith('image/');
-      const isValidSize = file.size <= 2 * 1024 * 1024; // 2MB
-      return isValidType && isValidSize;
-    });
 
-    if (photos.length + validFiles.length <= 5) {
-      setPhotos([...photos, ...validFiles]);
-    } else {
+    if (photos.length + files.length > 5) {
       alert('You can upload a maximum of 5 photos.');
+      return;
+    }
+
+    setIsSubmitting(true); // Show a loading state while compressing
+    try {
+      const compressedFiles = await Promise.all(
+        files.map(async (file) => {
+          if (file.type.startsWith('image/')) {
+            return await compressImage(file);
+          }
+          return file;
+        })
+      );
+
+      const validFiles = compressedFiles.filter(file => {
+        const isValidType = file.type.startsWith('image/');
+        const isValidSize = file.size <= 2 * 1024 * 1024; // 2MB
+        return isValidType && isValidSize;
+      });
+
+      setPhotos(prev => [...prev, ...validFiles]);
+    } catch (error) {
+      console.error('Error processing photos:', error);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -122,8 +141,8 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
                 >
                   <Star
                     className={`w-8 h-8 ${starValue <= displayRating
-                        ? 'text-yellow-400 fill-yellow-400'
-                        : 'text-gray-300'
+                      ? 'text-yellow-400 fill-yellow-400'
+                      : 'text-gray-300'
                       }`}
                   />
                 </button>
@@ -173,17 +192,17 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
               disabled={photos.length >= 5}
             />
             <div className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-10 transition-colors ${photos.length >= 5
-                ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
-                : 'border-slate-300 hover:border-blue-400 cursor-pointer group'
+              ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
+              : 'border-slate-300 hover:border-blue-400 cursor-pointer group'
               }`}>
               <Upload className={`w-12 h-12 transition-colors ${photos.length >= 5
-                  ? 'text-gray-400'
-                  : 'text-slate-400 group-hover:text-blue-500'
+                ? 'text-gray-400'
+                : 'text-slate-400 group-hover:text-blue-500'
                 }`} />
               <div className="text-center">
                 <p className={`text-base font-semibold transition-colors ${photos.length >= 5
-                    ? 'text-gray-500'
-                    : 'text-slate-700 group-hover:text-blue-600'
+                  ? 'text-gray-500'
+                  : 'text-slate-700 group-hover:text-blue-600'
                   }`}>
                   {photos.length >= 5 ? 'Maximum photos reached' : 'Drag and drop photos here'}
                 </p>
@@ -198,22 +217,26 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
           {photos.length > 0 && (
             <div className="mt-4">
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
-                {photos.map((photo, index) => (
-                  <div key={index} className="relative group">
-                    <img
-                      src={URL.createObjectURL(photo)}
-                      alt={`Upload preview ${index + 1}`}
-                      className="w-full h-24 object-cover rounded-lg border border-gray-200"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removePhoto(index)}
-                      className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                ))}
+                {photos.map((photo, index) => {
+                  const previewUrl = URL.createObjectURL(photo);
+                  return (
+                    <div key={index} className="relative group">
+                      <img
+                        src={previewUrl}
+                        alt={`Upload preview ${index + 1}`}
+                        className="w-full h-24 object-cover rounded-lg border border-gray-200"
+                        onLoad={() => URL.revokeObjectURL(previewUrl)} // Optional: revoke after load if not needed for long
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removePhoto(index)}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
