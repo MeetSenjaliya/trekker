@@ -22,7 +22,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body className="antialiased bg-slate-50 min-h-screen flex flex-col font-sans">
         <AuthProvider>
           <Header />

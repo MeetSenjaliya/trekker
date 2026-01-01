@@ -135,7 +135,7 @@ export default function FavoritesPage() {
   }
 
   return (
-    <div className="min-h-screen relative overflow-hidden text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
+    <div className="min-h-screen relative overflow-hidden text-white pt-24" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
       <SnowEffect />
 
       {/* Header */}
