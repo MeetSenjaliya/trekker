@@ -15,7 +15,7 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => request.cookies.set(name, value))
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           supabaseResponse = NextResponse.next({
             request,
           })
@@ -37,19 +37,21 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
-  // if (
-  //   !user &&
-  //   !request.nextUrl.pathname.includes('/login') &&
-  //   !request.nextUrl.pathname.includes('/register') &&
-  //   !request.nextUrl.pathname.includes('/forgot-password') &&
-  //   !request.nextUrl.pathname.includes('/reset-password') &&
-  //   !request.nextUrl.pathname.includes('/auth')
-  // ) {
-  //   // no user, potentially respond by redirecting the user to the login page
-  //   const url = request.nextUrl.clone()
-  //   url.pathname = '/login'
-  //   return NextResponse.redirect(url)
-  // }
+  // Routes that don't require authentication. A path is public if it matches
+  // one of these exactly or starts with it followed by a "/".
+  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/test']
+
+  const { pathname } = request.nextUrl
+  const isPublicRoute = publicRoutes.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
+  )
+
+  if (!user && !isPublicRoute) {
+    // no user, redirect the user to the login page
+    const url = request.nextUrl.clone()
+    url.pathname = '/auth/login'
+    return NextResponse.redirect(url)
+  }
 
   // IMPORTANT: You *must* return the supabaseResponse object as it is.
   // If you're creating a new response object with NextResponse.next() make sure to:

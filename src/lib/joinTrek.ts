@@ -55,7 +55,7 @@ export async function joinTrekBatchAndChat(
             batchId,
             participantId
         };
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Unexpected error joining trek:', error);
         return {
             success: false,
@@ -133,8 +133,9 @@ export async function leaveTrek(
 
         return { success: true, message: "Successfully left the trek." };
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Unexpected error leaving trek:', error);
-        return { success: false, message: "Failed to leave trek. " + error.message };
+        const message = error instanceof Error ? error.message : String(error);
+        return { success: false, message: "Failed to leave trek. " + message };
     }
 }

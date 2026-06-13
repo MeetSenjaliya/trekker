@@ -44,7 +44,7 @@ export default function EditProfilePage() {
 
     const fetchProfile = async () => {
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', user.id)
@@ -82,7 +82,7 @@ export default function EditProfilePage() {
   }, [user, supabase, authLoading]);
 
   // --- Handlers ---
-  const handleInputChange = (field: string, value: any) => {
+  const handleInputChange = (field: string, value: string | number | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
@@ -139,11 +139,6 @@ export default function EditProfilePage() {
         setUploading(false);
       }
 
-      // Convert Favorites to Array
-      const favoriteTrekTypes = Object.entries(formData.favoriteTypes)
-        .filter(([_, isSelected]) => isSelected)
-        .map(([type]) => type.charAt(0).toUpperCase() + type.slice(1));
-
       // Update Profile
       const updates = {
         id: user.id,
@@ -164,8 +159,9 @@ export default function EditProfilePage() {
       alert('Profile updated successfully!');
       router.push('/profile');
       router.refresh();
-    } catch (error: any) {
-      alert(`Error updating profile: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`Error updating profile: ${message}`);
     } finally {
       setSaving(false);
     }

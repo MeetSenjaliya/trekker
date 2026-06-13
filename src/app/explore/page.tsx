@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import TrekCard from '@/components/ui/TrekCard';
 import FilterSection from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
-import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
+import { getParticipantCount } from '@/lib/utils';
 import SnowEffect from '@/components/ui/SnowEffect';
 
 const DEFAULT_IMAGE_URL =
@@ -194,7 +194,7 @@ export default function ExplorePage() {
           {/* Content Layer */}
           <div className="relative z-10">
             <h2 className="text-3xl font-light text-white mb-4 tracking-wide">
-              Can't find the perfect trek?
+              Can&apos;t find the perfect trek?
             </h2>
             <p className="text-blue-100/70 mb-8 max-w-2xl mx-auto text-lg leading-relaxed">
               Create your own trek and invite fellow adventurers to join you on a custom expedition

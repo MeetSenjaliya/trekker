@@ -64,7 +64,7 @@ export default function EditProfilePage() {
     fetchProfile();
   }, [user]);
 
-  const handleInputChange = (field: string, value: any) =>
+  const handleInputChange = (field: string, value: string | number | boolean) =>
     setFormData(prev => ({ ...prev, [field]: value }));
 
   const handleEmergencyContactChange = (field: string, value: string) =>
@@ -123,7 +123,7 @@ export default function EditProfilePage() {
 
     // Convert favorite types object back to array
     const favoriteTrekTypes = Object.entries(formData.favoriteTypes)
-      .filter(([_, isSelected]) => isSelected)
+      .filter(([, isSelected]) => isSelected)
       .map(([type]) => type.charAt(0).toUpperCase() + type.slice(1));
 
     const { error } = await supabase.from('profiles').upsert({

@@ -41,9 +41,6 @@ const TrekCard: React.FC<TrekCardProps> = ({
   difficulty,
   participants,
   rating,
-  price,
-  organizer,
-  whatsappGroupLink,
   next_batch_date,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);

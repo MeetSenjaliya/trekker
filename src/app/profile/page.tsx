@@ -39,6 +39,23 @@ interface UpcomingTrek {
   role?: string;
 }
 
+// Shape of a trek_participants row with its nested trek_batches -> treks join.
+interface JoinedTrekBatch {
+  batch_date?: string | null;
+  treks?: {
+    id?: string;
+    title?: string;
+    cover_image_url?: string;
+    location?: string;
+    rating?: number;
+    participants_joined?: number;
+    max_participants?: number;
+  } | null;
+}
+interface JoinedTrekRow {
+  trek_batches?: JoinedTrekBatch | JoinedTrekBatch[] | null;
+}
+
 // Sample data for badges
 const badges = [
   { name: 'Mountain Master', icon: '🏔️', description: 'Completed 20+ mountain treks' },
@@ -141,13 +158,13 @@ export default function ProfilePage() {
             .limit(3);
 
           setRecentTreks(
-            joinedTreks?.map((t: any) => {
+            (joinedTreks as unknown as JoinedTrekRow[] | null)?.map((t) => {
               const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
               const trek = batch?.treks;
               return {
-                id: trek?.id,
-                title: trek?.title,
-                image: trek?.cover_image_url,
+                id: trek?.id || '',
+                title: trek?.title || '',
+                image: trek?.cover_image_url || '',
                 date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
                 role: "Participant",
                 rating: trek?.rating || 0,
@@ -171,14 +188,14 @@ export default function ProfilePage() {
             .limit(3);
 
           setUpcomingTreks(
-            upcoming?.map((t: any) => {
+            (upcoming as unknown as JoinedTrekRow[] | null)?.map((t) => {
               const batch = Array.isArray(t.trek_batches) ? t.trek_batches[0] : t.trek_batches;
               const trek = batch?.treks;
               return {
-                id: trek?.id,
-                title: trek?.title,
+                id: trek?.id || '',
+                title: trek?.title || '',
                 date: batch?.batch_date ? new Date(batch.batch_date).toLocaleDateString() : 'Unknown Date',
-                image: trek?.cover_image_url,
+                image: trek?.cover_image_url || '',
                 location: trek?.location || "Unknown Location",
                 participants: { current: trek?.participants_joined || 0, max: trek?.max_participants || 0 },
                 role: "Participant",

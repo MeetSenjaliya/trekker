@@ -34,7 +34,7 @@ export default function AboutPage() {
                   Trek Buddies was born from a shared passion for the great outdoors. We are a group of avid hikers,
                   climbers, and explorers who believe that the best adventures are those shared with others. We found
                   ourselves wanting a simple, reliable platform to connect with like-minded individuals for everything
-                  from a casual weekend hike to a challenging multi-day trek. When we couldn't find one that met our
+                  from a casual weekend hike to a challenging multi-day trek. When we couldn&apos;t find one that met our
                   needs for safety, community, and ease of use, we decided to build it ourselves. Our mission is to
                   make it easier for everyone to experience the joy of trekking by fostering a supportive and
                   trustworthy community.
@@ -123,7 +123,7 @@ export default function AboutPage() {
                   <li>Facilitate pre-trek communication to ensure everyone is prepared.</li>
                   <li>Promote a &apos;leave no trace&apos; ethos.</li>
                   <li>Have a clear plan for emergencies.</li>
-                  <li>Assess the group's overall fitness and experience level.</li>
+                  <li>Assess the group&apos;s overall fitness and experience level.</li>
                 </ul>
               </div>
 

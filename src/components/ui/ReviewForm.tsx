@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Star, Upload, X } from 'lucide-react';
 import { compressImage } from '@/utils/imageCompression';
 
@@ -102,7 +102,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
       setReview('');
       setPhotos([]);
       alert('Review submitted successfully!');
-    } catch (_error) {
+    } catch {
       alert('Failed to submit review. Please try again.');
     } finally {
       setIsSubmitting(false);

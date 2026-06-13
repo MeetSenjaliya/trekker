@@ -2,6 +2,9 @@
 node_modules
 .DS_Store
 
+# TypeScript incremental build cache
+tsconfig.tsbuildinfo
+
 # env files (keep *.example templates tracked)
 .env
 .env*.local

@@ -10,12 +10,42 @@ import {
   Clock, Mountain, IndianRupee, Star,
   CheckCircle2, ChevronRight, Calendar
 } from 'lucide-react';
-import { motion, AnimatePresence, Variants } from 'framer-motion';
+import { motion, Variants } from 'framer-motion';
 import SnowEffect from '@/components/ui/SnowEffect';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 import ReviewCard from '@/components/ui/ReviewCard';
+
+// Shape of the trek detail row (with embedded trek_batches) and its reviews.
+interface TrekBatch {
+  batch_date: string;
+}
+interface TrekReview {
+  id: string;
+  rating: number;
+  comment: string;
+  created_at: string;
+  photo_urls?: string[];
+  profiles?: { full_name: string; avatar_url?: string };
+}
+interface TrekDetail {
+  cover_image_url?: string;
+  description?: string;
+  difficulty?: string;
+  distance_km?: number;
+  duration_hours?: number;
+  estimated_cost?: number;
+  gear_checklist?: string[];
+  location?: string;
+  max_participants?: number;
+  meeting_point?: string;
+  meeting_point2?: string;
+  plan?: string;
+  rating?: number;
+  title?: string;
+  trek_batches?: TrekBatch[];
+}
 
 // Animation Variants
 const fadeInUp: Variants = {
@@ -43,14 +73,14 @@ export default function TrekDetailPage() {
   const router = useRouter();
   const { user } = useAuth();
   const [supabase] = useState(() => createClient());
-  const [trek, setTrek] = useState<any>(null);
+  const [trek, setTrek] = useState<TrekDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLiked, setIsLiked] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: string]: boolean }>({});
   const [joinedBatchId, setJoinedBatchId] = useState<string | null>(null);
   const [realParticipantCount, setRealParticipantCount] = useState<number>(0);
-  const [reviews, setReviews] = useState<any[]>([]);
+  const [reviews, setReviews] = useState<TrekReview[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(true);
 
   const DEFAULT_IMAGE = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
@@ -71,7 +101,8 @@ export default function TrekDetailPage() {
         setRealParticipantCount(count);
         const { data: reviewsData, error: reviewsError } = await supabase
           .from('trek_reviews')
-          .select('*, profiles(full_name, avatar_url)')
+          // Embed via the public_profiles view (non-PII only); aliased to `profiles` so the UI shape is unchanged.
+          .select('*, profiles:public_profiles(full_name, avatar_url)')
           .eq('trek_id', id)
           .order('created_at', { ascending: false });
 
@@ -155,6 +186,12 @@ export default function TrekDetailPage() {
     </div>
   );
 
+  if (!trek) return (
+    <div className="min-h-screen flex items-center justify-center bg-[#090a0f] text-slate-400">
+      Trek not found.
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-[#090a0f] text-slate-200 selection:bg-blue-500/30 overflow-x-hidden">
       <SnowEffect />
@@ -163,7 +200,7 @@ export default function TrekDetailPage() {
       <section className="relative h-[65vh] w-full overflow-hidden">
         <Image
           src={trek.cover_image_url || DEFAULT_IMAGE}
-          alt={trek.title}
+          alt={trek.title || 'Trek'}
           fill
           priority
           quality={100}
@@ -244,11 +281,11 @@ export default function TrekDetailPage() {
             {/* Logistics */}
             <motion.section variants={fadeInUp} initial="hidden" whileInView="visible" viewport={{ once: true }} className="bg-white/[0.03] rounded-3xl border border-white/10 p-8">
               <div className="divide-y divide-white/5">
-                <DetailItem label="Meeting Point" value={trek.meeting_point} />
+                <DetailItem label="Meeting Point" value={trek.meeting_point || 'TBD'} />
                 {trek.meeting_point2 && <DetailItem label="Alternate Point" value={trek.meeting_point2} />}
                 <DetailItem label="Next Batches" value={
-                  trek.trek_batches?.length > 0
-                    ? trek.trek_batches.map((b: any) => new Date(b.batch_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })).join(', ')
+                  (trek.trek_batches?.length ?? 0) > 0
+                    ? trek.trek_batches!.map((b: TrekBatch) => new Date(b.batch_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })).join(', ')
                     : 'Contact for dates'
                 } />
               </div>
@@ -261,18 +298,18 @@ export default function TrekDetailPage() {
                 <div className="relative border-l-2 border-blue-500/20 ml-4 pl-8 py-2">
                   <div className="absolute top-0 -left-[9px] w-4 h-4 rounded-full bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]" />
                   <div className="bg-white/5 p-8 rounded-3xl border border-white/10 backdrop-blur-sm">
-                    <p className="text-slate-300 leading-relaxed italic text-lg">"{trek.plan}"</p>
+                    <p className="text-slate-300 leading-relaxed italic text-lg">&quot;{trek.plan}&quot;</p>
                   </div>
                 </div>
               </motion.section>
             )}
 
             {/* Checklist */}
-            {trek.gear_checklist?.length > 0 && (
+            {(trek.gear_checklist?.length ?? 0) > 0 && (
               <motion.section variants={fadeInUp} initial="hidden" whileInView="visible" viewport={{ once: true }} className="space-y-6">
                 <h2 className="text-2xl font-bold text-white">Gear Checklist</h2>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {trek.gear_checklist.map((item: string, idx: number) => (
+                  {trek.gear_checklist?.map((item: string, idx: number) => (
                     <motion.label key={idx} whileHover={{ x: 5 }} className={`flex items-center gap-4 p-5 rounded-2xl border transition-all cursor-pointer ${checkedItems[item] ? 'bg-blue-500/10 border-blue-500/40' : 'bg-white/5 border-white/10 hover:border-white/20'
                       }`}>
                       <div className="relative flex items-center justify-center">
@@ -343,7 +380,7 @@ export default function TrekDetailPage() {
                     </div>
                     <div className="w-full h-2.5 bg-white/5 rounded-full overflow-hidden border border-white/5">
                       <motion.div
-                        initial={{ width: 0 }} animate={{ width: `${Math.min((getDisplayParticipantCount(realParticipantCount) / trek.max_participants) * 100, 100)}%` }}
+                        initial={{ width: 0 }} animate={{ width: `${Math.min((getDisplayParticipantCount(realParticipantCount) / (trek.max_participants || 1)) * 100, 100)}%` }}
                         transition={{ duration: 1.5, ease: "easeOut" }}
                         className="h-full bg-gradient-to-r from-blue-600 to-sky-400"
                       />

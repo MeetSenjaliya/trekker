@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  Send, MessageCircle, User, MoreVertical, Phone,
+  Send, MessageCircle, MoreVertical, Phone,
   Video, Users, Trash2, ArrowLeft, SmilePlus, Reply, Edit3
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -41,6 +41,21 @@ type Conversation = {
   created_at?: string;
 };
 
+// Loosely-typed shapes for the raw Supabase rows these queries return.
+type ProfileLite = { id: string; full_name?: string | null; avatar_url?: string | null };
+type ParticipantRow = { conversation_id: string; user_id: string };
+type ConversationRow = { id: string; batch_id?: string; name?: string; created_at?: string; trek_batches?: { trek_id: string }[] };
+type MessageRow = {
+  id: string;
+  message: string;
+  user_id: string;
+  created_at: string;
+  updated_at?: string | null;
+  is_deleted?: boolean;
+  reply_to?: string | null;
+  reactions?: Record<string, string[]>;
+};
+
 function MessagesPageContent() {
   const supabase = createClient();
   const { user } = useAuth();
@@ -51,24 +66,26 @@ function MessagesPageContent() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(true);
+  const [, setHasMore] = useState(true);
   const oldestMessageAtRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const realtimeChannelRef = useRef<any | null>(null);
 
   const [menuOpen, setMenuOpen] = useState<string | null>(null);
   const [editing, setEditing] = useState<Msg | null>(null);
   const [replyTo, setReplyTo] = useState<Msg | null>(null);
   const REACTIONS = ['❤️', '😂', '👍', '🔥', '🙌'];
 
+  const startReply = (msg: Msg) => { setReplyTo(msg); setMenuOpen(null); };
+
   // --- KEEPING ALL ORIGINAL LOGIC & API CALLS ---
   const fetchProfilesMap = async (ids: string[]) => {
-    if (!ids || ids.length === 0) return new Map<string, any>();
-    const { data: profiles, error } = await supabase.from('profiles').select('id, full_name, avatar_url').in('id', ids);
-    if (error) return new Map();
-    return new Map((profiles || []).map((p: any) => [p.id, p]));
+    if (!ids || ids.length === 0) return new Map<string, ProfileLite>();
+    // Reads only non-PII columns of OTHER users via the public_profiles view (profiles table is now own-row only).
+    const { data: profiles, error } = await supabase.from('public_profiles').select('id, full_name, avatar_url').in('id', ids);
+    if (error) return new Map<string, ProfileLite>();
+    return new Map<string, ProfileLite>((profiles || []).map((p: ProfileLite) => [p.id, p]));
   };
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
@@ -83,16 +100,16 @@ function MessagesPageContent() {
       setLoading(true);
       try {
         const { data: parts } = await supabase.from('conversation_participants').select('conversation_id').eq('user_id', user.id);
-        const convIds = (parts || []).map((p: any) => p.conversation_id);
+        const convIds = (parts || []).map((p) => p.conversation_id);
         if (convIds.length === 0) return;
         const { data: convs } = await supabase.from('conversations').select('id, batch_id, name, created_at, trek_batches(trek_id)').in('id', convIds).order('created_at', { ascending: false });
         const { data: allParts } = await supabase.from('conversation_participants').select('conversation_id, user_id').in('conversation_id', convIds);
-        const participantIds = Array.from(new Set((allParts || []).map((p: any) => p.user_id)));
+        const participantIds = Array.from(new Set((allParts || []).map((p: ParticipantRow) => p.user_id)));
         const profileMap = await fetchProfilesMap(participantIds);
-        const convObjs = (convs || []).map((c: any) => {
-          const participantsForConv = (allParts || []).filter((p: any) => p.conversation_id === c.id);
+        const convObjs = (convs || []).map((c: ConversationRow) => {
+          const participantsForConv = (allParts || []).filter((p: ParticipantRow) => p.conversation_id === c.id);
           return {
-            id: c.id, batch_id: c.batch_id, trek_id: c.trek_batches?.[0]?.trek_id, name: c.name, participants: participantsForConv.map((p: any) => {
+            id: c.id, batch_id: c.batch_id, trek_id: c.trek_batches?.[0]?.trek_id, name: c.name, participants: participantsForConv.map((p: ParticipantRow) => {
               const prof = profileMap.get(p.user_id);
               return { user_id: p.user_id, full_name: prof?.full_name, avatar_url: prof?.avatar_url };
             })
@@ -114,7 +131,7 @@ function MessagesPageContent() {
       const { data: conv } = await supabase.from('conversations').select('id, batch_id, name, created_at, trek_batches(trek_id)').eq('id', conversationIdParam).single();
       if (conv) {
         const { data: parts } = await supabase.from('conversation_participants').select('user_id').eq('conversation_id', conv.id);
-        const pIds = (parts || []).map((p: any) => p.user_id);
+        const pIds = (parts || []).map((p) => p.user_id);
         const pMap = await fetchProfilesMap(pIds);
         const obj = { id: conv.id, batch_id: conv.batch_id, name: conv.name, participants: pIds.map(id => ({ user_id: id, full_name: pMap.get(id)?.full_name, avatar_url: pMap.get(id)?.avatar_url })) };
         setSelectedConversation(obj as Conversation);
@@ -128,9 +145,9 @@ function MessagesPageContent() {
     if (before) query = query.lt('created_at', before);
     const { data } = await query;
     const rows = (data || []).reverse();
-    const pIds = Array.from(new Set(rows.map((r: any) => r.user_id)));
+    const pIds = Array.from(new Set(rows.map((r: MessageRow) => r.user_id)));
     const pMap = await fetchProfilesMap(pIds);
-    return { rows: rows.map((r: any) => ({ id: r.id, content: r.message, sender_id: r.user_id, created_at: r.created_at, updated_at: r.updated_at, is_deleted: r.is_deleted, reply_to: r.reply_to, reactions: r.reactions || {}, full_name: pMap.get(r.user_id)?.full_name, avatar_url: pMap.get(r.user_id)?.avatar_url })), hasMore: (data || []).length === 30 };
+    return { rows: rows.map((r: MessageRow) => ({ id: r.id, content: r.message, sender_id: r.user_id, created_at: r.created_at, updated_at: r.updated_at, is_deleted: r.is_deleted, reply_to: r.reply_to, reactions: r.reactions || {}, full_name: pMap.get(r.user_id)?.full_name, avatar_url: pMap.get(r.user_id)?.avatar_url })), hasMore: (data || []).length === 30 };
   };
 
   useEffect(() => {
@@ -143,7 +160,7 @@ function MessagesPageContent() {
     });
   }, [selectedConversation]);
 
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedConversation || !user) return;
     const content = newMessage.trim();
@@ -166,7 +183,7 @@ function MessagesPageContent() {
     if (!user) return;
     const prev = msg.reactions || {};
     const uList = new Set(prev[emoji] || []);
-    uList.has(user.id) ? uList.delete(user.id) : uList.add(user.id);
+    if (uList.has(user.id)) uList.delete(user.id); else uList.add(user.id);
     const newR = { ...prev, [emoji]: Array.from(uList) };
     if (newR[emoji].length === 0) delete newR[emoji];
     setMessages(prevM => prevM.map(m => m.id === msg.id ? { ...m, reactions: newR } : m));
@@ -273,7 +290,7 @@ function MessagesPageContent() {
               className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] bg-fixed"
             >
               <AnimatePresence initial={false}>
-                {messages.map((msg, idx) => {
+                {messages.map((msg) => {
                   const isMe = msg.sender_id === user.id;
                   const replied = msg.reply_to ? messages.find(m => m.id === msg.reply_to) : null;
 
@@ -409,7 +426,7 @@ function MessagesPageContent() {
                   <textarea
                     value={newMessage}
                     onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e as any); } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }}
                     placeholder="Message the group..."
                     className="flex-1 bg-transparent border-none text-slate-100 placeholder:text-slate-500 focus:ring-0 resize-none py-3 text-sm md:text-base max-h-32 custom-scrollbar"
                     rows={1}
@@ -451,8 +468,6 @@ function MessagesPageContent() {
     </div>
   );
 }
-
-const startReply = (msg: Msg) => { /* logic remains same */ };
 
 export default function MessagesPage() {
   return (
