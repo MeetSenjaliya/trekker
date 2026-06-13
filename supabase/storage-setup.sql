@@ -13,23 +13,49 @@ ON storage.objects FOR SELECT
 TO public
 USING (bucket_id = 'avatars');
 
+-- Ownership check: the object path must belong to the calling user. Two
+-- upload shapes exist in the app, so both are accepted:
+--   * folder-based  avatars/{uid}/{file}   (profile/edit/page.tsx)
+--   * root-based    avatars/{uid}.{ext}    (edits/page.tsx)
+
 -- Policy 2: Allow authenticated users to upload their own avatar
 DROP POLICY IF EXISTS "Users can upload avatars" ON storage.objects;
 CREATE POLICY "Users can upload avatars"
 ON storage.objects FOR INSERT
 TO authenticated
-WITH CHECK (bucket_id = 'avatars');
+WITH CHECK (
+  bucket_id = 'avatars' AND (
+    (storage.foldername(name))[1] = auth.uid()::text
+    OR name LIKE auth.uid()::text || '.%'
+  )
+);
 
 -- Policy 3: Allow users to update their own avatar
 DROP POLICY IF EXISTS "Users can update avatars" ON storage.objects;
 CREATE POLICY "Users can update avatars"
 ON storage.objects FOR UPDATE
 TO authenticated
-USING (bucket_id = 'avatars');
+USING (
+  bucket_id = 'avatars' AND (
+    (storage.foldername(name))[1] = auth.uid()::text
+    OR name LIKE auth.uid()::text || '.%'
+  )
+)
+WITH CHECK (
+  bucket_id = 'avatars' AND (
+    (storage.foldername(name))[1] = auth.uid()::text
+    OR name LIKE auth.uid()::text || '.%'
+  )
+);
 
 -- Policy 4: Allow users to delete their own avatar
 DROP POLICY IF EXISTS "Users can delete avatars" ON storage.objects;
 CREATE POLICY "Users can delete avatars"
 ON storage.objects FOR DELETE
 TO authenticated
-USING (bucket_id = 'avatars');
+USING (
+  bucket_id = 'avatars' AND (
+    (storage.foldername(name))[1] = auth.uid()::text
+    OR name LIKE auth.uid()::text || '.%'
+  )
+);

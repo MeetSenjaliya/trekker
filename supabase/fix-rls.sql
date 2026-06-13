@@ -1,6 +1,11 @@
 -- FIX: Update the join function to use SECURITY DEFINER
 -- This fixes the "violates row-level security policy" error by allowing the function
 -- to bypass RLS policies when creating batches, conversations, and adding participants.
+--
+-- SECURITY (C1): Because this function is SECURITY DEFINER it bypasses RLS, so it must
+-- NOT trust the caller-supplied p_user_id. We derive the real caller from auth.uid()
+-- and reject any attempt to act on behalf of another user (prevents impersonation /
+-- force-joining arbitrary users into treks and private chats).
 
 CREATE OR REPLACE FUNCTION public.join_trek_and_chat(
   p_user_id uuid,
@@ -9,15 +14,24 @@ CREATE OR REPLACE FUNCTION public.join_trek_and_chat(
 )
 RETURNS jsonb
 LANGUAGE plpgsql
-SECURITY DEFINER -- <--- CRITICAL FIX: Runs with owner permissions
+SECURITY DEFINER -- <--- Runs with owner permissions (bypasses RLS); guarded below
 SET search_path = public -- Secure search path
 AS $$
 DECLARE
+  v_uid uuid := auth.uid(); -- the REAL caller, taken from their JWT (not the argument)
   v_batch_id uuid;
   v_convo_id uuid;
   v_participant_id uuid;
   v_trek_title text;
 BEGIN
+  -- SECURITY GUARDS (C1 fix): never trust p_user_id
+  IF v_uid IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+  IF p_user_id IS NOT NULL AND p_user_id <> v_uid THEN
+    RAISE EXCEPTION 'Cannot join on behalf of another user';
+  END IF;
+
   -- 0) Fetch trek title (User improvement)
   SELECT title INTO v_trek_title
   FROM public.treks
@@ -58,20 +72,20 @@ BEGIN
 
   -- 3) Insert participant into trek_participants
   INSERT INTO public.trek_participants (user_id, batch_id)
-  VALUES (p_user_id, v_batch_id)
+  VALUES (v_uid, v_batch_id)
   ON CONFLICT (user_id, batch_id) DO NOTHING
   RETURNING id INTO v_participant_id;
 
   IF v_participant_id IS NULL THEN
     SELECT id INTO v_participant_id
     FROM public.trek_participants
-    WHERE user_id = p_user_id AND batch_id = v_batch_id
+    WHERE user_id = v_uid AND batch_id = v_batch_id
     LIMIT 1;
   END IF;
 
   -- 4) Add user to conversation participants
   INSERT INTO public.conversation_participants (conversation_id, user_id)
-  VALUES (v_convo_id, p_user_id)
+  VALUES (v_convo_id, v_uid)
   ON CONFLICT (conversation_id, user_id) DO NOTHING;
 
   -- Final return
