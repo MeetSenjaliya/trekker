@@ -36,27 +36,11 @@ export async function signUp({ email, password, fullName }: SignUpData): Promise
       return { user: null, session: null, error }
     }
 
-    // If signup successful, create user profile
-    if (data.user) {
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert([
-          {
-            id: data.user.id,            // Must match auth.users.id
-            full_name: fullName,         // Provided by form
-            bio: null,                   // Optional field
-            experience_level: null,      // Optional field
-            emergency_contact: null,     // Optional field
-            avatar_url: null,           // Optional field
-            // created_at will auto-fill if your table has `default now()`
-          },
-        ]);
-
-      if (profileError) {
-        console.error('Error creating profile:', profileError);
-        // Profile creation failed, but auth was successful
-      }
-    }
+    // The profiles row is created server-side by the handle_new_user()
+    // trigger on auth.users (see supabase/security-fixes.sql, NEW-2).
+    // Doing it from the browser fails under RLS when email confirmation
+    // is enabled (no session -> anon insert is rejected), so it must not
+    // be done here.
 
     return { user: data.user, session: data.session, error: null }
   } catch (error) {
