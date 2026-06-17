@@ -18,10 +18,51 @@ export interface AuthResponse {
   error: AuthError | null
 }
 
+// Free-plan replacement for Supabase's "leaked password protection" (Pro-only).
+// Uses HaveIBeenPwned's Pwned Passwords range API with k-anonymity: only the
+// first 5 chars of the SHA-1 hash leave the browser, never the password.
+// https://haveibeenpwned.com/API/v3#PwnedPasswords
+export async function isPasswordPwned(password: string): Promise<boolean> {
+  try {
+    const buffer = await crypto.subtle.digest(
+      'SHA-1',
+      new TextEncoder().encode(password)
+    )
+    const hash = Array.from(new Uint8Array(buffer))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase()
+    const prefix = hash.slice(0, 5)
+    const suffix = hash.slice(5)
+
+    const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`)
+    if (!res.ok) return false
+    const body = await res.text()
+
+    return body
+      .split('\n')
+      .some((line) => line.split(':')[0]?.trim() === suffix)
+  } catch {
+    // Fail open: a HIBP outage must not block legitimate sign-ups.
+    return false
+  }
+}
+
+const PWNED_PASSWORD_MESSAGE =
+  'This password has appeared in a known data breach. Please choose a different one.'
+
+function pwnedPasswordError(): AuthError {
+  return new AuthError(PWNED_PASSWORD_MESSAGE, 422, 'weak_password')
+}
+
 // Sign up new user
 export async function signUp({ email, password, fullName }: SignUpData): Promise<AuthResponse> {
   const supabase = createClient()
   try {
+    if (await isPasswordPwned(password)) {
+      return { user: null, session: null, error: pwnedPasswordError() }
+    }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -81,6 +122,22 @@ export async function resetPassword(email: string): Promise<{ error: AuthError |
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: `${window.location.origin}/auth/reset-password`,
     })
+    return { error }
+  } catch (error) {
+    return { error: error as AuthError }
+  }
+}
+
+// Update the current user's password (used by the reset-password page once a
+// recovery session has been established via verifyOtp).
+export async function updatePassword(password: string): Promise<{ error: AuthError | null }> {
+  const supabase = createClient()
+  try {
+    if (await isPasswordPwned(password)) {
+      return { error: pwnedPasswordError() }
+    }
+
+    const { error } = await supabase.auth.updateUser({ password })
     return { error }
   } catch (error) {
     return { error: error as AuthError }

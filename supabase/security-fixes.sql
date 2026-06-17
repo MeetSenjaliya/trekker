@@ -315,3 +315,75 @@ using (user_id = auth.uid());
 -- app code updates this table, so UPDATE is now correctly default-denied.
 -- =====================================================================
 drop policy if exists "Users can update own participation" on public.trek_participants;
+
+
+-- =====================================================================
+-- M-stats: Make user_stats / user_monthly_activity system-managed.
+-- Problem: both tables granted the owner INSERT + UPDATE on their own
+-- rows (with check auth.uid() = user_id). Since these are aggregate /
+-- vanity stats surfaced on the profile page, any authenticated user could
+-- self-inflate them from the browser anon client, e.g.
+--   update user_stats set treks_completed = 9999, avg_rating = 5
+--     where user_id = auth.uid();
+-- user_monthly_activity additionally had NO non-negative CHECK on its
+-- counters, so values could be set arbitrarily (including negative).
+-- No legitimate app code writes these tables (profile/page.tsx only reads
+-- them; the only writers were the dev-only src/app/test/* pages).
+-- Fix: drop the client INSERT/UPDATE policies on both tables (keep
+-- SELECT-own-row). With RLS on and no write policy, clients are
+-- default-denied; system maintenance must run through SECURITY DEFINER
+-- functions/triggers, which bypass RLS. Add the missing >= 0 CHECKs on
+-- the monthly counters.
+-- =====================================================================
+drop policy if exists "Users can insert their own stats record" on public.user_stats;
+drop policy if exists "Users can update their own stats"         on public.user_stats;
+drop policy if exists "Users can insert their own monthly record" on public.user_monthly_activity;
+drop policy if exists "Users can update their own activity"        on public.user_monthly_activity;
+
+alter table public.user_monthly_activity
+  add constraint user_monthly_activity_treks_joined_nonneg    check (treks_joined    >= 0),
+  add constraint user_monthly_activity_photos_shared_nonneg   check (photos_shared   >= 0),
+  add constraint user_monthly_activity_reviews_written_nonneg check (reviews_written >= 0),
+  add constraint user_monthly_activity_distance_km_nonneg     check (distance_km     >= 0);
+
+
+-- =====================================================================
+-- M-stats (part 2): the actual system-managed maintenance path.
+-- After part 1 locked the tables (read-only to clients), nothing
+-- populated them. This adds the SECURITY DEFINER recompute path so the
+-- stats are maintained entirely server-side from source truth.
+-- Decisions: avg_rating DROPPED (no meaningful per-user source — treks
+-- have no owner, so "rating received" doesn't exist); treks_organised
+-- LEFT AT 0 (no organiser column exists yet); treks_completed /
+-- total_distance_km accumulate from joined batches whose batch_date has
+-- passed (a "completed" trek's distance is added once it is done).
+-- recompute_user_stats() is idempotent (rebuilds from source, never
+-- blindly adds) so triggers, cron, and re-runs cannot double-count.
+-- "Completed" is time-based (no row event when batch_date passes), so a
+-- daily pg_cron job recomputes everyone in addition to the DML triggers.
+-- Full DDL (function bodies, triggers) lives in schema.sql sections 5/6.
+-- =====================================================================
+alter table public.user_stats drop column if exists avg_rating;
+-- create or replace function public.recompute_user_stats(uuid) ...  (see schema.sql)
+-- create or replace function public.trg_recompute_user_stats()  ...  (see schema.sql)
+revoke all on function public.recompute_user_stats(uuid) from public, anon, authenticated;
+-- triggers: trg_participant_stats (trek_participants), trg_review_stats (trek_reviews)
+-- cron: select cron.schedule('recompute-user-stats-daily', '5 0 * * *',
+--         $$ select public.recompute_user_stats(p.id) from public.profiles p $$);
+
+
+-- =====================================================================
+-- LEAKED-PASSWORD (2026-06-17): leaked-password protection + Postgres
+-- upgrade are both Pro-plan only on this project, so neither is applied
+-- on the DB/Auth side.
+--   #2 auth_leaked_password_protection: replaced in app code by
+--      isPasswordPwned() in src/lib/auth.ts (HaveIBeenPwned range API,
+--      k-anonymity; wired into signUp + updatePassword; fails open on
+--      HIBP outage). The Auth advisor will still flag this since it only
+--      checks the Pro toggle, not app-level enforcement.
+--   #3 vulnerable_postgres_version (17.4.1.069): manual upgrade is Pro
+--      only; acknowledged on free plan (Supabase patches free-tier infra
+--      on their own schedule).
+--   #1 security_definer_view (public_profiles): intentional, see
+--      DATABASE.md / schema.sql. No change. No SQL to run for any of these.
+-- =====================================================================

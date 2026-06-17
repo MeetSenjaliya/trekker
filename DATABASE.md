@@ -164,10 +164,10 @@ Composite **PK (`created_at`, `id`)**.
 | `reactions` | jsonb | `{ "emoji": [userId, …] }`, default `{}` |
 
 ### `user_stats` — per-user aggregate (1:1)
-`treks_completed`, `treks_organised` (int ≥ 0), `total_distance_km` (≥ 0), `avg_rating` (0..5), `last_updated` (touched by trigger). **PK** `user_id`.
+`treks_completed`, `treks_organised` (int ≥ 0), `total_distance_km` (≥ 0), `last_updated` (touched by trigger). **PK** `user_id`. **System-managed: read-only to clients** (SELECT own row only; no INSERT/UPDATE policy). Rebuilt from source by `recompute_user_stats()` (triggers + daily pg_cron). `treks_completed`/`total_distance_km` = joined batches whose `batch_date` has passed. `treks_organised` stays 0 (no organiser column yet); `avg_rating` was dropped (no per-user source).
 
 ### `user_monthly_activity` — per-user monthly counters
-**PK (`user_id`, `month`)**; `month` `CHECK extract(day) = 1`. Counters: `treks_joined`, `photos_shared`, `reviews_written`, `distance_km`.
+**PK (`user_id`, `month`)**; `month` `CHECK extract(day) = 1`. Counters: `treks_joined`, `photos_shared`, `reviews_written`, `distance_km` (all `CHECK ≥ 0`). **System-managed: read-only to clients** (same model as `user_stats`).
 
 ---
 
@@ -189,6 +189,8 @@ Composite **PK (`created_at`, `id`)**.
 | `join_trek_and_chat(uuid,uuid,date)` | jsonb | **DEFINER** | pinned | The one write path for joining; derives caller from `auth.uid()`, refuses acting for others. |
 | `get_trek_participant_count(uuid)` | integer | INVOKER | pinned | Participant count across a trek's batches. |
 | `update_user_stats_timestamp()` | trigger | INVOKER | pinned | Touch `user_stats.last_updated`. |
+| `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent). EXECUTE revoked from clients; called by triggers + daily pg_cron. |
+| `trg_recompute_user_stats()` | trigger | **DEFINER** | pinned | Trigger glue → `recompute_user_stats()` for the affected user. |
 | `on_user_join_trek()` | trigger | INVOKER | pinned | No-op (legacy). |
 | `create_trek_initial_message()` | trigger | INVOKER | pinned | 🐞 **BROKEN** — inserts into non-existent `trek_messages`. |
 | `update_participants_count()` | trigger | INVOKER | pinned | 🐞 **DEAD** — references non-existent `trek_participants.trek_id`; not attached. |
@@ -202,6 +204,8 @@ Composite **PK (`created_at`, `id`)**.
 |---|---|---|---|---|
 | `auth.users` | `on_auth_user_created` | AFTER INSERT | `handle_new_user()` | ✅ active |
 | `user_stats` | `trg_update_user_stats_timestamp` | BEFORE UPDATE | `update_user_stats_timestamp()` | ✅ active |
+| `trek_participants` | `trg_participant_stats` | AFTER INSERT/DELETE | `trg_recompute_user_stats()` | ✅ active |
+| `trek_reviews` | `trg_review_stats` | AFTER INSERT/UPDATE/DELETE | `trg_recompute_user_stats()` | ✅ active |
 | `treks` | `trg_initial_trek_message` | AFTER INSERT | `create_trek_initial_message()` | 🐞 errors on insert |
 | `trek_participants` | `trek-join-notification` | AFTER INSERT | webhook → `send-trek-notification` | ✅ active |
 | `trek_participants` | `trek-leave-notification` | AFTER DELETE | webhook → `send-trek-leave-notification` | ✅ active |
@@ -227,8 +231,8 @@ RLS is enabled on all 11 public tables. `auth.uid() = …` checks appear under b
 | `conversations` | `is_chat_participant(id)` | — | — | — |
 | `conversation_participants` | `is_chat_participant(cid)` | `service_role` only | — | own (`user_id = uid`) |
 | `conversation_messages` | `is_chat_participant(cid)` | own **AND** participant | own | own |
-| `user_stats` | own | own | own | — |
-| `user_monthly_activity` | own | own | own | — |
+| `user_stats` | own | — (system) | — (system) | — |
+| `user_monthly_activity` | own | — (system) | — (system) | — |
 
 Key design points:
 - **No public read of `profiles`** — PII is protected; cross-user names/avatars come from `public_profiles`.
@@ -271,8 +275,8 @@ Security advisor (live, 2026-06-13):
 - **ERROR** `security_definer_view` — `public_profiles`. Intentional (documented above). [ref](https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view)
 - **WARN** `public_bucket_allows_listing` — `avatars`, `trek-reviews`. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0025_public_bucket_allows_listing)
 - **WARN** `anon/authenticated_security_definer_function_executable` — `handle_new_user`, `is_chat_participant`, `join_trek_and_chat` are callable via `/rest/v1/rpc`. `handle_new_user` is a trigger fn and should have EXECUTE revoked. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable)
-- **WARN** `auth_leaked_password_protection` — disabled; enable HaveIBeenPwned check + raise min length. [ref](https://supabase.com/docs/guides/auth/password-security)
-- **WARN** `vulnerable_postgres_version` — `supabase-postgres-17.4.1.069` has patches available; upgrade in dashboard. [ref](https://supabase.com/docs/guides/platform/upgrading)
+- **WARN** `auth_leaked_password_protection` — disabled. The built-in toggle is **Pro-only**, so it's handled in app code instead: `isPasswordPwned()` in [src/lib/auth.ts](src/lib/auth.ts) checks signups/password-updates against HaveIBeenPwned's range API (k-anonymity). The advisor will still flag this since it only inspects the Auth toggle. [ref](https://supabase.com/docs/guides/auth/password-security)
+- **WARN** `vulnerable_postgres_version` — `supabase-postgres-17.4.1.069` has patches available. Manual upgrade is **Pro-only**; on the free plan this is acknowledged (Supabase patches free-tier infra on their own schedule). [ref](https://supabase.com/docs/guides/platform/upgrading)
 
 Correctness bugs (in DB):
 
