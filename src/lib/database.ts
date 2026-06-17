@@ -81,15 +81,6 @@ export async function joinTrek(trekId: string, userId: string): Promise<boolean>
       return false
     }
 
-    // Update participant count
-    const { error: updateError } = await supabase.rpc('increment_participants', {
-      trek_id: trekId
-    })
-
-    if (updateError) {
-      console.error('Error updating participant count:', updateError)
-    }
-
     return true
   } catch (error) {
     console.error('Error joining trek:', error)

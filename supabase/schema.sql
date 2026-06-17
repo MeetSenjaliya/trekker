@@ -161,13 +161,14 @@ create table if not exists public.conversation_messages (
   primary key (created_at, id)
 );
 
--- user_stats — aggregate per user (currently not actively maintained by app).
+-- user_stats — aggregate per user. System-managed; rebuilt from source by
+-- recompute_user_stats() (triggers + daily pg_cron). treks_organised has no
+-- data source yet (no organiser column) and stays 0. avg_rating was dropped.
 create table if not exists public.user_stats (
   user_id          uuid primary key references public.profiles(id),
   treks_completed  integer default 0 check (treks_completed >= 0),
   treks_organised  integer default 0 check (treks_organised >= 0),
   total_distance_km numeric default 0 check (total_distance_km >= 0),
-  avg_rating       numeric default 0 check (avg_rating >= 0 and avg_rating <= 5),
   last_updated     timestamptz default now()
 );
 
@@ -175,10 +176,10 @@ create table if not exists public.user_stats (
 create table if not exists public.user_monthly_activity (
   user_id         uuid not null references public.profiles(id),
   month           date not null check (extract(day from month) = 1),
-  treks_joined    integer default 0,
-  photos_shared   integer default 0,
-  reviews_written integer default 0,
-  distance_km     numeric default 0,
+  treks_joined    integer default 0 check (treks_joined >= 0),
+  photos_shared   integer default 0 check (photos_shared >= 0),
+  reviews_written integer default 0 check (reviews_written >= 0),
+  distance_km     numeric default 0 check (distance_km >= 0),
   primary key (user_id, month)
 );
 
@@ -359,6 +360,80 @@ as $$
   from public.trek_participants tp
   join public.trek_batches tb on tb.id = tp.batch_id
   where tb.trek_id = trek_uuid;
+$$;
+
+-- recompute_user_stats — rebuild all stats for one user from source truth.
+-- Idempotent (sets, never blindly adds): safe to re-run, handles leaves/deletes.
+-- "Completed" = a joined batch whose batch_date has passed. SECURITY DEFINER so
+-- it can write the system-managed stats tables (clients have SELECT only).
+-- Called by triggers (immediate) + daily pg_cron (time-based completion catch-up).
+-- Execute is revoked from clients; it is not a public RPC.
+create or replace function public.recompute_user_stats(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into public.user_stats as us (user_id, treks_completed, total_distance_km)
+  select
+    p_user_id,
+    coalesce(count(*) filter (where tb.batch_date < current_date), 0),
+    coalesce(sum(t.distance_km) filter (where tb.batch_date < current_date), 0)
+  from public.trek_participants tp
+  join public.trek_batches tb on tb.id = tp.batch_id
+  join public.treks t        on t.id  = tb.trek_id
+  where tp.user_id = p_user_id
+  on conflict (user_id) do update set
+    treks_completed   = excluded.treks_completed,
+    total_distance_km = excluded.total_distance_km;
+
+  delete from public.user_monthly_activity where user_id = p_user_id;
+
+  insert into public.user_monthly_activity
+    (user_id, month, treks_joined, photos_shared, reviews_written, distance_km)
+  select p_user_id, m.month,
+         sum(m.treks_joined), sum(m.photos_shared),
+         sum(m.reviews_written), sum(m.distance_km)
+  from (
+    select date_trunc('month', tp.joined_at)::date as month,
+           1 treks_joined, 0 photos_shared, 0 reviews_written, 0::numeric distance_km
+    from public.trek_participants tp
+    where tp.user_id = p_user_id and tp.joined_at is not null
+    union all
+    select date_trunc('month', r.created_at)::date,
+           0, coalesce(array_length(r.photo_urls, 1), 0), 1, 0
+    from public.trek_reviews r
+    where r.user_id = p_user_id
+    union all
+    select date_trunc('month', tb.batch_date)::date,
+           0, 0, 0, coalesce(t.distance_km, 0)
+    from public.trek_participants tp
+    join public.trek_batches tb on tb.id = tp.batch_id
+    join public.treks t        on t.id  = tb.trek_id
+    where tp.user_id = p_user_id and tb.batch_date < current_date
+  ) m
+  group by m.month
+  having sum(m.treks_joined) <> 0 or sum(m.photos_shared) <> 0
+      or sum(m.reviews_written) <> 0 or sum(m.distance_km) <> 0;
+end;
+$$;
+revoke all on function public.recompute_user_stats(uuid) from public, anon, authenticated;
+
+-- trg_recompute_user_stats — trigger glue: recompute the affected user's stats.
+create or replace function public.trg_recompute_user_stats()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  perform public.recompute_user_stats(coalesce(new.user_id, old.user_id));
+  if tg_op = 'UPDATE' and new.user_id is distinct from old.user_id then
+    perform public.recompute_user_stats(old.user_id);
+  end if;
+  return null;
+end;
 $$;
 
 -- update_user_stats_timestamp — touch last_updated on user_stats UPDATE.
@@ -581,6 +656,19 @@ create trigger trg_update_user_stats_timestamp
   before update on public.user_stats
   for each row execute function public.update_user_stats_timestamp();
 
+-- System-managed stats: recompute the affected user on join/leave and on review
+-- changes. Time-based completion (batch_date crossing into the past) is caught by
+-- the daily pg_cron job below, not by these triggers.
+drop trigger if exists trg_participant_stats on public.trek_participants;
+create trigger trg_participant_stats
+  after insert or delete on public.trek_participants
+  for each row execute function public.trg_recompute_user_stats();
+
+drop trigger if exists trg_review_stats on public.trek_reviews;
+create trigger trg_review_stats
+  after insert or update or delete on public.trek_reviews
+  for each row execute function public.trg_recompute_user_stats();
+
 -- BUG (see function note): fires the broken trek_messages insert on trek create.
 drop trigger if exists trg_initial_trek_message on public.treks;
 create trigger trg_initial_trek_message
@@ -625,10 +713,21 @@ create trigger trek_participants_count_trigger
 -- must NOT be callable via /rest/v1/rpc. Revoke from PUBLIC (anon/authenticated
 -- inherit EXECUTE through it; revoking only those two is a no-op). Triggers
 -- still fire; the owner keeps EXECUTE. join_trek_and_chat / is_chat_participant
--- / increment_participants stay callable (app RPC + RLS policies use them).
+-- stay callable (app RPC + RLS policies use them). increment_participants is
+-- revoked too — the trek_participants_count_trigger makes it redundant.
 revoke execute on function public.handle_new_user()           from public, anon, authenticated;
 revoke execute on function public.notify_trek_participation() from public, anon, authenticated;
 revoke execute on function public.update_participants_count() from public, anon, authenticated;
+revoke execute on function public.increment_participants(uuid) from public, anon, authenticated;
+revoke execute on function public.recompute_user_stats(uuid)  from public, anon, authenticated;
+revoke execute on function public.trg_recompute_user_stats()  from public, anon, authenticated;
+
+-- Scheduled job (pg_cron): daily catch-up so treks_completed / total_distance_km
+-- and monthly distance pick up batches whose batch_date has crossed into the past
+-- (a time-based event no trigger can observe). Recomputes every profile at 00:05 UTC.
+--   create extension if not exists pg_cron;
+--   select cron.schedule('recompute-user-stats-daily', '5 0 * * *',
+--     $$ select public.recompute_user_stats(p.id) from public.profiles p $$);
 
 
 -- ============================================================================
@@ -729,21 +828,22 @@ create policy "Edit own messages" on public.conversation_messages for update to 
 drop policy if exists "Delete own messages" on public.conversation_messages;
 create policy "Delete own messages" on public.conversation_messages for delete to public using (user_id = auth.uid());
 
--- ---- user_stats (own rows) --------------------------------------------------
+-- ---- user_stats (own rows, read-only) ---------------------------------------
+-- System-managed aggregates. Clients get SELECT on their own row only; there are
+-- intentionally NO client INSERT/UPDATE policies. Writes happen exclusively via
+-- SECURITY DEFINER maintenance functions/triggers, which bypass RLS. Granting
+-- self-write here let users inflate their own vanity stats. See security-fixes.sql.
 drop policy if exists "Users can view own stats" on public.user_stats;
 create policy "Users can view own stats" on public.user_stats for select to authenticated using (auth.uid() = user_id);
 drop policy if exists "Users can insert their own stats record" on public.user_stats;
-create policy "Users can insert their own stats record" on public.user_stats for insert to public with check (auth.uid() = user_id);
 drop policy if exists "Users can update their own stats" on public.user_stats;
-create policy "Users can update their own stats" on public.user_stats for update to public using (auth.uid() = user_id);
 
--- ---- user_monthly_activity (own rows) ---------------------------------------
+-- ---- user_monthly_activity (own rows, read-only) ----------------------------
+-- Same model as user_stats: read-only to clients, system-managed writes only.
 drop policy if exists "Users can view their own activity" on public.user_monthly_activity;
 create policy "Users can view their own activity" on public.user_monthly_activity for select to public using (auth.uid() = user_id);
 drop policy if exists "Users can insert their own monthly record" on public.user_monthly_activity;
-create policy "Users can insert their own monthly record" on public.user_monthly_activity for insert to public with check (auth.uid() = user_id);
 drop policy if exists "Users can update their own activity" on public.user_monthly_activity;
-create policy "Users can update their own activity" on public.user_monthly_activity for update to public using (auth.uid() = user_id);
 
 
 -- ============================================================================
@@ -755,10 +855,16 @@ insert into storage.buckets (id, name, public) values ('trek-profile', 'trek-pro
 -- NOTE: bucket `trek-profile` is public but has NO object policies (no client
 -- write path; objects are reachable only via public URL). Likely unused.
 
--- ---- avatars: public read, owner-scoped writes ------------------------------
+-- ---- avatars: authenticated read (anon listing blocked), owner-scoped writes -
 -- Ownership accepts both layouts: avatars/{uid}/file AND avatars/{uid}.ext
+-- Any signed-in user can view all avatars (needed for chat/review author display).
+-- Anonymous listing is blocked; CDN public URLs still serve photos without auth.
 drop policy if exists "Public can view avatars" on storage.objects;
-create policy "Public can view avatars" on storage.objects for select to public using (bucket_id = 'avatars');
+drop policy if exists "Authenticated users can view own avatars" on storage.objects;
+drop policy if exists "Authenticated users can view avatars" on storage.objects;
+create policy "Authenticated users can view avatars" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'avatars');
 
 drop policy if exists "Users can upload avatars" on storage.objects;
 create policy "Users can upload avatars" on storage.objects for insert to authenticated
@@ -773,9 +879,14 @@ drop policy if exists "Users can delete avatars" on storage.objects;
 create policy "Users can delete avatars" on storage.objects for delete to authenticated
 using (bucket_id = 'avatars' and ((storage.foldername(name))[1] = auth.uid()::text or name like auth.uid()::text || '.%'));
 
--- ---- trek-reviews: public read, owner-scoped insert/delete (no update) ------
+-- ---- trek-reviews: authenticated read (anon listing blocked), owner-scoped writes
+-- Any signed-in user can view review photos (shown on trek detail pages).
+-- Anonymous listing is blocked; CDN public URLs still serve photos without auth.
 drop policy if exists "Public Access" on storage.objects;
-create policy "Public Access" on storage.objects for select to public using (bucket_id = 'trek-reviews');
+drop policy if exists "Authenticated users can view review photos" on storage.objects;
+create policy "Authenticated users can view review photos" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'trek-reviews');
 
 drop policy if exists "Authenticated users can upload review photos" on storage.objects;
 create policy "Authenticated users can upload review photos" on storage.objects for insert to authenticated

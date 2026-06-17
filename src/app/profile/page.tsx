@@ -80,8 +80,7 @@ export default function ProfilePage() {
   const [stats, setStats] = useState({
     treksCompleted: 0,
     treksOrganized: 0,
-    totalDistance: '0 km',
-    averageRating: 0
+    totalDistance: '0 km'
   });
   const [monthlyActivity, setMonthlyActivity] = useState({
     treks_joined: 0,
@@ -121,8 +120,7 @@ export default function ProfilePage() {
           setStats({
             treksCompleted: statsData.treks_completed || 0,
             treksOrganized: statsData.treks_organised || 0,
-            totalDistance: `${statsData.total_distance_km || 0} km`,
-            averageRating: statsData.avg_rating || 0
+            totalDistance: `${statsData.total_distance_km || 0} km`
           });
         }
 
@@ -261,13 +259,6 @@ export default function ProfilePage() {
                     <div>
                         <h1 className="text-3xl md:text-4xl font-bold text-white mb-1 drop-shadow-md">{displayName}</h1>
                         <p className="text-blue-200/60 text-sm font-light">Joined {displayJoinDate}</p>
-                    </div>
-                    
-                    {/* Rating Stars */}
-                    <div className="flex items-center justify-center md:justify-end gap-1 bg-black/20 px-3 py-1.5 rounded-full border border-white/5">
-                        <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-                        <span className="text-white font-bold text-sm ml-1">{stats.averageRating}</span>
-                        <span className="text-xs text-gray-400 ml-1">(Rating)</span>
                     </div>
                 </div>
 
