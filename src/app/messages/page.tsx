@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { leaveTrek } from '@/lib/joinTrek';
+import { markConversationRead, getUnreadCounts } from '@/lib/chat';
 
 // Keep all your existing types
 type Msg = {
@@ -55,10 +56,12 @@ type MessageRow = {
   reply_to?: string | null;
   reactions?: Record<string, string[]>;
 };
+// Realtime payload row — same as MessageRow but always carries conversation_id.
+type MessageRowRT = MessageRow & { conversation_id: string };
 
 function MessagesPageContent() {
   const supabase = createClient();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const searchParams = useSearchParams();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -76,6 +79,19 @@ function MessagesPageContent() {
   const [editing, setEditing] = useState<Msg | null>(null);
   const [replyTo, setReplyTo] = useState<Msg | null>(null);
   const REACTIONS = ['❤️', '😂', '👍', '🔥', '🙌'];
+
+  // Realtime: unread badges, presence, typing.
+  const [unreadCounts, setUnreadCounts] = useState<Map<string, number>>(new Map());
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
+  const [myName, setMyName] = useState('');
+
+  const selectedConvIdRef = useRef<string | null>(null);
+  const profileCacheRef = useRef<Map<string, ProfileLite>>(new Map());
+  const reconciledIdsRef = useRef<Set<string>>(new Set());
+  const presenceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const typingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const lastTypingSentRef = useRef(0);
 
   const startReply = (msg: Msg) => { setReplyTo(msg); setMenuOpen(null); };
 
@@ -106,6 +122,8 @@ function MessagesPageContent() {
         const { data: allParts } = await supabase.from('conversation_participants').select('conversation_id, user_id').in('conversation_id', convIds);
         const participantIds = Array.from(new Set((allParts || []).map((p: ParticipantRow) => p.user_id)));
         const profileMap = await fetchProfilesMap(participantIds);
+        profileMap.forEach((p, id) => profileCacheRef.current.set(id, p));
+        getUnreadCounts().then(setUnreadCounts);
         const convObjs = (convs || []).map((c: ConversationRow) => {
           const participantsForConv = (allParts || []).filter((p: ParticipantRow) => p.conversation_id === c.id);
           return {
@@ -159,6 +177,149 @@ function MessagesPageContent() {
       setTimeout(() => scrollToBottom('auto'), 0);
     });
   }, [selectedConversation]);
+
+  // Hand the realtime socket the user's JWT. Without this the @supabase/ssr browser
+  // client subscribes to postgres_changes as anon and RLS silently drops every event.
+  useEffect(() => {
+    if (session?.access_token) supabase.realtime.setAuth(session.access_token);
+  }, [session?.access_token]);
+
+  // Track the open conversation for the global channel callback, and mark it read on open.
+  useEffect(() => {
+    selectedConvIdRef.current = selectedConversation?.id ?? null;
+    if (!selectedConversation) return;
+    markConversationRead(selectedConversation.id);
+    setUnreadCounts(prev => {
+      if (!prev.get(selectedConversation.id)) return prev;
+      const next = new Map(prev); next.set(selectedConversation.id, 0); return next;
+    });
+  }, [selectedConversation]);
+
+  // Resolve the current user's display name once (used for presence + typing).
+  useEffect(() => {
+    if (!user) return;
+    fetchProfilesMap([user.id]).then(m => {
+      const metaName = (user.user_metadata?.full_name as string | undefined);
+      setMyName(m.get(user.id)?.full_name || metaName || 'Hiker');
+    });
+  }, [user]);
+
+  // Global channel: live INSERT/UPDATE/DELETE on messages across all my conversations.
+  // RLS scopes delivery to conversations I belong to.
+  useEffect(() => {
+    if (!user) return;
+
+    const upsertIncoming = async (row: MessageRowRT) => {
+      const openId = selectedConvIdRef.current;
+      if (row.conversation_id !== openId) {
+        if (row.user_id !== user.id && !row.is_deleted) {
+          setUnreadCounts(prev => {
+            const next = new Map(prev);
+            next.set(row.conversation_id, (next.get(row.conversation_id) || 0) + 1);
+            return next;
+          });
+        }
+        return;
+      }
+      markConversationRead(openId);
+      if (reconciledIdsRef.current.has(row.id)) return;
+
+      let profile = profileCacheRef.current.get(row.user_id);
+      if (!profile && row.user_id !== user.id) {
+        profile = (await fetchProfilesMap([row.user_id])).get(row.user_id);
+        if (profile) profileCacheRef.current.set(row.user_id, profile);
+      }
+      const incoming: Msg = {
+        id: row.id, content: row.message, sender_id: row.user_id, created_at: row.created_at,
+        updated_at: row.updated_at, is_deleted: row.is_deleted, reply_to: row.reply_to,
+        reactions: row.reactions || {}, full_name: profile?.full_name, avatar_url: profile?.avatar_url,
+      };
+      setMessages(prev => {
+        if (prev.some(m => m.id === row.id)) return prev;
+        if (row.user_id === user.id) {
+          const idx = prev.findIndex(m => m.isOptimistic && m.sender_id === user.id && m.content === row.message);
+          if (idx !== -1) {
+            reconciledIdsRef.current.add(row.id);
+            const copy = [...prev]; copy[idx] = incoming; return copy;
+          }
+        }
+        reconciledIdsRef.current.add(row.id);
+        return [...prev, incoming];
+      });
+    };
+
+    const patchExisting = (row: MessageRowRT) => {
+      if (row.conversation_id !== selectedConvIdRef.current) return;
+      setMessages(prev => prev.map(m => m.id === row.id
+        ? { ...m, content: row.message, is_deleted: row.is_deleted, updated_at: row.updated_at, reactions: row.reactions || {} }
+        : m));
+    };
+
+    const removeExisting = (row: { id: string; conversation_id: string }) => {
+      if (row.conversation_id !== selectedConvIdRef.current) return;
+      setMessages(prev => prev.filter(m => m.id !== row.id));
+    };
+
+    const channel = supabase
+      .channel(`messages:${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'conversation_messages' }, p => upsertIncoming(p.new as MessageRowRT))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_messages' }, p => patchExisting(p.new as MessageRowRT))
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'conversation_messages' }, p => removeExisting(p.old as { id: string; conversation_id: string }))
+      .subscribe((status, err) => {
+        console.log('[realtime] messages channel:', status, err ?? '');
+      });
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
+
+  // Per-conversation private channel: presence (who's online) + typing broadcast.
+  useEffect(() => {
+    if (!user || !selectedConversation) return;
+    const channel = supabase.channel(`conversation:${selectedConversation.id}`, {
+      config: { private: true, presence: { key: user.id }, broadcast: { self: false } },
+    });
+
+    channel.on('presence', { event: 'sync' }, () => {
+      setOnlineUsers(new Set(Object.keys(channel.presenceState())));
+    });
+
+    channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
+      const p = payload as { user_id: string; full_name?: string };
+      if (p.user_id === user.id) return;
+      setTypingUsers(prev => { const next = new Map(prev); next.set(p.user_id, p.full_name || 'Hiker'); return next; });
+      const existing = typingTimeoutsRef.current.get(p.user_id);
+      if (existing) clearTimeout(existing);
+      typingTimeoutsRef.current.set(p.user_id, setTimeout(() => {
+        setTypingUsers(prev => { const next = new Map(prev); next.delete(p.user_id); return next; });
+        typingTimeoutsRef.current.delete(p.user_id);
+      }, 3000));
+    });
+
+    channel.subscribe(status => {
+      if (status === 'SUBSCRIBED') {
+        channel.track({ user_id: user.id, full_name: myName, online_at: new Date().toISOString() });
+      }
+    });
+    presenceChannelRef.current = channel;
+
+    return () => {
+      presenceChannelRef.current = null;
+      supabase.removeChannel(channel);
+      setOnlineUsers(new Set());
+      setTypingUsers(new Map());
+      typingTimeoutsRef.current.forEach(clearTimeout);
+      typingTimeoutsRef.current.clear();
+    };
+  }, [user, selectedConversation?.id, myName]);
+
+  const notifyTyping = () => {
+    const ch = presenceChannelRef.current;
+    if (!ch || !user) return;
+    const now = Date.now();
+    if (now - lastTypingSentRef.current < 1500) return;
+    lastTypingSentRef.current = now;
+    ch.send({ type: 'broadcast', event: 'typing', payload: { user_id: user.id, full_name: myName } });
+  };
 
   const handleSendMessage = async (e: React.SyntheticEvent) => {
     e.preventDefault();
@@ -244,6 +405,11 @@ function MessagesPageContent() {
                     </div>
                     <p className="text-sm text-slate-400 truncate mt-0.5">{conv.participants.length} members ready to trek</p>
                   </div>
+                  {(unreadCounts.get(conv.id) || 0) > 0 && (
+                    <span className="min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-blue-500 text-white text-[11px] font-bold shadow-lg shadow-blue-600/30">
+                      {unreadCounts.get(conv.id)}
+                    </span>
+                  )}
                   <Trash2
                     onClick={(e) => handleLeaveTrek(e, conv)}
                     className="w-4 h-4 text-slate-600 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -271,8 +437,10 @@ function MessagesPageContent() {
                 <div>
                   <h2 className="font-bold text-slate-100 text-lg leading-tight">{selectedConversation.name}</h2>
                   <div className="flex items-center gap-2 mt-1">
-                    <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                    <span className="text-xs text-slate-400 font-medium">{selectedConversation.participants.length} participants</span>
+                    <span className={`w-2 h-2 rounded-full ${onlineUsers.size > 0 ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+                    <span className="text-xs text-slate-400 font-medium">
+                      {onlineUsers.size > 0 ? `${onlineUsers.size} online` : `${selectedConversation.participants.length} participants`}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -398,6 +566,21 @@ function MessagesPageContent() {
 
             {/* INPUT AREA */}
             <div className="p-4 md:p-6 bg-[#111b21] border-t border-white/5">
+              <AnimatePresence>
+                {typingUsers.size > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}
+                    className="max-w-5xl mx-auto mb-2 px-2 flex items-center gap-2 text-xs text-blue-400 italic"
+                  >
+                    <span className="flex gap-1">
+                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" />
+                    </span>
+                    {Array.from(typingUsers.values()).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing…
+                  </motion.div>
+                )}
+              </AnimatePresence>
               <form onSubmit={editing ? (e) => { e.preventDefault(); /* edit logic */ } : handleSendMessage} className="max-w-5xl mx-auto relative">
 
                 {/* STATUS INDICATORS (Reply/Edit) */}
@@ -425,7 +608,7 @@ function MessagesPageContent() {
                   <button type="button" className="p-3 text-slate-400 hover:text-blue-400 transition-colors"><SmilePlus size={24} /></button>
                   <textarea
                     value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
+                    onChange={(e) => { setNewMessage(e.target.value); notifyTyping(); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }}
                     placeholder="Message the group..."
                     className="flex-1 bg-transparent border-none text-slate-100 placeholder:text-slate-500 focus:ring-0 resize-none py-3 text-sm md:text-base max-h-32 custom-scrollbar"
