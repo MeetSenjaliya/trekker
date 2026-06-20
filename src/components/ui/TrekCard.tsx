@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Calendar, MapPin, Users, Star, ArrowRight } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { joinTrekBatchAndChat } from '@/lib/joinTrek';
+import { toast } from 'sonner';
 import ConfirmationModal from './ConfirmationModal';
 import { getDisplayParticipantCount } from '@/lib/utils';
 
@@ -81,8 +82,8 @@ const TrekCard: React.FC<TrekCardProps> = ({
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
-      alert('Please log in to join this trek.');
-      router.push('/login'); 
+      toast.error('Please log in to join this trek.');
+      router.push('/login');
       return;
     }
 
@@ -91,7 +92,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
     }
 
     if (!next_batch_date || next_batch_date === 'No upcoming dates') {
-      alert('No upcoming batch dates available for this trek.');
+      toast.error('No upcoming batch dates available for this trek.');
       return;
     }
 
@@ -105,7 +106,8 @@ const TrekCard: React.FC<TrekCardProps> = ({
         date: next_batch_date
       });
 
-      alert(result.message);
+      if (result.success) toast.success(result.message);
+      else toast.error(result.message);
 
       if (result.success && result.conversationId) {
         router.push(`/messages?conversationId=${result.conversationId}`);
@@ -117,7 +119,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
 
   const handleConfirmJoin = async (date: string) => {
     if (!userId) {
-      alert('Please log in to join this trek.');
+      toast.error('Please log in to join this trek.');
       return;
     }
 
@@ -128,7 +130,8 @@ const TrekCard: React.FC<TrekCardProps> = ({
       date
     });
 
-    alert(result.message);
+    if (result.success) toast.success(result.message);
+    else toast.error(result.message);
 
     if (result.success) {
       setIsModalOpen(false);

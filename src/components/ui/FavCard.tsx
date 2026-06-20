@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { Heart, Calendar, MapPin, Users } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext'; // Assuming you have an AuthContext to get user ID
+import { useFavoriteStatus, useToggleFavorite } from '@/lib/queries';
+import { toast } from 'sonner';
 
 interface FavCardProps {
   id: string;
@@ -41,73 +42,22 @@ const FavCard: React.FC<FavCardProps> = ({
   participantsCount,
 }) => {
   const { user } = useAuth(); // Get user from AuthContext
-  const [isLiked, setIsLiked] = useState(false);
-  const userId = user?.id || null; // Get user ID from AuthContext
+  const userId = user?.id; // Get user ID from AuthContext
+  const { data: isLiked = false } = useFavoriteStatus(userId, id);
+  const { mutate: toggleFavoriteMutation } = useToggleFavorite(userId);
 
-  // Check if the trek is already favorited when component mounts
-  useEffect(() => {
-    const checkFavorite = async () => {
-      if (!userId) return;
-
-      try {
-        const { data, error } = await supabase
-          .from('favorites')
-          .select('*')
-          .eq('user_id', userId)
-          .eq('trek_id', id);
-
-        if (error) {
-          console.error('Error checking favorite:', error);
-          return;
-        }
-
-        setIsLiked(!!data?.length); // Set isLiked to true if favorite exists
-      } catch (err) {
-        console.error('Unexpected error checking favorite:', err);
-      }
-    };
-
-    checkFavorite();
-  }, [userId, id]);
-
-  const toggleFavorite = async () => {
+  const toggleFavorite = () => {
     if (!userId) {
-      alert('Please log in to favorite this trek.');
+      toast.error('Please log in to favorite this trek.');
       return;
     }
 
-    try {
-      if (isLiked) {
-        const { error } = await supabase
-          .from('favorites')
-          .delete()
-          .eq('user_id', userId)
-          .eq('trek_id', id);
-
-        if (error) {
-          console.error('Error removing favorite:', error);
-          alert('Failed to remove favorite.');
-          return;
-        }
-
-        setIsLiked(false);
-      } else {
-        const { error } = await supabase
-          .from('favorites')
-          .insert([{ user_id: userId, trek_id: id }]);
-
-        if (error) {
-          console.error('Error adding favorite:', error);
-          alert('Failed to add favorite.');
-          return;
-        }
-
-        setIsLiked(true);
+    toggleFavoriteMutation(
+      { trekId: id, isLiked },
+      {
+        onError: () => toast.error('Failed to update favorite.'),
       }
-    } catch (err) {
-      console.error('Unexpected error toggling favorite:', err);
-      alert('An unexpected error occurred.');
-    }
+    );
   };
 
   return (

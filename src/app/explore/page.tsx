@@ -1,81 +1,41 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabase';
 import TrekCard from '@/components/ui/TrekCard';
 import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
 import SnowEffect from '@/components/ui/SnowEffect';
+import { useSearchTreks } from '@/lib/queries';
 
 const DEFAULT_IMAGE_URL =
   'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
-type Trek = {
-  id: string;
-  title: string;
-  description: string;
-  cover_image_url?: string;
-  location: string;
-  difficulty: string;
-  distance_km?: number;
-  max_participants?: number;
-  rating?: number;
-  estimated_cost?: number;
-  participants_joined?: number;
-  next_batch_date?: string | null;
-  total_count?: number;
-};
-
-const num = (v: string) => (v.trim() === '' ? null : Number(v));
+const TREKS_PER_PAGE = 6;
 
 export default function ExplorePage() {
-  const [treks, setTreks] = useState<Trek[]>([]);
-  const [loading, setLoading] = useState(true);
-
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
-  const TREKS_PER_PAGE = 6;
 
-  const fetchTreks = async (f: FilterState, page: number) => {
-    const { data, error } = await supabase.rpc('search_treks', {
-      p_search: f.search.trim() || null,
-      p_location: f.location || null,
-      p_difficulty: f.difficulty || null,
-      p_min_distance: num(f.minDistance),
-      p_max_distance: num(f.maxDistance),
-      p_min_price: num(f.minPrice),
-      p_max_price: num(f.maxPrice),
-      p_date_from: f.date || null,
-      p_sort: f.sort || 'date',
-      p_limit: TREKS_PER_PAGE,
-      p_offset: (page - 1) * TREKS_PER_PAGE,
-    });
-
-    if (error) {
-      console.error('Error fetching treks:', error.message);
-      setTreks([]);
-      setTotalPages(1);
-      setTotalCount(0);
-    } else {
-      const rows = (data || []) as Trek[];
-      const count = rows[0]?.total_count ?? 0;
-      setTreks(rows);
-      setTotalPages(Math.max(1, Math.ceil(count / TREKS_PER_PAGE)));
-      setTotalCount(count);
-    }
-
-    setLoading(false);
-  };
-
+  // Debounce filter changes into the query key so typing doesn't fire a
+  // request per keystroke (TanStack Query refetches whenever the key changes).
+  const [debouncedFilters, setDebouncedFilters] = useState<FilterState>(DEFAULT_FILTERS);
   useEffect(() => {
-    setLoading(true);
-    const t = setTimeout(() => {
-      fetchTreks(filters, currentPage);
-    }, 300);
+    const t = setTimeout(() => setDebouncedFilters(filters), 300);
     return () => clearTimeout(t);
-  }, [filters, currentPage]);
+  }, [filters]);
+
+  const { data, isFetching } = useSearchTreks(
+    debouncedFilters,
+    currentPage,
+    TREKS_PER_PAGE
+  );
+
+  const treks = data?.treks ?? [];
+  const totalCount = data?.totalCount ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalCount / TREKS_PER_PAGE));
+  // Loading while a fetch is in flight or while a filter change is still
+  // waiting out the debounce (filters is a fresh object until it settles).
+  const loading = isFetching || filters !== debouncedFilters;
 
   const startIdx = (currentPage - 1) * TREKS_PER_PAGE + 1;
   const endIdx = Math.min(currentPage * TREKS_PER_PAGE, totalCount);

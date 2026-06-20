@@ -14,6 +14,7 @@ import { motion, Variants } from 'framer-motion';
 import SnowEffect from '@/components/ui/SnowEffect';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
+import { toast } from 'sonner';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 import ReviewCard from '@/components/ui/ReviewCard';
 import ItineraryView from '@/components/ui/ItineraryView';
@@ -149,7 +150,7 @@ export default function TrekDetailPage() {
   }, [id, user, supabase]);
 
   const toggleFavorite = async () => {
-    if (!user) { alert('Please log in to favorite this trek.'); return; }
+    if (!user) { toast.error('Please log in to favorite this trek.'); return; }
     if (isLiked) {
       const { error } = await supabase.from('favorites').delete().eq('user_id', user.id).eq('trek_id', id);
       if (!error) setIsLiked(false);
@@ -162,9 +163,10 @@ export default function TrekDetailPage() {
   const handleCheckboxChange = (item: string) => setCheckedItems(prev => ({ ...prev, [item]: !prev[item] }));
   const handleJoinTrek = () => setIsModalOpen(true);
   const handleConfirmJoin = async (date: string) => {
-    if (!user) { alert('Please log in to join this trek.'); return; }
+    if (!user) { toast.error('Please log in to join this trek.'); return; }
     const result = await joinTrekBatchAndChat({ userId: user.id, trekId: id as string, trekTitle: trek?.title || 'this trek', date });
-    alert(result.message);
+    if (result.success) toast.success(result.message);
+    else toast.error(result.message);
     if (result.success) {
       setIsModalOpen(false);
       if (result.batchId) setJoinedBatchId(result.batchId);
@@ -176,18 +178,18 @@ export default function TrekDetailPage() {
   };
 
   const handleChat = async () => {
-    if (!user) { alert('Please log in to chat.'); return; }
+    if (!user) { toast.error('Please log in to chat.'); return; }
     if (joinedStatus === 'waitlisted') {
-      alert("You're on the waitlist — group chat unlocks automatically once a spot opens and you're confirmed.");
+      toast.info("You're on the waitlist — group chat unlocks automatically once a spot opens and you're confirmed.");
       return;
     }
     try {
       const { data, error } = await supabase.from("trek_participants").select(`batch_id, trek_batches!inner (trek_id, conversations!inner ( id ))`).eq("user_id", user.id).eq("trek_batches.trek_id", id).maybeSingle();
-      if (error || !data) { alert("Please join a trek batch to access chat."); return; }
+      if (error || !data) { toast.error("Please join a trek batch to access chat."); return; }
       const batch = Array.isArray(data.trek_batches) ? data.trek_batches[0] : data.trek_batches;
       const conversationId = batch?.conversations?.[0]?.id;
       if (conversationId) router.push(`/messages?conversationId=${conversationId}`);
-      else alert('Chat not initialized yet.');
+      else toast.error('Chat not initialized yet.');
     } catch (e) { console.error(e); }
   };
 

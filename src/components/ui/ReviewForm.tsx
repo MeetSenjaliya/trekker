@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Star, Upload, X } from 'lucide-react';
 import { compressImage } from '@/utils/imageCompression';
+import { toast } from 'sonner';
 
 interface ReviewFormProps {
   trekTitle?: string;
@@ -41,7 +42,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
     const files = Array.from(event.target.files || []);
 
     if (photos.length + files.length > 5) {
-      alert('You can upload a maximum of 5 photos.');
+      toast.error('You can upload a maximum of 5 photos.');
       return;
     }
 
@@ -78,12 +79,12 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
     e.preventDefault();
 
     if (rating === 0) {
-      alert('Please provide a rating.');
+      toast.error('Please provide a rating.');
       return;
     }
 
     if (review.trim().length < 10) {
-      alert('Please write a review with at least 10 characters.');
+      toast.error('Please write a review with at least 10 characters.');
       return;
     }
 
@@ -101,9 +102,9 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
       setRating(0);
       setReview('');
       setPhotos([]);
-      alert('Review submitted successfully!');
+      toast.success('Review submitted successfully!');
     } catch {
-      alert('Failed to submit review. Please try again.');
+      toast.error('Failed to submit review. Please try again.');
     } finally {
       setIsSubmitting(false);
     }

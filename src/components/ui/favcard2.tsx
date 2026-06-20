@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { createClient } from '@/utils/supabase/client';
+import { toast } from 'sonner';
 
 interface FavCardProps {
   id: string;
@@ -36,15 +37,15 @@ const favcard2: React.FC<FavCardProps> = ({
 
       if (error) {
         console.error('Error removing favorite:', error);
-        alert('Failed to remove trek.');
+        toast.error('Failed to remove trek.');
         return;
       }
 
-      alert('Trek removed!');
+      toast.success('Trek removed!');
       if (onRemove) onRemove(id); // Notify parent to update state
     } catch (err) {
       console.error('Unexpected error removing favorite:', err);
-      alert('An unexpected error occurred.');
+      toast.error('An unexpected error occurred.');
     }
   };
 

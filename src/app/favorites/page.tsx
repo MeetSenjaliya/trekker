@@ -1,98 +1,19 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { createClient } from '@/utils/supabase/client';
+import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Heart, MapPin, Users, ArrowRight } from 'lucide-react';
 import SnowEffect from '@/components/ui/SnowEffect';
 import Link from 'next/link';
-
-interface Trek {
-  id: string;
-  title: string;
-  location: string;
-  cover_image_url: string;
-  difficulty: string;
-  participants_joined: number;
-}
-
-interface Favorite {
-  user_id: string;
-  trek_id: string;
-  created_at: string;
-  treks: Trek | Trek[] | null;
-}
+import { useFavorites, useRemoveFavorite } from '@/lib/queries';
 
 export default function FavoritesPage() {
-  const supabase = createClient();
   const { user } = useAuth();
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data: favorites = [], isPending } = useFavorites(user?.id);
+  const { mutate: removeFavorite } = useRemoveFavorite(user?.id);
 
-  useEffect(() => {
-    const fetchFavorites = async () => {
-      if (!user?.id) {
-        setLoading(false);
-        return;
-      }
-
-      try {
-        const { data, error } = await supabase
-          .from('favorites')
-          .select(
-            `
-            user_id,
-            trek_id,
-            created_at,
-            treks (
-              id,
-              title,
-              location,
-              cover_image_url,
-              difficulty,
-              participants_joined
-            )
-          `
-          )
-          .eq('user_id', user.id);
-
-        if (error) {
-          console.error('Error fetching favorites:', error);
-          return;
-        }
-
-        setFavorites((data as Favorite[]) || []);
-      } catch (err) {
-        console.error('Unexpected error fetching favorites:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchFavorites();
-  }, [supabase, user?.id]);
-
-  const removeFavorite = async (trekId: string) => {
-    if (!user?.id) return;
-
-    try {
-      const { error } = await supabase
-        .from('favorites')
-        .delete()
-        .eq('user_id', user.id)
-        .eq('trek_id', trekId);
-
-      if (error) {
-        console.error('Error removing favorite:', error);
-        return;
-      }
-
-      // Update local state
-      setFavorites(prev => prev.filter(fav => fav.trek_id !== trekId));
-    } catch (err) {
-      console.error('Error removing favorite:', err);
-    }
-  };
+  // Only block on the query once we actually have a user to load for.
+  const loading = !!user && isPending;
 
   const getDifficultyColor = (difficulty: string) => {
     switch (difficulty) {

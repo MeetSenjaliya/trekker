@@ -6,6 +6,7 @@ import SnowEffect from '@/components/ui/SnowEffect';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 export default function EditProfilePage() {
   const [supabase] = useState(() => createClient());
@@ -156,12 +157,12 @@ export default function EditProfilePage() {
       const { error } = await supabase.from('profiles').upsert(updates);
       if (error) throw error;
 
-      alert('Profile updated successfully!');
+      toast.success('Profile updated successfully!');
       router.push('/profile');
       router.refresh();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      alert(`Error updating profile: ${message}`);
+      toast.error(`Error updating profile: ${message}`);
     } finally {
       setSaving(false);
     }

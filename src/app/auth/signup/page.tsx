@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
+import { toast } from 'sonner';
 
 export default function SignupPage() {
   const [formData, setFormData] = useState({
@@ -72,15 +73,15 @@ export default function SignupPage() {
         });
 
         if (error) {
-          alert(`Signup failed: ${error.message}`);
+          toast.error(`Signup failed: ${error.message}`);
         } else if (user) {
-          alert('Account created successfully! Please check your email to verify your account.');
-          // Redirect to login page
-          window.location.href = '/auth/login';
+          toast.success('Account created successfully! Please check your email to verify your account.');
+          // Delay the hard redirect so the toast is visible before navigation wipes it.
+          setTimeout(() => { window.location.href = '/auth/login'; }, 1500);
         }
       } catch (error) {
         console.error('Signup error:', error);
-        alert('An unexpected error occurred. Please try again.');
+        toast.error('An unexpected error occurred. Please try again.');
       }
     }
   };

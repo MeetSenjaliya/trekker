@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
+import { toast } from 'sonner';
 
 export default function LoginPage() {
   const [formData, setFormData] = useState({
@@ -56,15 +57,15 @@ export default function LoginPage() {
         });
 
         if (error) {
-          alert(`Login failed: ${error.message}`);
+          toast.error(`Login failed: ${error.message}`);
         } else if (user) {
-          alert('Login successful!');
-          // Redirect to home page
-          window.location.href = '/';
+          toast.success('Login successful!');
+          // Delay the hard redirect so the toast is visible before navigation wipes it.
+          setTimeout(() => { window.location.href = '/'; }, 800);
         }
       } catch (error) {
         console.error('Login error:', error);
-        alert('An unexpected error occurred. Please try again.');
+        toast.error('An unexpected error occurred. Please try again.');
       }
     }
   };

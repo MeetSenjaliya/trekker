@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Camera, Save } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from 'sonner';
 
 export default function EditProfilePage() {
   const supabase = createClient();
@@ -87,7 +88,7 @@ export default function EditProfilePage() {
 
     if (uploadError) {
       console.error('Upload error:', uploadError);
-      alert('Upload failed: ' + uploadError.message);
+      toast.error('Upload failed: ' + uploadError.message);
       return;
     }
 
@@ -108,12 +109,12 @@ export default function EditProfilePage() {
       if (typeof updateError === 'object' && updateError !== null) {
         console.error('Error details:', JSON.stringify(updateError, null, 2));
       }
-      alert('Failed to update profile: ' + updateError.message);
+      toast.error('Failed to update profile: ' + updateError.message);
       return;
     }
 
     setFormData(prev => ({ ...prev, avatar_url: data.publicUrl }));
-    alert('Photo uploaded successfully!');
+    toast.success('Photo uploaded successfully!');
   };
 
 
@@ -142,14 +143,14 @@ export default function EditProfilePage() {
     }, { onConflict: 'id' });
 
     if (error) {
-      alert('Could not save profile: ' + error.message);
+      toast.error('Could not save profile: ' + error.message);
       return;
     }
 
     if (formData.email && formData.email !== user.email) {
       await supabase.auth.updateUser({ email: formData.email });
     }
-    alert('Profile saved!');
+    toast.success('Profile saved!');
   };
 
   if (loading) return <p className="text-center text-slate-600 mt-10">Loading...</p>;

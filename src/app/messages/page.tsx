@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { leaveTrek } from '@/lib/joinTrek';
+import { toast } from 'sonner';
 import { markConversationRead, getUnreadCounts } from '@/lib/chat';
 
 // Keep all your existing types
@@ -330,7 +331,7 @@ function MessagesPageContent() {
     setMessages(prev => [...prev, optimisticMsg]);
     setReplyTo(null);
     const { error } = await supabase.from('conversation_messages').insert({ conversation_id: selectedConversation.id, user_id: user.id, message: content, reply_to: optimisticMsg.reply_to });
-    if (error) alert('Error sending message');
+    if (error) toast.error('Error sending message');
   };
 
   const deleteMessage = async (id: string) => {

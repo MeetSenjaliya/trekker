@@ -1,65 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
 import SnowEffect from '@/components/ui/SnowEffect'; // Import SnowEffect
-import { supabase } from '@/lib/supabase';
-import { getParticipantCount, getTrekRating } from '@/lib/utils';
+import { useFeaturedTreks } from '@/lib/queries';
 
 const DEFAULT_IMAGE_URL = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
-interface Trek {
-  id: string;
-  title: string;
-  description: string;
-  cover_image_url: string;
-  location: string;
-  difficulty: 'Easy' | 'Moderate' | 'Hard' | 'Expert';
-  current_participants: number;
-  max_participants: number;
-  rating: number;
-  estimated_cost: number;
-  trek_batches?: {
-    batch_date: string;
-  }[];
-  real_participant_count?: number;
-  avg_rating?: number | null;
-}
-
 export default function HomePage() {
-  const [treks, setTreks] = useState<Trek[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchTreks = async () => {
-      const { data, error } = await supabase
-        .from('treks')
-        .select('*, trek_batches(batch_date)')
-        .limit(3);
-
-      if (error) {
-        console.error('Error fetching treks:', error.message);
-      } else if (data) {
-        // Fetch participant counts in parallel
-        const treksWithCounts = await Promise.all(
-          data.map(async (trek) => {
-            const [count, avgRating] = await Promise.all([
-              getParticipantCount(trek.id),
-              getTrekRating(trek.id),
-            ]);
-            return { ...trek, real_participant_count: count, avg_rating: avgRating };
-          })
-        );
-        setTreks(treksWithCounts as Trek[]);
-      }
-
-      setLoading(false);
-    };
-
-    fetchTreks();
-  }, []);
+  const { data: treks = [], isPending: loading } = useFeaturedTreks();
 
   return (
     // MAIN CONTAINER: Dark Gradient + Snow
