@@ -13,6 +13,8 @@ export interface JoinTrekResult {
     conversationId?: string;
     batchId?: string;
     participantId?: string;
+    status?: 'confirmed' | 'waitlisted';
+    waitlistPosition?: number;
 }
 
 /**
@@ -42,18 +44,28 @@ export async function joinTrekBatchAndChat(
             };
         }
 
-        // The RPC should return relevant IDs
-        // Assuming the RPC returns: { conversation_id, batch_id, participant_id }
+        // RPC returns: { conversation_id, batch_id, participant_id, status, waitlist_position }
         const conversationId = data?.conversation_id;
         const batchId = data?.batch_id;
         const participantId = data?.participant_id;
+        const status: 'confirmed' | 'waitlisted' =
+            data?.status === 'waitlisted' ? 'waitlisted' : 'confirmed';
+        const waitlistPosition = typeof data?.waitlist_position === 'number'
+            ? data.waitlist_position
+            : undefined;
+
+        const message = status === 'waitlisted'
+            ? `${trekTitle} is full — you're #${waitlistPosition ?? '?'} on the waitlist. We'll add you to the group automatically when a spot opens up.`
+            : `Successfully joined ${trekTitle} for ${new Date(date).toLocaleDateString()}!`;
 
         return {
             success: true,
-            message: `Successfully joined ${trekTitle} for ${new Date(date).toLocaleDateString()}!`,
+            message,
             conversationId,
             batchId,
-            participantId
+            participantId,
+            status,
+            waitlistPosition
         };
     } catch (error: unknown) {
         console.error('Unexpected error joining trek:', error);

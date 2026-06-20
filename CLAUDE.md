@@ -58,7 +58,6 @@ src/
 supabase/
 ├── schema.sql                  # Reference — see Supabase section below
 ├── security-fixes.sql          # Reference — see Supabase section below
-├── migrations/                 # Applied migration history (reference only)
 └── functions/                  # Edge functions (send-trek-notification, send-trek-leave-notification)
 ```
 
@@ -112,6 +111,14 @@ Before marking any task complete: run `npm run build`. If it errors, fix it — 
 
 ---
 
+## Feature Tracking
+
+`FEATURES.md` is the single source of truth for what's built vs pending.
+
+**After adding, changing, or completing ANY feature, update `FEATURES.md` in the same change** — set its status (✅ / 🟡 / ❌), add the evidence (source files, and the relevant `schema.sql` section for DB-backed features), and bump the "Last updated" date. Do this before marking the task complete.
+
+---
+
 ## Supabase — Read-Only MCP + Reference Files
 
 **The Supabase MCP server is connected in read-only mode.** It can be used to inspect live schema, query logs, and fetch advisors, but it cannot apply changes.
@@ -132,6 +139,7 @@ These files document the live database state but **do not reflect changes automa
 | `supabase/security-fixes.sql` | Rationale + SQL for each security hardening step. Append new entries; don't rewrite history. |
 | `CONTEXT.md` | High-level architecture, flows, known issues. Update when significant structural changes happen. |
 | `DATABASE.md` | Human-readable DB reference (tables, columns, RLS summary). Update alongside `schema.sql`. |
+| `FEATURES.md` | Feature status (built / partial / pending). Update whenever a feature is added, changed, or completed. |
 
 **When a user applies a change on Supabase, immediately update these files to reflect the new state** so the next conversation starts with accurate context.
 

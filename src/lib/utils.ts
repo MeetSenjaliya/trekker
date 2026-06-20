@@ -35,3 +35,35 @@ export async function getParticipantCount(trekId: string): Promise<number> {
         return 0;
     }
 }
+
+/**
+ * Fetches a trek's live average review rating (rounded to 1 decimal) via RPC.
+ * Returns null when the trek has no reviews so callers can hide the rating badge
+ * rather than showing a fake value.
+ *
+ * @param trekId The UUID of the trek.
+ * @returns A promise resolving to the average rating, or null when unrated/on error.
+ */
+export async function getTrekRating(trekId: string): Promise<number | null> {
+    const supabase = createClient();
+
+    try {
+        const { data, error } = await supabase.rpc('get_trek_avg_rating', {
+            trek_uuid: trekId
+        });
+
+        if (error) {
+            console.error(`Error fetching rating for trek ${trekId}:`, error);
+            return null;
+        }
+
+        // Postgres numeric comes back as a string (e.g. "4.0") to preserve
+        // precision; coerce it. null/undefined => trek has no reviews.
+        if (data === null || data === undefined) return null;
+        const n = Number(data);
+        return Number.isFinite(n) ? n : null;
+    } catch (err) {
+        console.error(`Unexpected error fetching rating for trek ${trekId}:`, err);
+        return null;
+    }
+}

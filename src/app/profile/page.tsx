@@ -6,6 +6,7 @@ import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Calendar, MapPin, Star, Users, Camera, Edit, Settings, Clock, Activity, Award } from 'lucide-react';
 import SnowEffect from '@/components/ui/SnowEffect';
+import { ACHIEVEMENTS } from '@/lib/achievements';
 
 // Interfaces remain the same...
 interface Profile {
@@ -56,14 +57,6 @@ interface JoinedTrekRow {
   trek_batches?: JoinedTrekBatch | JoinedTrekBatch[] | null;
 }
 
-// Sample data for badges
-const badges = [
-  { name: 'Mountain Master', icon: '🏔️', description: 'Completed 20+ mountain treks' },
-  { name: 'Group Leader', icon: '👥', description: 'Successfully organized 5+ treks' },
-  { name: 'Photo Pro', icon: '📸', description: 'Shared 50+ trek photos' },
-  { name: 'Review Star', icon: '⭐', description: 'Received 4.5+ average rating' }
-];
-
 const defaultLocation = 'San Francisco, CA'; 
 const defaultAvatar = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&h=200';
 const defaultBio = 'Passionate trekker and outdoor enthusiast with over 5 years of experience exploring mountains around the world.';
@@ -88,6 +81,7 @@ export default function ProfilePage() {
     reviews_written: 0,
     distance_km: 0
   });
+  const [earnedAchievements, setEarnedAchievements] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
 
   // ... (useEffect Logic remains identical) ...
@@ -110,12 +104,11 @@ export default function ProfilePage() {
           .single();
         setProfile(profileData);
 
-        const { data: statsData } = await supabase
-          .from('user_stats')
-          .select('*')
-          .eq('user_id', user.id)
-          .single();
-        
+        // Single round trip for all gamification data (stats + current-month
+        // activity + earned badges). See get_user_profile() RPC.
+        const { data: profileStats } = await supabase.rpc('get_user_profile');
+
+        const statsData = profileStats?.stats;
         if (statsData) {
           setStats({
             treksCompleted: statsData.treks_completed || 0,
@@ -124,15 +117,7 @@ export default function ProfilePage() {
           });
         }
 
-        const now = new Date();
-        const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-        const { data: monthlyData } = await supabase
-          .from('user_monthly_activity')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('month', currentMonth)
-          .single();
-
+        const monthlyData = profileStats?.current_month;
         if (monthlyData) {
           setMonthlyActivity({
             treks_joined: monthlyData.treks_joined || 0,
@@ -140,6 +125,11 @@ export default function ProfilePage() {
             reviews_written: monthlyData.reviews_written || 0,
             distance_km: monthlyData.distance_km || 0
           });
+        }
+
+        const achievementKeys = profileStats?.achievements;
+        if (Array.isArray(achievementKeys)) {
+          setEarnedAchievements(new Set(achievementKeys));
         }
 
         // Recent Treks Fetch
@@ -399,17 +389,35 @@ export default function ProfilePage() {
             <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-6 border border-white/10">
               <h2 className="text-lg font-bold text-white mb-5 flex items-center gap-2">
                 <Award className="w-5 h-5 text-yellow-400" /> Achievements
+                <span className="ml-auto text-xs font-medium text-gray-400">
+                  {earnedAchievements.size}/{ACHIEVEMENTS.length}
+                </span>
               </h2>
               <div className="space-y-3">
-                {badges.map((badge, index) => (
-                  <div key={index} className="flex items-start gap-4 p-3 bg-black/20 border border-white/5 rounded-xl hover:bg-white/5 transition-colors">
-                    <div className="text-2xl bg-white/5 p-2 rounded-lg">{badge.icon}</div>
-                    <div>
-                      <h3 className="font-bold text-white text-sm">{badge.name}</h3>
-                      <p className="text-xs text-gray-400 leading-snug mt-0.5">{badge.description}</p>
+                {ACHIEVEMENTS.map((badge) => {
+                  const earned = earnedAchievements.has(badge.key);
+                  return (
+                    <div
+                      key={badge.key}
+                      className={`flex items-start gap-4 p-3 border rounded-xl transition-colors ${
+                        earned
+                          ? 'bg-black/20 border-white/5 hover:bg-white/5'
+                          : 'bg-black/10 border-white/5 opacity-50'
+                      }`}
+                    >
+                      <div className={`text-2xl p-2 rounded-lg ${earned ? 'bg-white/5' : 'bg-white/5 grayscale'}`}>
+                        {badge.icon}
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
+                          {badge.name}
+                          {earned && <span className="text-[10px] font-semibold text-yellow-400">EARNED</span>}
+                        </h3>
+                        <p className="text-xs text-gray-400 leading-snug mt-0.5">{badge.description}</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

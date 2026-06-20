@@ -18,7 +18,8 @@ auth.users ──1:1──> profiles ──┐
                                 ├─< conversation_participants >── conversations ──1:1── trek_batches
                                 ├─< conversation_messages ────────  conversations
                                 ├─< user_stats (1:1)
-                                └─< user_monthly_activity
+                                ├─< user_monthly_activity
+                                └─< user_achievements
 ```
 
 - A **trek** is a catalogue entry. A **batch** is a dated departure of a trek (`UNIQUE(trek_id, batch_date)`).
@@ -88,9 +89,10 @@ No owner column → no legitimate client write path (seeded/admin only).
 | `max_participants` | integer | |
 | `estimated_cost` | numeric | |
 | `gear_checklist` | text[] | |
-| `rating` | smallint | |
+| `rating` | smallint | ⚠️ legacy static column — **no longer surfaced on cards**. Card/Explore ratings are now the live average of `trek_reviews.rating` (see `get_trek_avg_rating()` / `search_treks()`). |
 | `plan` | text | itinerary |
-| `participants_joined` | smallint | denormalised counter (not reliably maintained — see Known issues) |
+| `participants_joined` | smallint | denormalised counter, kept in sync by `trek_participants_count_trigger` → `update_participants_count()`. Used directly by the Explore listing. |
+| `fts` | tsvector | **generated** (`title`+`description`+`location`, `english`); GIN-indexed (`treks_fts_idx`). Backs Explore search via `search_treks()`. |
 
 ### `trek_batches` — a dated departure
 | Column | Type | Notes |
@@ -98,7 +100,7 @@ No owner column → no legitimate client write path (seeded/admin only).
 | `id` | uuid | **PK** |
 | `trek_id` | uuid | **NOT NULL**, FK → `treks(id)` |
 | `batch_date` | date | **NOT NULL** |
-| `max_participants` | integer | |
+| `max_participants` | integer | per-batch capacity; seeded from `treks.max_participants` by `join_trek_and_chat` at batch creation. NULL = unlimited. |
 | `created_at` | timestamptz | `now()` |
 | | | **UNIQUE(`trek_id`, `batch_date`)** |
 
@@ -109,6 +111,7 @@ No owner column → no legitimate client write path (seeded/admin only).
 | `user_id` | uuid | FK → `profiles(id)` |
 | `batch_id` | uuid | FK → `trek_batches(id)` |
 | `joined_at` | timestamptz | `now()` |
+| `status` | text | `'confirmed'` (default) or `'waitlisted'`; CHECK-constrained. Full batches waitlist new joiners (no chat seat); promoted FIFO by `promote_waitlist_on_leave()`. Indexed `(batch_id, status, joined_at)`. |
 | | | **UNIQUE(`user_id`, `batch_id`)** |
 
 ### `trek_reviews` — one review per (trek, user)
@@ -169,6 +172,9 @@ Composite **PK (`created_at`, `id`)**.
 ### `user_monthly_activity` — per-user monthly counters
 **PK (`user_id`, `month`)**; `month` `CHECK extract(day) = 1`. Counters: `treks_joined`, `photos_shared`, `reviews_written`, `distance_km` (all `CHECK ≥ 0`). **System-managed: read-only to clients** (same model as `user_stats`).
 
+### `user_achievements` — earned badges (gamification)
+**PK (`user_id`, `achievement_key`)**; `earned_at` timestamptz. **Append-only, system-managed: read-only to clients** (SELECT own rows only; INSERT/UPDATE/DELETE revoked — written exclusively by `award_user_achievements()`, chained off `recompute_user_stats()`). Badge catalog (key → name/icon/description) lives in `src/lib/achievements.ts`; criteria thresholds live in `award_user_achievements()`. 15 badges keyed on treks joined (entry-level "Trailblazer"), completed-trek count, total distance, distinct locations, Hard/Expert completions, distinct active months, reviews written, and photos shared.
+
 ---
 
 ## 5. Views
@@ -186,10 +192,15 @@ Composite **PK (`created_at`, `id`)**.
 |---|---|---|---|---|
 | `is_chat_participant(uuid)` | boolean | **DEFINER** | pinned | Gates **all** chat RLS; avoids recursion. |
 | `handle_new_user()` | trigger | **DEFINER** | pinned | Creates `profiles` row on signup. ⚠️ exposed via RPC (revoke EXECUTE). |
-| `join_trek_and_chat(uuid,uuid,date)` | jsonb | **DEFINER** | pinned | The one write path for joining; derives caller from `auth.uid()`, refuses acting for others. |
-| `get_trek_participant_count(uuid)` | integer | INVOKER | pinned | Participant count across a trek's batches. |
+| `join_trek_and_chat(uuid,uuid,date)` | jsonb | **DEFINER** | pinned | The one write path for joining; derives caller from `auth.uid()`, refuses acting for others. Enforces per-batch capacity under a `FOR UPDATE` row lock — full batches return `status:'waitlisted'` (no chat seat) with a `waitlist_position`; otherwise `'confirmed'`. |
+| `get_trek_participant_count(uuid)` | integer | INVOKER | pinned | **Confirmed** participant count across a trek's batches (excludes waitlisted). |
+| `promote_waitlist_on_leave()` | trigger | **DEFINER** | pinned | After a confirmed participant leaves, promotes the oldest waitlisted joiner (FIFO) to confirmed and adds them to the batch chat. EXECUTE revoked from anon/authenticated. |
+| `get_trek_avg_rating(uuid)` | numeric | INVOKER | pinned | Live average of a trek's `trek_reviews.rating`, rounded to 1 dp; `null` when unrated. Single-trek card views (home page). Granted to anon + authenticated. |
+| `search_treks(text,text,text,numeric,numeric,numeric,numeric,date,text,int,int)` | setof rows | INVOKER | pinned | Explore page read path: FTS + filters (location/difficulty/distance/price/date) + sort + pagination in one call. `rating` is the live average of `trek_reviews` (numeric, 1 dp, `null` when unrated); the `rating` sort orders by it. Returns `total_count` per row (window count). Granted to anon + authenticated. |
 | `update_user_stats_timestamp()` | trigger | INVOKER | pinned | Touch `user_stats.last_updated`. |
-| `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent). EXECUTE revoked from clients; called by triggers + daily pg_cron. |
+| `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent), then calls `award_user_achievements()`. EXECUTE revoked from clients; called by triggers + daily pg_cron. |
+| `award_user_achievements(uuid)` | void | **DEFINER** | pinned | Evaluates the 15-badge catalog from source metrics and appends newly-qualifying badges to `user_achievements` (idempotent, on conflict do nothing — never removes). EXECUTE revoked from clients; called by `recompute_user_stats()`. |
+| `get_user_profile(uuid)` | jsonb | INVOKER | pinned | One read path for the profile page: `{ stats, current_month, achievements[] }` in a single round trip. INVOKER so own-row RLS still applies; `p_user_id` defaults to `auth.uid()`. Granted to `authenticated`. |
 | `trg_recompute_user_stats()` | trigger | **DEFINER** | pinned | Trigger glue → `recompute_user_stats()` for the affected user. |
 | `on_user_join_trek()` | trigger | INVOKER | pinned | No-op (legacy). |
 | `create_trek_initial_message()` | trigger | INVOKER | pinned | 🐞 **BROKEN** — inserts into non-existent `trek_messages`. |
@@ -211,6 +222,7 @@ Composite **PK (`created_at`, `id`)**.
 | `trek_participants` | `trek-leave-notification` | AFTER DELETE | webhook → `send-trek-leave-notification` | ✅ active |
 | `trek_participants` | `trek_join_email_trigger` | AFTER INSERT | `notify_trek_join()` | 🐞 dead edge fn |
 | `trek_participants` | `trek_remove_email_trigger` | AFTER DELETE | `notify_trek_remove()` | 🐞 dead edge fn |
+| `trek_participants` | `trek_participants_waitlist_promote` | AFTER DELETE | `promote_waitlist_on_leave()` | ✅ active — FIFO waitlist promotion |
 
 > `trek_participants` has **two** INSERT and **two** DELETE notification triggers — one working webhook pair plus one dead `pg_net` pair. Consider dropping the dead pair.
 
@@ -233,6 +245,7 @@ RLS is enabled on all 11 public tables. `auth.uid() = …` checks appear under b
 | `conversation_messages` | `is_chat_participant(cid)` | own **AND** participant | own | own |
 | `user_stats` | own | — (system) | — (system) | — |
 | `user_monthly_activity` | own | — (system) | — (system) | — |
+| `user_achievements` | own | — (system) | — (system) | — (system) |
 
 Key design points:
 - **No public read of `profiles`** — PII is protected; cross-user names/avatars come from `public_profiles`.
@@ -281,9 +294,9 @@ Security advisor (live, 2026-06-13):
 Correctness bugs (in DB):
 
 - `create_trek_initial_message()` + `trg_initial_trek_message` insert into non-existent `trek_messages` → **creating a trek errors**.
-- `update_participants_count()` references non-existent `trek_participants.trek_id` (dead, unattached); `treks.participants_joined` is not reliably maintained.
+- `treks.participants_joined` is kept in sync by `trek_participants_count_trigger` → `update_participants_count()` on every join/leave (NEW-5). The exact cross-batch count is still available via `get_trek_participant_count()`.
 - Duplicate dead notification triggers (`notify_trek_join/remove` → non-existent edge fn).
-- App-side dead code: [src/lib/database.ts](src/lib/database.ts) targets a non-existent `reviews` table and `trek_participants.trek_id`/`status` columns and the non-existent `increment_participants` RPC. Not on any live path (the app uses [src/lib/joinTrek.ts](src/lib/joinTrek.ts)).
+- App-side dead code: [src/lib/database.ts](src/lib/database.ts) targets a non-existent `reviews` table and `trek_participants.trek_id` column and the non-existent `increment_participants` RPC. Not on any live path (the app uses [src/lib/joinTrek.ts](src/lib/joinTrek.ts)).
 
 See [SECURITY_AUDIT_ISSUE.md](SECURITY_AUDIT_ISSUE.md) for the full hardening backlog and history, and [supabase/security-fixes.sql](supabase/security-fixes.sql) for applied-fix SQL with rationale.
 

@@ -8,7 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   Heart, Share2, MessageCircle, Camera, MapPin,
   Clock, Mountain, IndianRupee, Star,
-  CheckCircle2, ChevronRight, Calendar
+  CheckCircle2, ChevronRight, Calendar, Lock
 } from 'lucide-react';
 import { motion, Variants } from 'framer-motion';
 import SnowEffect from '@/components/ui/SnowEffect';
@@ -16,6 +16,7 @@ import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 import ReviewCard from '@/components/ui/ReviewCard';
+import ItineraryView from '@/components/ui/ItineraryView';
 
 // Shape of the trek detail row (with embedded trek_batches) and its reviews.
 interface TrekBatch {
@@ -79,6 +80,7 @@ export default function TrekDetailPage() {
   const [isLiked, setIsLiked] = useState(false);
   const [checkedItems, setCheckedItems] = useState<{ [key: string]: boolean }>({});
   const [joinedBatchId, setJoinedBatchId] = useState<string | null>(null);
+  const [joinedStatus, setJoinedStatus] = useState<'confirmed' | 'waitlisted' | null>(null);
   const [realParticipantCount, setRealParticipantCount] = useState<number>(0);
   const [reviews, setReviews] = useState<TrekReview[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(true);
@@ -121,12 +123,17 @@ export default function TrekDetailPage() {
     const checkJoinStatus = async () => {
       const { data } = await supabase
         .from('trek_participants')
-        .select('batch_id, trek_batches!inner(trek_id)')
+        .select('batch_id, status, trek_batches!inner(trek_id)')
         .eq('user_id', user.id)
         .eq('trek_batches.trek_id', id)
         .maybeSingle();
-      if (data) setJoinedBatchId(data.batch_id);
-      else setJoinedBatchId(null);
+      if (data) {
+        setJoinedBatchId(data.batch_id);
+        setJoinedStatus(data.status === 'waitlisted' ? 'waitlisted' : 'confirmed');
+      } else {
+        setJoinedBatchId(null);
+        setJoinedStatus(null);
+      }
     };
     checkJoinStatus();
   }, [id, user, supabase, isModalOpen]);
@@ -160,13 +167,20 @@ export default function TrekDetailPage() {
     alert(result.message);
     if (result.success) {
       setIsModalOpen(false);
+      if (result.batchId) setJoinedBatchId(result.batchId);
+      if (result.status) setJoinedStatus(result.status);
       const { data: refreshedTrek } = await supabase.from('treks').select('*, trek_batches(batch_date)').eq('id', id).single();
       if (refreshedTrek) setTrek(refreshedTrek);
+      setRealParticipantCount(await getParticipantCount(id as string));
     }
   };
 
   const handleChat = async () => {
     if (!user) { alert('Please log in to chat.'); return; }
+    if (joinedStatus === 'waitlisted') {
+      alert("You're on the waitlist — group chat unlocks automatically once a spot opens and you're confirmed.");
+      return;
+    }
     try {
       const { data, error } = await supabase.from("trek_participants").select(`batch_id, trek_batches!inner (trek_id, conversations!inner ( id ))`).eq("user_id", user.id).eq("trek_batches.trek_id", id).maybeSingle();
       if (error || !data) { alert("Please join a trek batch to access chat."); return; }
@@ -191,6 +205,18 @@ export default function TrekDetailPage() {
       Trek not found.
     </div>
   );
+
+  // Real ratings rollup: average the trek's reviews (already fetched above).
+  // Falls back to the static treks.rating column only when there are no reviews.
+  const avgRating = reviews.length
+    ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)
+    : null;
+  const displayRating = avgRating ?? trek.rating ?? '4.8';
+
+  // Capacity hint for the booking button. Enforcement is server-side and
+  // per-batch; this is the trek-wide approximation the sidebar already shows.
+  const isFull = typeof trek.max_participants === 'number'
+    && realParticipantCount >= trek.max_participants;
 
   return (
     <div className="min-h-screen bg-[#090a0f] text-slate-200 selection:bg-blue-500/30 overflow-x-hidden">
@@ -245,7 +271,7 @@ export default function TrekDetailPage() {
                 <MapPin className="w-4 h-4 text-blue-400" /> {trek.location}
               </div>
               <div className="flex items-center gap-2 bg-white/5 backdrop-blur-md px-4 py-2 rounded-xl border border-white/10">
-                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" /> {trek.rating || '4.8'}/5
+                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" /> {displayRating}/5
               </div>
             </div>
           </motion.div>
@@ -295,12 +321,7 @@ export default function TrekDetailPage() {
             {trek.plan && (
               <motion.section variants={fadeInUp} initial="hidden" whileInView="visible" viewport={{ once: true }} className="space-y-6">
                 <h2 className="text-2xl font-bold text-white">Route Itinerary</h2>
-                <div className="relative border-l-2 border-blue-500/20 ml-4 pl-8 py-2">
-                  <div className="absolute top-0 -left-[9px] w-4 h-4 rounded-full bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]" />
-                  <div className="bg-white/5 p-8 rounded-3xl border border-white/10 backdrop-blur-sm">
-                    <p className="text-slate-300 leading-relaxed italic text-lg">&quot;{trek.plan}&quot;</p>
-                  </div>
-                </div>
+                <ItineraryView plan={trek.plan} />
               </motion.section>
             )}
 
@@ -390,14 +411,20 @@ export default function TrekDetailPage() {
                   <div className="space-y-3 pt-4">
                     {joinedBatchId ? (
                       <div className="flex gap-2">
-                        <div className="flex-1 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 py-4 rounded-2xl font-bold text-center flex items-center justify-center gap-2">
-                          <CheckCircle2 className="w-5 h-5" /> Joined
-                        </div>
+                        {joinedStatus === 'waitlisted' ? (
+                          <div className="flex-1 bg-amber-500/10 border border-amber-500/30 text-amber-400 py-4 rounded-2xl font-bold text-center flex items-center justify-center gap-2">
+                            <Clock className="w-5 h-5" /> On Waitlist
+                          </div>
+                        ) : (
+                          <div className="flex-1 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 py-4 rounded-2xl font-bold text-center flex items-center justify-center gap-2">
+                            <CheckCircle2 className="w-5 h-5" /> Joined
+                          </div>
+                        )}
                         <button
                           onClick={async () => {
-                            if (!confirm("Leave this trek?")) return;
+                            if (!confirm(joinedStatus === 'waitlisted' ? "Leave the waitlist?" : "Leave this trek?")) return;
                             const res = await leaveTrek(user!.id, joinedBatchId);
-                            if (res.success) { setJoinedBatchId(null); window.location.reload(); }
+                            if (res.success) { setJoinedBatchId(null); setJoinedStatus(null); window.location.reload(); }
                           }}
                           className="px-6 bg-white/5 hover:bg-rose-500/10 border border-white/10 hover:border-rose-500/50 text-slate-400 hover:text-rose-400 rounded-2xl transition-all"
                         >
@@ -410,14 +437,20 @@ export default function TrekDetailPage() {
                         onClick={handleJoinTrek}
                         className="w-full bg-blue-600 hover:bg-blue-500 text-white py-5 rounded-2xl font-bold text-lg shadow-xl shadow-blue-900/40 flex items-center justify-center gap-3"
                       >
-                        Book This Trek <ChevronRight className="w-5 h-5" />
+                        {isFull ? 'Join Waitlist' : 'Book This Trek'} <ChevronRight className="w-5 h-5" />
                       </motion.button>
                     )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <button onClick={handleChat} className="flex flex-col items-center gap-2 bg-white/5 border border-white/10 py-4 rounded-2xl hover:bg-white/10 transition-colors group/btn">
-                      <MessageCircle className="w-5 h-5 text-slate-400 group-hover/btn:text-blue-400 transition-colors" />
+                    <button
+                      onClick={handleChat}
+                      title={joinedStatus === 'waitlisted' ? 'Chat unlocks once you’re confirmed off the waitlist' : undefined}
+                      className={`flex flex-col items-center gap-2 border border-white/10 py-4 rounded-2xl transition-colors group/btn ${joinedStatus === 'waitlisted' ? 'bg-white/[0.02] opacity-60 cursor-not-allowed' : 'bg-white/5 hover:bg-white/10'}`}
+                    >
+                      {joinedStatus === 'waitlisted'
+                        ? <Lock className="w-5 h-5 text-slate-500" />
+                        : <MessageCircle className="w-5 h-5 text-slate-400 group-hover/btn:text-blue-400 transition-colors" />}
                       <span className="text-[10px] font-bold uppercase text-slate-500">Chat</span>
                     </button>
                     <button className="flex flex-col items-center gap-2 bg-white/5 border border-white/10 py-4 rounded-2xl hover:bg-white/10 transition-colors group/btn">

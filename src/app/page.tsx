@@ -6,7 +6,7 @@ import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
 import SnowEffect from '@/components/ui/SnowEffect'; // Import SnowEffect
 import { supabase } from '@/lib/supabase';
-import { getParticipantCount } from '@/lib/utils';
+import { getParticipantCount, getTrekRating } from '@/lib/utils';
 
 const DEFAULT_IMAGE_URL = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
@@ -25,6 +25,7 @@ interface Trek {
     batch_date: string;
   }[];
   real_participant_count?: number;
+  avg_rating?: number | null;
 }
 
 export default function HomePage() {
@@ -44,8 +45,11 @@ export default function HomePage() {
         // Fetch participant counts in parallel
         const treksWithCounts = await Promise.all(
           data.map(async (trek) => {
-            const count = await getParticipantCount(trek.id);
-            return { ...trek, real_participant_count: count };
+            const [count, avgRating] = await Promise.all([
+              getParticipantCount(trek.id),
+              getTrekRating(trek.id),
+            ]);
+            return { ...trek, real_participant_count: count, avg_rating: avgRating };
           })
         );
         setTreks(treksWithCounts as Trek[]);
@@ -113,7 +117,7 @@ export default function HomePage() {
                           current: trek.real_participant_count || 0,
                           max: trek.max_participants,
                         }}
-                        rating={trek.rating}
+                        rating={trek.avg_rating ?? undefined}
                         price={trek.estimated_cost}
                         next_batch_date={nextDate !== 'No upcoming dates' ? nextDate : undefined}
                       />

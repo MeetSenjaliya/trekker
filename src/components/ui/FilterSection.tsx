@@ -1,15 +1,41 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Search, X, Calendar, MapPin, Activity, Users } from 'lucide-react';
+import { Search, X, Calendar, MapPin, Activity, Route, DollarSign, ArrowUpDown } from 'lucide-react';
 
-interface FilterState {
+export interface FilterState {
   search: string;
   location: string;
   date: string;
   difficulty: string;
-  minParticipants: string;
+  minDistance: string;
+  maxDistance: string;
+  minPrice: string;
+  maxPrice: string;
+  sort: string;
 }
+
+export const DEFAULT_FILTERS: FilterState = {
+  search: '',
+  location: '',
+  date: '',
+  difficulty: '',
+  minDistance: '',
+  maxDistance: '',
+  minPrice: '',
+  maxPrice: '',
+  sort: 'date',
+};
+
+const SORT_LABELS: Record<string, string> = {
+  date: 'Soonest departure',
+  relevance: 'Best match',
+  price_asc: 'Price: Low → High',
+  price_desc: 'Price: High → Low',
+  distance_asc: 'Distance: Short → Long',
+  distance_desc: 'Distance: Long → Short',
+  rating: 'Top rated',
+};
 
 interface FilterSectionProps {
   onFilterChange?: (filters: FilterState) => void;
@@ -17,14 +43,20 @@ interface FilterSectionProps {
 
 const capitalize = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
+// Labels for the active-filter chips; anything not listed is hidden as a chip.
+const CHIP_LABELS: Partial<Record<keyof FilterState, string>> = {
+  search: 'Search',
+  location: 'Location',
+  date: 'Date',
+  difficulty: 'Difficulty',
+  minDistance: 'Min km',
+  maxDistance: 'Max km',
+  minPrice: 'Min price',
+  maxPrice: 'Max price',
+};
+
 const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
-  const [filters, setFilters] = useState<FilterState>({
-    search: '',
-    location: '',
-    date: '',
-    difficulty: '',
-    minParticipants: ''
-  });
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
 
   const handleChange = (key: keyof FilterState, value: string) => {
     const updatedFilters = { ...filters, [key]: value };
@@ -33,30 +65,24 @@ const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
   };
 
   const clearFilter = (key: keyof FilterState) => {
-    handleChange(key, '');
+    handleChange(key, key === 'sort' ? DEFAULT_FILTERS.sort : '');
   };
 
   const clearAllFilters = () => {
-    const cleared = {
-      search: '',
-      location: '',
-      date: '',
-      difficulty: '',
-      minParticipants: ''
-    };
-    setFilters(cleared);
-    onFilterChange?.(cleared);
+    setFilters(DEFAULT_FILTERS);
+    onFilterChange?.(DEFAULT_FILTERS);
   };
 
-  const hasActiveFilters = Object.values(filters).some((val) => val);
+  const activeChips = (Object.keys(CHIP_LABELS) as (keyof FilterState)[]).filter(
+    (key) => filters[key]
+  );
 
-  // Common styles for inputs to ensure consistency
-  const inputStyles = "w-full bg-black/20 border border-white/10 rounded-lg py-2.5 px-4 text-sm text-white placeholder-blue-200/50 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all hover:bg-black/30 backdrop-blur-sm appearance-none";
+  const inputStyles =
+    'w-full bg-black/20 border border-white/10 rounded-lg py-2.5 px-4 text-sm text-white placeholder-blue-200/50 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all hover:bg-black/30 backdrop-blur-sm appearance-none';
 
   return (
-    // Main Container: Glass Effect
     <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl shadow-xl mb-8">
-      
+
       {/* Search Box */}
       <div className="mb-6">
         <div className="relative group">
@@ -68,15 +94,13 @@ const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
             value={filters.search}
             onChange={(e) => handleChange('search', e.target.value)}
             className={`${inputStyles} pl-10 py-3.5 text-base`}
-            placeholder="Search by trek name or keyword..."
+            placeholder="Search treks by name, description or place..."
           />
         </div>
       </div>
 
-      {/* Filters Grid */}
+      {/* Row 1: location / date / difficulty / sort */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-        
-        {/* Location Select */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
             <MapPin className="w-4 h-4 text-blue-300/50" />
@@ -93,21 +117,18 @@ const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
           </select>
         </div>
 
-        {/* Date Input */}
         <div className="relative">
-           {/* Custom calendar icon overlay for better styling */}
-           <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
             <Calendar className="w-4 h-4 text-blue-300/50" />
           </span>
           <input
             type="date"
             value={filters.date}
             onChange={(e) => handleChange('date', e.target.value)}
-            className={`${inputStyles} pl-10 text-white scheme-dark`} // scheme-dark fixes browser date picker colors
+            className={`${inputStyles} pl-10 text-white scheme-dark`}
           />
         </div>
 
-        {/* Difficulty Select */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
             <Activity className="w-4 h-4 text-blue-300/50" />
@@ -125,43 +146,100 @@ const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
           </select>
         </div>
 
-        {/* Participants Input */}
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
-            <Users className="w-4 h-4 text-blue-300/50" />
+            <ArrowUpDown className="w-4 h-4 text-blue-300/50" />
+          </span>
+          <select
+            value={filters.sort}
+            onChange={(e) => handleChange('sort', e.target.value)}
+            className={`${inputStyles} pl-10 cursor-pointer`}
+          >
+            {Object.entries(SORT_LABELS).map(([value, label]) => (
+              <option key={value} value={value} className="bg-slate-800">
+                {label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Row 2: price range / distance range */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+            <DollarSign className="w-4 h-4 text-blue-300/50" />
           </span>
           <input
             type="number"
-            value={filters.minParticipants}
-            onChange={(e) => handleChange('minParticipants', e.target.value)}
-            placeholder="Min. Participants"
+            min={0}
+            value={filters.minPrice}
+            onChange={(e) => handleChange('minPrice', e.target.value)}
+            placeholder="Min price"
+            className={`${inputStyles} pl-10`}
+          />
+        </div>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+            <DollarSign className="w-4 h-4 text-blue-300/50" />
+          </span>
+          <input
+            type="number"
+            min={0}
+            value={filters.maxPrice}
+            onChange={(e) => handleChange('maxPrice', e.target.value)}
+            placeholder="Max price"
+            className={`${inputStyles} pl-10`}
+          />
+        </div>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+            <Route className="w-4 h-4 text-blue-300/50" />
+          </span>
+          <input
+            type="number"
+            min={0}
+            value={filters.minDistance}
+            onChange={(e) => handleChange('minDistance', e.target.value)}
+            placeholder="Min km"
+            className={`${inputStyles} pl-10`}
+          />
+        </div>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+            <Route className="w-4 h-4 text-blue-300/50" />
+          </span>
+          <input
+            type="number"
+            min={0}
+            value={filters.maxDistance}
+            onChange={(e) => handleChange('maxDistance', e.target.value)}
+            placeholder="Max km"
             className={`${inputStyles} pl-10`}
           />
         </div>
       </div>
 
       {/* Active Filters Tags */}
-      {hasActiveFilters && (
+      {activeChips.length > 0 && (
         <div className="flex flex-wrap gap-3 mt-6 pt-4 border-t border-white/10 items-center animate-in fade-in slide-in-from-top-2 duration-300">
           <span className="text-xs text-blue-200/60 uppercase font-semibold tracking-wider mr-1">Active Filters:</span>
-          
-          {Object.entries(filters).map(([key, value]) =>
-            value ? (
-              <span
-                key={key}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-100 text-sm font-medium shadow-[0_0_10px_rgba(59,130,246,0.1)] backdrop-blur-sm"
+
+          {activeChips.map((key) => (
+            <span
+              key={key}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-100 text-sm font-medium shadow-[0_0_10px_rgba(59,130,246,0.1)] backdrop-blur-sm"
+            >
+              <span className="opacity-70 text-xs uppercase">{CHIP_LABELS[key]}:</span>
+              <span className="font-semibold">{capitalize(filters[key])}</span>
+              <button
+                onClick={() => clearFilter(key)}
+                className="ml-1.5 p-0.5 rounded-full hover:bg-blue-500/30 text-blue-200 hover:text-white transition-colors"
               >
-                <span className="opacity-70 text-xs uppercase">{capitalize(key)}:</span> 
-                <span className="font-semibold">{capitalize(value)}</span>
-                <button
-                  onClick={() => clearFilter(key as keyof FilterState)}
-                  className="ml-1.5 p-0.5 rounded-full hover:bg-blue-500/30 text-blue-200 hover:text-white transition-colors"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </span>
-            ) : null
-          )}
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
 
           <button
             onClick={clearAllFilters}

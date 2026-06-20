@@ -87,8 +87,20 @@ create table if not exists public.treks (
   rating              smallint,
   plan                text,
   meeting_point2      text,
-  participants_joined smallint
+  participants_joined smallint,
+  -- Full-text search over title+description+location; backs the Explore search
+  -- box via the search_treks() RPC. GIN-indexed below.
+  fts                 tsvector generated always as (
+                        to_tsvector('english',
+                          coalesce(title, '') || ' ' ||
+                          coalesce(description, '') || ' ' ||
+                          coalesce(location, ''))
+                      ) stored
 );
+
+create index if not exists treks_fts_idx           on public.treks using gin (fts);
+create index if not exists treks_estimated_cost_idx on public.treks (estimated_cost);
+create index if not exists treks_distance_km_idx    on public.treks (distance_km);
 
 -- trek_batches — a dated departure of a trek. One chat per batch.
 create table if not exists public.trek_batches (
@@ -101,13 +113,20 @@ create table if not exists public.trek_batches (
 );
 
 -- trek_participants — who booked which batch. One row per (user, batch).
+-- status: 'confirmed' holds a seat (and a chat seat); 'waitlisted' joined a full
+-- batch and is promoted FIFO by promote_waitlist_on_leave() when a slot frees up.
 create table if not exists public.trek_participants (
   id        uuid primary key default gen_random_uuid(),
   user_id   uuid references public.profiles(id),
   batch_id  uuid references public.trek_batches(id),
   joined_at timestamptz default now(),
+  status    text not null default 'confirmed'
+            check (status in ('confirmed', 'waitlisted')),
   constraint trek_participants_user_batch_key unique (user_id, batch_id)
 );
+
+create index if not exists trek_participants_batch_status_idx
+  on public.trek_participants (batch_id, status, joined_at);
 
 -- trek_reviews — one review per (trek, user). photo_urls/trek_date added later.
 create table if not exists public.trek_reviews (
@@ -181,6 +200,19 @@ create table if not exists public.user_monthly_activity (
   reviews_written integer default 0 check (reviews_written >= 0),
   distance_km     numeric default 0 check (distance_km >= 0),
   primary key (user_id, month)
+);
+
+-- user_achievements — earned badges per user. Append-only, system-managed:
+-- clients have SELECT on own rows only; all writes go through the SECURITY
+-- DEFINER award_user_achievements() (chained off recompute_user_stats). The
+-- badge catalog (key -> name/icon) lives in src/lib/achievements.ts; criteria
+-- thresholds live in award_user_achievements(). See migration
+-- 20260619030000_user_achievements.sql.
+create table if not exists public.user_achievements (
+  user_id         uuid not null references public.profiles(id) on delete cascade,
+  achievement_key text not null,
+  earned_at       timestamptz not null default now(),
+  primary key (user_id, achievement_key)
 );
 
 
@@ -262,11 +294,14 @@ $$;
 -- join_trek_and_chat — the ONE write path for joining a trek. SECURITY DEFINER
 -- (bypasses RLS) but derives the caller from auth.uid() and refuses to act on
 -- behalf of another user. Creates batch + conversation if missing, inserts the
--- trek participant and the chat participant, returns their ids.
+-- trek participant and (when confirmed) the chat participant, returns their ids.
 -- HARDENED (DoS fix): requires p_user_id = auth.uid() (no NULL bypass) and
 -- validates p_batch_date (not past, within a 1-year window) so a user cannot
--- mass-create trek_batches/conversations over unbounded future dates. Long-term
--- batch creation should be split out of the join path (admin-created batches).
+-- mass-create trek_batches/conversations over unbounded future dates.
+-- CAPACITY + WAITLIST: capacity is per batch (seeded from treks.max_participants
+-- when the batch is created). Locks the batch row (FOR UPDATE) so the confirmed-
+-- count check can't race; if the batch is full the joiner is 'waitlisted' and
+-- NOT added to chat. NULL max = unlimited. Returns status + waitlist_position.
 create or replace function public.join_trek_and_chat(
   p_user_id uuid,
   p_trek_id uuid,
@@ -283,6 +318,11 @@ declare
   v_convo_id uuid;
   v_participant_id uuid;
   v_trek_title text;
+  v_trek_max integer;
+  v_batch_max integer;
+  v_confirmed integer;
+  v_status text;
+  v_position integer := null;
 begin
   if v_uid is null then
     raise exception 'Not authenticated';
@@ -303,19 +343,24 @@ begin
     raise exception 'Batch date is too far in the future';
   end if;
 
-  select title into v_trek_title from public.treks where id = p_trek_id;
+  select title, max_participants into v_trek_title, v_trek_max
+  from public.treks where id = p_trek_id;
   if v_trek_title is null then
     raise exception 'Trek not found';
   end if;
 
-  insert into public.trek_batches (trek_id, batch_date)
-  values (p_trek_id, p_batch_date)
+  insert into public.trek_batches (trek_id, batch_date, max_participants)
+  values (p_trek_id, p_batch_date, v_trek_max)
   on conflict (trek_id, batch_date) do nothing
   returning id into v_batch_id;
   if v_batch_id is null then
     select id into v_batch_id from public.trek_batches
     where trek_id = p_trek_id and batch_date = p_batch_date limit 1;
   end if;
+
+  -- Lock the batch row so concurrent joins serialize on the capacity check.
+  select max_participants into v_batch_max
+  from public.trek_batches where id = v_batch_id for update;
 
   insert into public.conversations (batch_id, name)
   values (v_batch_id, (v_trek_title || ' — ' || p_batch_date::text))
@@ -326,23 +371,48 @@ begin
     where batch_id = v_batch_id limit 1;
   end if;
 
-  insert into public.trek_participants (user_id, batch_id)
-  values (v_uid, v_batch_id)
-  on conflict (user_id, batch_id) do nothing
-  returning id into v_participant_id;
+  -- Already a participant? Return the existing membership unchanged.
+  select id, status into v_participant_id, v_status
+  from public.trek_participants
+  where user_id = v_uid and batch_id = v_batch_id;
+
   if v_participant_id is null then
-    select id into v_participant_id from public.trek_participants
-    where user_id = v_uid and batch_id = v_batch_id limit 1;
+    select count(*) into v_confirmed
+    from public.trek_participants
+    where batch_id = v_batch_id and status = 'confirmed';
+
+    if v_batch_max is not null and v_confirmed >= v_batch_max then
+      v_status := 'waitlisted';
+    else
+      v_status := 'confirmed';
+    end if;
+
+    insert into public.trek_participants (user_id, batch_id, status)
+    values (v_uid, v_batch_id, v_status)
+    returning id into v_participant_id;
+
+    -- Only confirmed participants get a seat in the batch chat.
+    if v_status = 'confirmed' then
+      insert into public.conversation_participants (conversation_id, user_id)
+      values (v_convo_id, v_uid)
+      on conflict (conversation_id, user_id) do nothing;
+    end if;
   end if;
 
-  insert into public.conversation_participants (conversation_id, user_id)
-  values (v_convo_id, v_uid)
-  on conflict (conversation_id, user_id) do nothing;
+  if v_status = 'waitlisted' then
+    select count(*) into v_position
+    from public.trek_participants
+    where batch_id = v_batch_id
+      and status = 'waitlisted'
+      and joined_at <= (select joined_at from public.trek_participants where id = v_participant_id);
+  end if;
 
   return jsonb_build_object(
     'batch_id', v_batch_id,
     'participant_id', v_participant_id,
-    'conversation_id', v_convo_id
+    'conversation_id', v_convo_id,
+    'status', v_status,
+    'waitlist_position', v_position
   );
 end;
 $$;
@@ -351,6 +421,8 @@ $$;
 -- Plain SQL, SECURITY INVOKER, pinned search_path. Used by the app to show
 -- participant counts (bypasses the own-row RLS on trek_participants? No —
 -- INVOKER respects RLS; counts work because it is called for the caller).
+-- Counts only CONFIRMED participants: the group-size display compares this
+-- against capacity, so waitlisted joiners must be excluded.
 create or replace function public.get_trek_participant_count(trek_uuid uuid)
 returns integer
 language sql
@@ -359,8 +431,144 @@ as $$
   select count(tp.id)
   from public.trek_participants tp
   join public.trek_batches tb on tb.id = tp.batch_id
-  where tb.trek_id = trek_uuid;
+  where tb.trek_id = trek_uuid
+    and tp.status = 'confirmed';
 $$;
+
+-- get_trek_avg_rating — live average of a trek's reviews, rounded to 1 decimal.
+-- Returns null when the trek has no reviews (callers treat that as "unrated").
+-- Real-ratings rollup source for card views that read a single trek at a time
+-- (e.g. the home page); the Explore list computes the same value inline in
+-- search_treks. trek_reviews is publicly readable, so granted to anon too.
+create or replace function public.get_trek_avg_rating(trek_uuid uuid)
+returns numeric
+language sql
+stable
+set search_path = public, pg_temp
+as $$
+  select round(avg(r.rating), 1)
+  from public.trek_reviews r
+  where r.trek_id = trek_uuid;
+$$;
+
+grant execute on function public.get_trek_avg_rating(uuid) to anon, authenticated;
+
+-- search_treks — the single read path for the Explore page. Does full-text
+-- search (prefix matching, e.g. "hima" → "himalayas"), all filters (location /
+-- difficulty / distance range / price range / date), sorting, and pagination
+-- server-side. next_batch_date = earliest batch on/after p_date_from (or today).
+-- count(*) over () returns the total match count on every row so the client
+-- gets rows + total in ONE request (no N+1). SECURITY INVOKER — treks is
+-- publicly readable, so this is granted to anon + authenticated.
+create or replace function public.search_treks(
+  p_search       text    default null,
+  p_location     text    default null,
+  p_difficulty   text    default null,
+  p_min_distance numeric default null,
+  p_max_distance numeric default null,
+  p_min_price    numeric default null,
+  p_max_price    numeric default null,
+  p_date_from    date    default null,
+  p_sort         text    default 'date',
+  p_limit        int     default 6,
+  p_offset       int     default 0
+)
+returns table (
+  id                  uuid,
+  title               text,
+  description         text,
+  location            text,
+  cover_image_url     text,
+  difficulty          public.difficulty,
+  distance_km         numeric,
+  duration_hours      numeric,
+  max_participants    integer,
+  estimated_cost      numeric,
+  rating              numeric,
+  participants_joined smallint,
+  next_batch_date     date,
+  total_count         bigint
+)
+language plpgsql
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_str     text;
+  v_tsquery tsquery := null;
+begin
+  -- Build a prefix tsquery: "base camp" -> 'base:* & camp:*'. Strip anything
+  -- that isn't a letter/digit/space so user input can't break to_tsquery.
+  if p_search is not null and length(trim(p_search)) > 0 then
+    v_str := (
+      select string_agg(tok || ':*', ' & ')
+      from unnest(
+        string_to_array(
+          regexp_replace(lower(trim(p_search)), '[^a-z0-9 ]', ' ', 'g'),
+          ' ')
+      ) as tok
+      where tok <> ''
+    );
+    if v_str is not null and length(v_str) > 0 then
+      v_tsquery := to_tsquery('english', v_str);
+    end if;
+  end if;
+
+  return query
+  with filtered as (
+    select
+      t.id, t.title, t.description, t.location, t.cover_image_url, t.difficulty,
+      t.distance_km, t.duration_hours, t.max_participants, t.estimated_cost,
+      rr.avg_rating as rating, t.participants_joined,
+      nb.next_batch_date,
+      case when v_tsquery is not null then ts_rank(t.fts, v_tsquery) else 0 end as rank
+    from public.treks t
+    left join lateral (
+      select min(b.batch_date) as next_batch_date
+      from public.trek_batches b
+      where b.trek_id = t.id
+        and b.batch_date >= coalesce(p_date_from, current_date)
+    ) nb on true
+    -- Real ratings rollup: average of trek_reviews.rating (null when no reviews,
+    -- so the card's rating badge hides). Replaces the static treks.rating column.
+    left join lateral (
+      select round(avg(r.rating), 1) as avg_rating
+      from public.trek_reviews r
+      where r.trek_id = t.id
+    ) rr on true
+    where
+      (v_tsquery     is null or t.fts @@ v_tsquery)
+      and (p_location     is null or t.location ilike '%' || p_location || '%')
+      and (p_difficulty   is null or t.difficulty::text = p_difficulty)
+      and (p_min_distance is null or t.distance_km    >= p_min_distance)
+      and (p_max_distance is null or t.distance_km    <= p_max_distance)
+      and (p_min_price    is null or t.estimated_cost >= p_min_price)
+      and (p_max_price    is null or t.estimated_cost <= p_max_price)
+      and (p_date_from    is null or nb.next_batch_date is not null)
+  )
+  select
+    f.id, f.title, f.description, f.location, f.cover_image_url, f.difficulty,
+    f.distance_km, f.duration_hours, f.max_participants, f.estimated_cost,
+    f.rating, f.participants_joined, f.next_batch_date,
+    count(*) over () as total_count
+  from filtered f
+  order by
+    case when p_sort = 'relevance'     then f.rank           end desc nulls last,
+    case when p_sort = 'price_asc'     then f.estimated_cost end asc  nulls last,
+    case when p_sort = 'price_desc'    then f.estimated_cost end desc nulls last,
+    case when p_sort = 'distance_asc'  then f.distance_km    end asc  nulls last,
+    case when p_sort = 'distance_desc' then f.distance_km    end desc nulls last,
+    case when p_sort = 'rating'        then f.rating         end desc nulls last,
+    case when p_sort = 'date'          then f.next_batch_date end asc nulls last,
+    f.title asc
+  limit greatest(p_limit, 0)
+  offset greatest(p_offset, 0);
+end;
+$$;
+
+grant execute on function public.search_treks(
+  text, text, text, numeric, numeric, numeric, numeric, date, text, int, int
+) to anon, authenticated;
 
 -- recompute_user_stats — rebuild all stats for one user from source truth.
 -- Idempotent (sets, never blindly adds): safe to re-run, handles leaves/deletes.
@@ -416,9 +624,109 @@ begin
   group by m.month
   having sum(m.treks_joined) <> 0 or sum(m.photos_shared) <> 0
       or sum(m.reviews_written) <> 0 or sum(m.distance_km) <> 0;
+
+  -- Evaluate badges off the freshly-computed source metrics.
+  perform public.award_user_achievements(p_user_id);
 end;
 $$;
 revoke all on function public.recompute_user_stats(uuid) from public, anon, authenticated;
+
+-- award_user_achievements — evaluate the badge catalog for one user and insert
+-- every newly-qualifying badge into user_achievements (append-only, on conflict
+-- do nothing). Idempotent. SECURITY DEFINER so it can write the system-managed
+-- table; execute revoked from clients. Keys must match src/lib/achievements.ts.
+create or replace function public.award_user_achievements(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_joined    integer := 0;
+  v_completed integer := 0;
+  v_distance  numeric := 0;
+  v_locations integer := 0;
+  v_hard      integer := 0;
+  v_months    integer := 0;
+  v_reviews   integer := 0;
+  v_photos    integer := 0;
+begin
+  select
+    coalesce(count(*), 0),
+    coalesce(count(*) filter (where tb.batch_date < current_date), 0),
+    coalesce(sum(t.distance_km) filter (where tb.batch_date < current_date), 0),
+    coalesce(count(distinct t.location) filter (where tb.batch_date < current_date), 0),
+    coalesce(count(*) filter (where tb.batch_date < current_date
+                                and t.difficulty in ('Hard', 'Expert')), 0),
+    coalesce(count(distinct date_trunc('month', tb.batch_date))
+               filter (where tb.batch_date < current_date), 0)
+  into v_joined, v_completed, v_distance, v_locations, v_hard, v_months
+  from public.trek_participants tp
+  join public.trek_batches tb on tb.id = tp.batch_id
+  join public.treks t        on t.id  = tb.trek_id
+  where tp.user_id = p_user_id;
+
+  select
+    coalesce(count(*), 0),
+    coalesce(sum(coalesce(array_length(r.photo_urls, 1), 0)), 0)
+  into v_reviews, v_photos
+  from public.trek_reviews r
+  where r.user_id = p_user_id;
+
+  insert into public.user_achievements (user_id, achievement_key)
+  select p_user_id, c.key
+  from (values
+    ('trailblazer',      v_joined    >= 1),
+    ('first_steps',      v_completed >= 1),
+    ('trail_regular',    v_completed >= 5),
+    ('seasoned_trekker', v_completed >= 10),
+    ('mountain_master',  v_completed >= 25),
+    ('trail_legend',     v_completed >= 50),
+    ('warming_up',       v_distance  >= 10),
+    ('centurion',        v_distance  >= 100),
+    ('ultra_explorer',   v_distance  >= 500),
+    ('explorer',         v_locations >= 5),
+    ('globetrotter',     v_locations >= 10),
+    ('peak_conqueror',   v_hard      >= 1),
+    ('dedicated',        v_months    >= 6),
+    ('storyteller',      v_reviews   >= 5),
+    ('shutterbug',       v_photos    >= 25)
+  ) as c(key, earned)
+  where c.earned
+  on conflict (user_id, achievement_key) do nothing;
+end;
+$$;
+revoke all on function public.award_user_achievements(uuid) from public, anon, authenticated;
+
+-- get_user_profile — one read path for the profile page: stats + current-month
+-- activity + earned badge keys in a single JSON round trip. SECURITY INVOKER so
+-- own-row RLS on each source table still applies (callers only see their own
+-- data); p_user_id defaults to auth.uid().
+create or replace function public.get_user_profile(p_user_id uuid default auth.uid())
+returns jsonb
+language sql
+stable
+security invoker
+set search_path = public, pg_temp
+as $$
+  select jsonb_build_object(
+    'stats', (
+      select to_jsonb(s) from public.user_stats s
+      where s.user_id = p_user_id
+    ),
+    'current_month', (
+      select to_jsonb(m) from public.user_monthly_activity m
+      where m.user_id = p_user_id
+        and m.month = date_trunc('month', current_date)::date
+    ),
+    'achievements', (
+      select coalesce(jsonb_agg(a.achievement_key order by a.earned_at), '[]'::jsonb)
+      from public.user_achievements a
+      where a.user_id = p_user_id
+    )
+  );
+$$;
+grant execute on function public.get_user_profile(uuid) to authenticated;
 
 -- trg_recompute_user_stats — trigger glue: recompute the affected user's stats.
 create or replace function public.trg_recompute_user_stats()
@@ -530,6 +838,66 @@ begin
   end if;
 
   return coalesce(new, old);
+end;
+$$;
+
+-- promote_waitlist_on_leave — FIFO waitlist promotion. Fires after a CONFIRMED
+-- participant leaves: promotes the oldest 'waitlisted' joiner in the same batch
+-- to 'confirmed' and adds them to the batch chat. NULL max = unlimited (no-op).
+-- SECURITY DEFINER so it can write across tables regardless of who triggers it.
+create or replace function public.promote_waitlist_on_leave()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_max integer;
+  v_confirmed integer;
+  v_promote_id uuid;
+  v_promote_user uuid;
+  v_convo_id uuid;
+begin
+  if old.status is distinct from 'confirmed' then
+    return old;
+  end if;
+
+  select max_participants into v_max
+  from public.trek_batches where id = old.batch_id;
+  if v_max is null then
+    return old;
+  end if;
+
+  select count(*) into v_confirmed
+  from public.trek_participants
+  where batch_id = old.batch_id and status = 'confirmed';
+  if v_confirmed >= v_max then
+    return old;
+  end if;
+
+  select id, user_id into v_promote_id, v_promote_user
+  from public.trek_participants
+  where batch_id = old.batch_id and status = 'waitlisted'
+  order by joined_at asc
+  limit 1
+  for update skip locked;
+  if v_promote_id is null then
+    return old;
+  end if;
+
+  update public.trek_participants
+  set status = 'confirmed'
+  where id = v_promote_id;
+
+  select id into v_convo_id
+  from public.conversations where batch_id = old.batch_id limit 1;
+  if v_convo_id is not null then
+    insert into public.conversation_participants (conversation_id, user_id)
+    values (v_convo_id, v_promote_user)
+    on conflict (conversation_id, user_id) do nothing;
+  end if;
+
+  return old;
 end;
 $$;
 
@@ -709,6 +1077,12 @@ create trigger trek_participants_count_trigger
   after insert or delete on public.trek_participants
   for each row execute function public.update_participants_count();
 
+-- Promote the oldest waitlisted joiner when a confirmed participant leaves.
+drop trigger if exists trek_participants_waitlist_promote on public.trek_participants;
+create trigger trek_participants_waitlist_promote
+  after delete on public.trek_participants
+  for each row execute function public.promote_waitlist_on_leave();
+
 -- Lock down trigger-only SECURITY DEFINER functions: they fire as triggers and
 -- must NOT be callable via /rest/v1/rpc. Revoke from PUBLIC (anon/authenticated
 -- inherit EXECUTE through it; revoking only those two is a no-op). Triggers
@@ -718,9 +1092,11 @@ create trigger trek_participants_count_trigger
 revoke execute on function public.handle_new_user()           from public, anon, authenticated;
 revoke execute on function public.notify_trek_participation() from public, anon, authenticated;
 revoke execute on function public.update_participants_count() from public, anon, authenticated;
+revoke execute on function public.promote_waitlist_on_leave()  from public, anon, authenticated;
 revoke execute on function public.increment_participants(uuid) from public, anon, authenticated;
 revoke execute on function public.recompute_user_stats(uuid)  from public, anon, authenticated;
 revoke execute on function public.trg_recompute_user_stats()  from public, anon, authenticated;
+revoke execute on function public.award_user_achievements(uuid) from public, anon, authenticated;
 
 -- Scheduled job (pg_cron): daily catch-up so treks_completed / total_distance_km
 -- and monthly distance pick up batches whose batch_date has crossed into the past
@@ -744,6 +1120,7 @@ alter table public.conversation_participants  enable row level security;
 alter table public.conversation_messages      enable row level security;
 alter table public.user_stats                 enable row level security;
 alter table public.user_monthly_activity      enable row level security;
+alter table public.user_achievements          enable row level security;
 
 
 -- ============================================================================
@@ -844,6 +1221,13 @@ drop policy if exists "Users can view their own activity" on public.user_monthly
 create policy "Users can view their own activity" on public.user_monthly_activity for select to public using (auth.uid() = user_id);
 drop policy if exists "Users can insert their own monthly record" on public.user_monthly_activity;
 drop policy if exists "Users can update their own activity" on public.user_monthly_activity;
+
+-- ---- user_achievements (own rows, read-only) --------------------------------
+-- Append-only badges; same model: read-only to clients, writes only via the
+-- SECURITY DEFINER award_user_achievements().
+drop policy if exists "Users can view own achievements" on public.user_achievements;
+create policy "Users can view own achievements" on public.user_achievements for select to authenticated using (auth.uid() = user_id);
+revoke insert, update, delete on public.user_achievements from anon, authenticated;
 
 
 -- ============================================================================

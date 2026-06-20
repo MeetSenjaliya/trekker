@@ -3,88 +3,78 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import TrekCard from '@/components/ui/TrekCard';
-import FilterSection from '@/components/ui/FilterSection';
+import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
-import { getParticipantCount } from '@/lib/utils';
 import SnowEffect from '@/components/ui/SnowEffect';
 
 const DEFAULT_IMAGE_URL =
   'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
 type Trek = {
-  id: string | number;
+  id: string;
   title: string;
   description: string;
   cover_image_url?: string;
   location: string;
   difficulty: string;
-  current_participants?: number;
+  distance_km?: number;
   max_participants?: number;
   rating?: number;
   estimated_cost?: number;
-  trek_batches?: {
-    batch_date: string;
-  }[];
-  real_participant_count?: number;
+  participants_joined?: number;
+  next_batch_date?: string | null;
+  total_count?: number;
 };
+
+const num = (v: string) => (v.trim() === '' ? null : Number(v));
 
 export default function ExplorePage() {
   const [treks, setTreks] = useState<Trek[]>([]);
   const [loading, setLoading] = useState(true);
-  type Filters = {
-    search?: string;
-    location?: string;
-    date?: string;
-    difficulty?: string;
-    minParticipants?: string;
-  };
 
-  const [filters, setFilters] = useState<Filters>({});
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const TREKS_PER_PAGE = 6;
 
-  const fetchTreks = async (filterValues: Filters = {}, page = 1) => {
-    let query = supabase.from('treks').select('*, trek_batches(batch_date)', { count: 'exact' });
-
-    if (filterValues.search) {
-      query = query.ilike('title', `%${filterValues.search}%`);
-    }
-    if (filterValues.location) {
-      query = query.ilike('location', `%${filterValues.location}%`);
-    }
-    if (filterValues.difficulty) {
-      query = query.eq('difficulty', filterValues.difficulty);
-    }
-    if (filterValues.minParticipants) {
-      query = query.gte('current_participants', parseInt(filterValues.minParticipants));
-    }
-
-    const from = (page - 1) * TREKS_PER_PAGE;
-    const to = from + TREKS_PER_PAGE - 1;
-
-    const { data, count, error } = await query.range(from, to);
+  const fetchTreks = async (f: FilterState, page: number) => {
+    const { data, error } = await supabase.rpc('search_treks', {
+      p_search: f.search.trim() || null,
+      p_location: f.location || null,
+      p_difficulty: f.difficulty || null,
+      p_min_distance: num(f.minDistance),
+      p_max_distance: num(f.maxDistance),
+      p_min_price: num(f.minPrice),
+      p_max_price: num(f.maxPrice),
+      p_date_from: f.date || null,
+      p_sort: f.sort || 'date',
+      p_limit: TREKS_PER_PAGE,
+      p_offset: (page - 1) * TREKS_PER_PAGE,
+    });
 
     if (error) {
       console.error('Error fetching treks:', error.message);
+      setTreks([]);
+      setTotalPages(1);
+      setTotalCount(0);
     } else {
-      const treksWithCounts = await Promise.all(
-        (data || []).map(async (trek) => {
-          const count = await getParticipantCount(trek.id);
-          return { ...trek, real_participant_count: count };
-        })
-      );
-      setTreks(treksWithCounts);
-      setTotalPages(Math.ceil((count || 0) / TREKS_PER_PAGE));
-      setTotalCount(count || 0);
+      const rows = (data || []) as Trek[];
+      const count = rows[0]?.total_count ?? 0;
+      setTreks(rows);
+      setTotalPages(Math.max(1, Math.ceil(count / TREKS_PER_PAGE)));
+      setTotalCount(count);
     }
 
     setLoading(false);
   };
 
   useEffect(() => {
-    fetchTreks(filters, currentPage);
+    setLoading(true);
+    const t = setTimeout(() => {
+      fetchTreks(filters, currentPage);
+    }, 300);
+    return () => clearTimeout(t);
   }, [filters, currentPage]);
 
   const startIdx = (currentPage - 1) * TREKS_PER_PAGE + 1;
@@ -113,6 +103,7 @@ export default function ExplorePage() {
         {/* Note: Ensure your FilterSection component supports dark mode or is transparent */}
         <div className="mb-8">
           <FilterSection onFilterChange={(f) => { setCurrentPage(1); setFilters(f); }} />
+          {/* setCurrentPage on every filter change avoids landing on an out-of-range page */}
         </div>
 
         {/* Results Summary */}
@@ -131,7 +122,7 @@ export default function ExplorePage() {
           <div className="text-center py-20 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
             <p className="text-xl text-gray-300">No treks found matching your filters.</p>
             <button
-              onClick={() => setFilters({})}
+              onClick={() => { setCurrentPage(1); setFilters(DEFAULT_FILTERS); }}
               className="mt-4 text-blue-400 hover:text-blue-300 underline underline-offset-4"
             >
               Clear all filters
@@ -140,17 +131,10 @@ export default function ExplorePage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 mb-16">
             {treks.map((trek) => {
-              const batches = trek.trek_batches || [];
-              const upcomingBatches = batches
-                .filter(b => new Date(b.batch_date) >= new Date())
-                .sort((a, b) => new Date(a.batch_date).getTime() - new Date(b.batch_date).getTime());
-
-              const nextBatch = upcomingBatches[0];
-              const nextDate = nextBatch ? nextBatch.batch_date : 'No upcoming dates';
-
-              const dateDisplay = nextDate !== 'No upcoming dates'
+              const nextDate = trek.next_batch_date || undefined;
+              const dateDisplay = nextDate
                 ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                : nextDate;
+                : 'No upcoming dates';
 
               return (
                 <div key={trek.id} className="transform hover:scale-[1.02] transition-transform duration-300">
@@ -163,12 +147,12 @@ export default function ExplorePage() {
                     location={trek.location}
                     difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
                     participants={{
-                      current: trek.real_participant_count || 0,
+                      current: trek.participants_joined ?? 0,
                       max: trek.max_participants ?? 0,
                     }}
-                    rating={trek.rating}
+                    rating={trek.rating != null ? Number(trek.rating) : undefined}
                     price={trek.estimated_cost}
-                    next_batch_date={nextDate !== 'No upcoming dates' ? nextDate : undefined}
+                    next_batch_date={nextDate}
                   />
                 </div>
               );
