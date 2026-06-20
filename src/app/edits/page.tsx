@@ -5,6 +5,7 @@ import { Camera, Save } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
+import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
 
 export default function EditProfilePage() {
   const supabase = createClient();
@@ -121,6 +122,20 @@ export default function EditProfilePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    const validation = profileUpdateSchema.safeParse({
+      fullName: formData.full_name,
+      email: formData.email,
+      bio: formData.bio,
+      experienceLevel: formData.experience_level,
+      emergencyContactName: formData.emergencyContact.name,
+      emergencyContactRelationship: formData.emergencyContact.relationship,
+      emergencyContactPhone: formData.emergencyContact.phone,
+    });
+    if (!validation.success) {
+      toast.error(Object.values(fieldErrors(validation.error))[0] ?? 'Please fix the form errors');
+      return;
+    }
 
     // Convert favorite types object back to array
     const favoriteTrekTypes = Object.entries(formData.favoriteTypes)

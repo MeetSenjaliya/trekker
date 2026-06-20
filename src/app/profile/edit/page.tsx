@@ -7,6 +7,7 @@ import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
 
 export default function EditProfilePage() {
   const [supabase] = useState(() => createClient());
@@ -115,6 +116,21 @@ export default function EditProfilePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    const result = profileUpdateSchema.safeParse({
+      fullName: formData.name,
+      email: formData.email,
+      bio: formData.bio,
+      experienceLevel: formData.experience,
+      emergencyContactName: formData.emergencyContact.name,
+      emergencyContactRelationship: formData.emergencyContact.relationship,
+      emergencyContactPhone: formData.emergencyContact.phone,
+    });
+    if (!result.success) {
+      toast.error(Object.values(fieldErrors(result.error))[0] ?? 'Please fix the form errors');
+      return;
+    }
+
     setSaving(true);
 
     try {

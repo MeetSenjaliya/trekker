@@ -8,3 +8,9 @@ tsconfig.tsbuildinfo
 # env files (keep *.example templates tracked)
 .env
 .env*.local
+
+# test artifacts
+/coverage
+/test-results
+/playwright-report
+/playwright/.cache

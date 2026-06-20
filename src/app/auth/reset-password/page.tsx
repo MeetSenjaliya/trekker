@@ -7,6 +7,7 @@ import { ArrowLeft, CheckCircle2, Lock } from 'lucide-react';
 import { type EmailOtpType } from '@supabase/supabase-js';
 import { createClient } from '@/utils/supabase/client';
 import { updatePassword } from '@/lib/auth';
+import { resetPasswordSchema, fieldErrors } from '@/lib/schemas';
 
 type Phase = 'verifying' | 'ready' | 'invalid' | 'done';
 
@@ -47,12 +48,9 @@ export default function ResetPasswordPage() {
     e.preventDefault();
     setError('');
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.');
+    const result = resetPasswordSchema.safeParse({ password, confirmPassword: confirm });
+    if (!result.success) {
+      setError(Object.values(fieldErrors(result.error))[0] ?? 'Invalid input');
       return;
     }
 

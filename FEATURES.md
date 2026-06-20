@@ -11,7 +11,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-06-20 (toasts + error boundaries + Sentry shipped)_
+_Last updated: 2026-06-20 (Tests + CI shipped — Vitest/RTL unit tests, Playwright smoke, GitHub Actions)_
 
 ---
 
@@ -43,8 +43,6 @@ _Last updated: 2026-06-20 (toasts + error boundaries + Sentry shipped)_
 
 | Investment | Status | Notes |
 |------------|--------|-------|
-| Zod validation (shared client+server) | ❌ | Closes M4 |
-| Tests + CI (Vitest/RTL + Playwright + GH Actions) | ❌ | No automated tests |
 | Server layer (Route Handlers / Server Actions + service-role server-side) | ❌ | Needed for notifications/admin/payments |
 
 ## Phase 0 — Security tail (remaining)
@@ -53,7 +51,6 @@ _Last updated: 2026-06-20 (toasts + error boundaries + Sentry shipped)_
 |------|--------|-------|
 | NEW-5 — delete dead `increment_participants` | ❌ | Still in `supabase/schema.sql`. NOTE: `update_participants_count()` is **not** dead — it backs the `participants_joined` counter read by Explore/Favorites (schema.sql:1078); keep + fix it per follow-up #1, don't delete |
 | L4 — delete `src/app/test/*` | ❌ | ~7 routable pages remain, and `/test` is in the public allowlist |
-| 3 dashboard advisor toggles | ❌ | Apply in Supabase dashboard |
 
 ## Review follow-ups (2026-06-20)
 
@@ -101,7 +98,9 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 | Investment | Status | Notes |
 |------------|--------|-------|
 | One UI system (drop MUI / Emotion / Bootstrap) | ✅ | All four removed from `package.json`; only Tailwind remains. Last MUI use (`TrekPagination`) rewritten in Tailwind + `lucide-react` (`src/components/ui/TrekPagination.tsx`) |
+| Zod validation (shared client+server) | ✅ | Closes M4. Shared, framework-agnostic schemas in `src/lib/schemas.ts` (`zod ^4`): sign-up/in, forgot/reset password, profile update, chat message + `fieldErrors()` helper. Wired into all 4 auth pages (`src/app/auth/*`), both profile editors (`src/app/profile/edit/page.tsx`, `src/app/edits/page.tsx`), and chat send (`src/app/messages/page.tsx`). New-password min unified to 8 chars (was 6 on sign-up). Module is React/Next/Supabase-free so the future Server layer can reuse it server-side |
 | TanStack Query | 🟡 | Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + hooks in `src/lib/queries.ts`. Migrated: home (`useFeaturedTreks`), explore (`useSearchTreks` — debounced filters + cached pagination), favorites (list + remove mutation), `FavCard` (status query + toggle mutation). Pending work tracked in §1 |
+| Tests + CI (Vitest/RTL + Playwright + GH Actions) | ✅ | **Unit/component:** Vitest + jsdom + React Testing Library — `vitest.config.ts`, `vitest.setup.ts`; 26 tests across `src/lib/schemas.test.ts` (all Zod schemas + `fieldErrors`), `src/components/ui/TrekPagination.test.tsx`, `src/components/ui/ConfirmationModal.test.tsx`. **E2E:** Playwright — `playwright.config.ts` (webServer: dev locally / prod `npm run start` in CI), `e2e/smoke.spec.ts` (home + explore smoke). **CI:** `.github/workflows/ci.yml` — lint → unit tests → build, then a Playwright job; runs with dummy public Supabase env. Scripts: `npm run test` / `test:watch` / `test:e2e`. Test/config files excluded from the Next build type-check (`tsconfig.json`); test artifacts gitignored; Deno edge functions added to ESLint ignores (already excluded from the TS build) |
 | Toasts + error boundaries + Sentry | ✅ | **Toasts:** `sonner` `<Toaster>` in `src/app/providers.tsx`; all 38 app-side `alert()` calls replaced with `toast.success/error/info` across treks, messages, auth, profile, edits, reviews, cards (8 `alert()`s in `src/app/test/*` left — pages slated for deletion, Phase 0 L4). **Error boundaries:** `src/app/error.tsx` + `src/app/global-error.tsx`, both report to Sentry via `captureException`. **Sentry:** `@sentry/nextjs` wired via `src/instrumentation.ts` (server/edge + `onRequestError`), `src/instrumentation-client.ts` (browser + router-transition tracing), and `withSentryConfig` in `next.config.js`. Inert until `NEXT_PUBLIC_SENTRY_DSN` is set; source-map upload gated on `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN` (CI only). Env documented in `.env.local.example` |
 
 ## Phase 0 — Security tail (shipped)
@@ -110,6 +109,7 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 |------|--------|-------|
 | M2 — re-enable middleware guard | ✅ | Active in `src/utils/supabase/middleware.ts` (but `/test` still whitelisted) |
 | M3 — build error-checking on | ✅ | No `ignoreBuildErrors`/`ignoreDuringBuilds`; `noEmit: true` |
+| 3 open security advisors | ✅ | Resolved-by-design — no actionable dashboard toggle (`supabase/security-fixes.sql:376`). **(1)** `security_definer_view` on `public_profiles` is intentional (Known Gotcha — keep). **(2)** `auth_leaked_password_protection` toggle is Pro-only; enforced in app via `isPasswordPwned()` ([src/lib/auth.ts](src/lib/auth.ts), commit `65dfe82`). **(3)** `vulnerable_postgres_version` upgrade is Pro-only; acknowledged on free plan. Advisors keep flagging (1)+(2) since they only inspect the toggle, not the design/app-level mitigation. |
 
 ---
 

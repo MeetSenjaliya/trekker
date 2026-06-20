@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Mail } from 'lucide-react';
+import { forgotPasswordSchema, fieldErrors } from '@/lib/schemas';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -16,20 +17,12 @@ export default function ForgotPasswordPage() {
     }
   };
 
-  const validateEmail = (email: string) => {
-    return /\S+@\S+\.\S+/.test(email);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!email.trim()) {
-      setError('Email is required');
-      return;
-    }
-
-    if (!validateEmail(email)) {
-      setError('Please enter a valid email address');
+    const result = forgotPasswordSchema.safeParse({ email });
+    if (!result.success) {
+      setError(fieldErrors(result.error).email ?? 'Please enter a valid email');
       return;
     }
 

@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
+import { signInSchema, fieldErrors } from '@/lib/schemas';
 
 export default function LoginPage() {
   const [formData, setFormData] = useState({
@@ -30,20 +31,13 @@ export default function LoginPage() {
   };
 
   const validateForm = () => {
-    const newErrors: { [key: string]: string } = {};
-
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
+    const result = signInSchema.safeParse(formData);
+    if (result.success) {
+      setErrors({});
+      return true;
     }
-
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    setErrors(fieldErrors(result.error));
+    return false;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

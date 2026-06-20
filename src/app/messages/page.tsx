@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { leaveTrek } from '@/lib/joinTrek';
 import { toast } from 'sonner';
 import { markConversationRead, getUnreadCounts } from '@/lib/chat';
+import { messageSchema } from '@/lib/schemas';
 
 // Keep all your existing types
 type Msg = {
@@ -324,8 +325,14 @@ function MessagesPageContent() {
 
   const handleSendMessage = async (e: React.SyntheticEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedConversation || !user) return;
-    const content = newMessage.trim();
+    if (!selectedConversation || !user) return;
+    const parsed = messageSchema.safeParse(newMessage);
+    if (!parsed.success) {
+      // Empty input stays silent (unchanged); only surface real violations (e.g. too long).
+      if (newMessage.trim()) toast.error(parsed.error.issues[0]?.message ?? 'Invalid message');
+      return;
+    }
+    const content = parsed.data;
     setNewMessage('');
     const optimisticMsg: Msg = { id: `temp-${Date.now()}`, content, sender_id: user.id, created_at: new Date().toISOString(), is_deleted: false, reply_to: replyTo?.id, reactions: {}, isOptimistic: true };
     setMessages(prev => [...prev, optimisticMsg]);

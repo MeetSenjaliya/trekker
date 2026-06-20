@@ -37,6 +37,12 @@
   ],
   "exclude": [
     "node_modules",
-    "supabase/functions"
+    "supabase/functions",
+    "vitest.config.ts",
+    "vitest.setup.ts",
+    "playwright.config.ts",
+    "e2e",
+    "**/*.test.ts",
+    "**/*.test.tsx"
   ]
 }

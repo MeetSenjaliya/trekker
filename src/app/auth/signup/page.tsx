@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
+import { signUpSchema, fieldErrors } from '@/lib/schemas';
 
 export default function SignupPage() {
   const [formData, setFormData] = useState({
@@ -32,32 +33,13 @@ export default function SignupPage() {
   };
 
   const validateForm = () => {
-    const newErrors: {[key: string]: string} = {};
-
-    if (!formData.fullName.trim()) {
-      newErrors.fullName = 'Full name is required';
+    const result = signUpSchema.safeParse(formData);
+    if (result.success) {
+      setErrors({});
+      return true;
     }
-
-    if (!formData.email.trim()) {
-      newErrors.email = 'Email is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Please enter a valid email';
-    }
-
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 6) {
-      newErrors.password = 'Password must be at least 6 characters';
-    }
-
-    if (!formData.confirmPassword) {
-      newErrors.confirmPassword = 'Please confirm your password';
-    } else if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Passwords do not match';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    setErrors(fieldErrors(result.error));
+    return false;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
