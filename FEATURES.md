@@ -11,7 +11,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-06-24 (Logout now actually returns to the home page and protected pages bounce when the session disappears — new `useRequireAuth()` guard + `Header` logout redirect; complements the middleware guard which only fires on navigation/refresh)_
+_Last updated: 2026-06-24 (Login + signup redesigned as one sliding `AuthPanel` — shared component on both `/auth/login` and `/auth/signup`, with inline forgot-password; recolored to the app's blue/slate theme. Backend auth (`signIn`/`signUp`/`resetPassword`) and Zod validation unchanged)_
 
 ---
 
@@ -57,7 +57,7 @@ _Last updated: 2026-06-24 (Logout now actually returns to the home page and prot
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Auth (signup / login / forgot / reset) | ✅ | `token_hash` recovery flow (not PKCE) — see Known Gotchas below |
+| Auth (signup / login / forgot / reset) | ✅ | `token_hash` recovery flow (not PKCE) — see Known Gotchas below. Login + signup share one sliding `src/components/auth/AuthPanel.tsx` (login/signup/inline-forgot), rendered by both `/auth/login` & `/auth/signup`; `/auth/reset-password` stays standalone for email links. Fonts via `src/app/auth/fonts.ts` (next/font). Cover photo: drop `public/auth-cover.jpg` (degrades to gradient if absent) |
 | Trek discovery / Explore | ✅ | See "Search & filters" below for the upgraded version |
 | Trek detail (reviews, join/leave, favorite) | ✅ | `src/app/trek/[id]/page.tsx` |
 | Join / leave trek | ✅ | Always via `joinTrekBatchAndChat()` / `leaveTrek()` → `join_trek_and_chat` RPC |
