@@ -7,7 +7,6 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
-import { getParticipantCount, getTrekRating } from '@/lib/utils';
 import type { FilterState } from '@/components/ui/FilterSection';
 
 // Central registry of query keys so reads and the mutations that invalidate
@@ -75,21 +74,36 @@ export function useFeaturedTreks() {
   return useQuery({
     queryKey: queryKeys.featuredTreks,
     queryFn: async (): Promise<FeaturedTrek[]> => {
-      const { data, error } = await supabase
-        .from('treks')
-        .select('*, trek_batches(batch_date)')
-        .limit(3);
+      // One RPC instead of N+1: search_treks already returns the avg rating and
+      // (confirmed-only) participants_joined counter plus the next batch date.
+      const { data, error } = await supabase.rpc('search_treks', {
+        p_search: null,
+        p_location: null,
+        p_difficulty: null,
+        p_min_distance: null,
+        p_max_distance: null,
+        p_min_price: null,
+        p_max_price: null,
+        p_date_from: null,
+        p_sort: 'date',
+        p_limit: 3,
+        p_offset: 0,
+      });
       if (error) throw error;
 
-      return Promise.all(
-        (data ?? []).map(async (trek) => {
-          const [count, avgRating] = await Promise.all([
-            getParticipantCount(trek.id),
-            getTrekRating(trek.id),
-          ]);
-          return { ...trek, real_participant_count: count, avg_rating: avgRating };
-        })
-      );
+      return ((data ?? []) as SearchTrek[]).map((t) => ({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        cover_image_url: t.cover_image_url ?? '',
+        location: t.location,
+        difficulty: t.difficulty as FeaturedTrek['difficulty'],
+        max_participants: t.max_participants ?? 0,
+        estimated_cost: t.estimated_cost ?? 0,
+        trek_batches: t.next_batch_date ? [{ batch_date: t.next_batch_date }] : [],
+        real_participant_count: t.participants_joined ?? 0,
+        avg_rating: t.rating ?? null,
+      }));
     },
   });
 }
@@ -186,9 +200,22 @@ export function useRemoveFavorite(userId: string | undefined) {
         .eq('trek_id', trekId);
       if (error) throw error;
     },
-    onSuccess: () => {
+    onMutate: async (trekId) => {
+      if (!userId) return;
+      const listKey = queryKeys.favorites(userId);
+      await queryClient.cancelQueries({ queryKey: listKey, exact: true });
+      const previous = queryClient.getQueryData<FavoriteRow[]>(listKey);
+      queryClient.setQueryData<FavoriteRow[]>(listKey, (rows) =>
+        (rows ?? []).filter((r) => r.trek_id !== trekId)
+      );
+      return { listKey, previous };
+    },
+    onError: (_err, _trekId, context) => {
+      if (context) queryClient.setQueryData(context.listKey, context.previous);
+    },
+    onSettled: () => {
       if (userId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.favorites(userId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.favorites(userId), exact: true });
       }
     },
   });
@@ -214,10 +241,23 @@ export function useToggleFavorite(userId: string | undefined) {
         if (error) throw error;
       }
     },
-    onSuccess: () => {
-      if (userId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.favorites(userId) });
-      }
+    onMutate: async ({ trekId, isLiked }) => {
+      if (!userId) return;
+      const statusKey = queryKeys.favoriteStatus(userId, trekId);
+      await queryClient.cancelQueries({ queryKey: statusKey, exact: true });
+      const previous = queryClient.getQueryData<boolean>(statusKey);
+      queryClient.setQueryData<boolean>(statusKey, !isLiked);
+      return { statusKey, previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context) queryClient.setQueryData(context.statusKey, context.previous);
+    },
+    onSettled: (_data, _err, { trekId }) => {
+      if (!userId) return;
+      // Scope invalidation: refresh only this trek's status + the favorites list,
+      // not every favorite-status query on the page (the old broad-prefix storm).
+      queryClient.invalidateQueries({ queryKey: queryKeys.favoriteStatus(userId, trekId), exact: true });
+      queryClient.invalidateQueries({ queryKey: queryKeys.favorites(userId), exact: true });
     },
   });
 }

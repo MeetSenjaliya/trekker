@@ -404,7 +404,9 @@ begin
     from public.trek_participants
     where batch_id = v_batch_id
       and status = 'waitlisted'
-      and joined_at <= (select joined_at from public.trek_participants where id = v_participant_id);
+      and (joined_at, id) <= (
+        select joined_at, id from public.trek_participants where id = v_participant_id
+      );
   end if;
 
   return jsonb_build_object(
@@ -494,12 +496,14 @@ stable
 set search_path = public, pg_temp
 as $$
 declare
-  v_str     text;
-  v_tsquery tsquery := null;
+  v_str        text;
+  v_tsquery    tsquery := null;
+  v_has_search boolean := false;
 begin
   -- Build a prefix tsquery: "base camp" -> 'base:* & camp:*'. Strip anything
   -- that isn't a letter/digit/space so user input can't break to_tsquery.
   if p_search is not null and length(trim(p_search)) > 0 then
+    v_has_search := true;
     v_str := (
       select string_agg(tok || ':*', ' & ')
       from unnest(
@@ -537,7 +541,9 @@ begin
       where r.trek_id = t.id
     ) rr on true
     where
-      (v_tsquery     is null or t.fts @@ v_tsquery)
+      -- A non-empty search that sanitizes to nothing (e.g. "!!!") leaves
+      -- v_tsquery null: treat it as "no matches", not "no filter".
+      (not v_has_search or (v_tsquery is not null and t.fts @@ v_tsquery))
       and (p_location     is null or t.location ilike '%' || p_location || '%')
       and (p_difficulty   is null or t.difficulty::text = p_difficulty)
       and (p_min_distance is null or t.distance_km    >= p_min_distance)
@@ -592,6 +598,7 @@ begin
   join public.trek_batches tb on tb.id = tp.batch_id
   join public.treks t        on t.id  = tb.trek_id
   where tp.user_id = p_user_id
+    and tp.status = 'confirmed'
   on conflict (user_id) do update set
     treks_completed   = excluded.treks_completed,
     total_distance_km = excluded.total_distance_km;
@@ -608,6 +615,7 @@ begin
            1 treks_joined, 0 photos_shared, 0 reviews_written, 0::numeric distance_km
     from public.trek_participants tp
     where tp.user_id = p_user_id and tp.joined_at is not null
+      and tp.status = 'confirmed'
     union all
     select date_trunc('month', r.created_at)::date,
            0, coalesce(array_length(r.photo_urls, 1), 0), 1, 0
@@ -620,6 +628,7 @@ begin
     join public.trek_batches tb on tb.id = tp.batch_id
     join public.treks t        on t.id  = tb.trek_id
     where tp.user_id = p_user_id and tb.batch_date < current_date
+      and tp.status = 'confirmed'
   ) m
   group by m.month
   having sum(m.treks_joined) <> 0 or sum(m.photos_shared) <> 0
@@ -664,7 +673,8 @@ begin
   from public.trek_participants tp
   join public.trek_batches tb on tb.id = tp.batch_id
   join public.treks t        on t.id  = tb.trek_id
-  where tp.user_id = p_user_id;
+  where tp.user_id = p_user_id
+    and tp.status = 'confirmed';
 
   select
     coalesce(count(*), 0),
@@ -833,6 +843,7 @@ begin
       from public.trek_participants tp
       join public.trek_batches tb on tb.id = tp.batch_id
       where tb.trek_id = v_trek_id
+        and tp.status = 'confirmed'
     )
     where id = v_trek_id;
   end if;

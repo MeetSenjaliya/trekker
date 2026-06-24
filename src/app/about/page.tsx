@@ -1,15 +1,11 @@
 import React from 'react';
 import Link from 'next/link';
 import { Plus, MessageCircle, CheckCircle } from 'lucide-react';
-import SnowEffect from '@/components/ui/SnowEffect';
 
 export default function AboutPage() {
   return (
     // Main Container with Night Gradient
     <div className="min-h-screen py-12 relative overflow-hidden text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-
-      {/* Snow Effect Component */}
-      <SnowEffect />
 
       <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <section className="py-16 md:py-24">

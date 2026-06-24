@@ -2,12 +2,13 @@
 
 import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Heart, MapPin, Users, ArrowRight } from 'lucide-react';
-import SnowEffect from '@/components/ui/SnowEffect';
 import Link from 'next/link';
 import { useFavorites, useRemoveFavorite } from '@/lib/queries';
 
 export default function FavoritesPage() {
+  useRequireAuth();
   const { user } = useAuth();
   const { data: favorites = [], isPending } = useFavorites(user?.id);
   const { mutate: removeFavorite } = useRemoveFavorite(user?.id);
@@ -33,7 +34,6 @@ export default function FavoritesPage() {
   if (!user) {
     return (
       <div className="min-h-screen relative overflow-hidden flex items-center justify-center px-4" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-        <SnowEffect />
         <div className="text-center relative z-10 bg-white/5 backdrop-blur-md p-8 rounded-2xl border border-white/10 shadow-2xl">
           <Heart className="w-16 h-16 text-gray-500 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-white mb-2">Please Log In</h2>
@@ -46,7 +46,6 @@ export default function FavoritesPage() {
   if (loading) {
     return (
       <div className="min-h-screen relative overflow-hidden flex items-center justify-center" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-        <SnowEffect />
         <div className="text-center relative z-10">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
           <p className="text-blue-100/70">Loading your favorite treks...</p>
@@ -57,8 +56,6 @@ export default function FavoritesPage() {
 
   return (
     <div className="min-h-screen relative overflow-hidden text-white pt-24" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-      <SnowEffect />
-
       {/* Header */}
       <div className="bg-white/5 backdrop-blur-md border-b border-white/10 relative z-10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-40 py-12">

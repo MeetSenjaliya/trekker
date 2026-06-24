@@ -3,10 +3,9 @@
 import Link from 'next/link';
 import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
-import SnowEffect from '@/components/ui/SnowEffect'; // Import SnowEffect
 import { useFeaturedTreks } from '@/lib/queries';
 
-const DEFAULT_IMAGE_URL = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
+const DEFAULT_IMAGE_URL = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
 export default function HomePage() {
   const { data: treks = [], isPending: loading } = useFeaturedTreks();
@@ -16,8 +15,6 @@ export default function HomePage() {
     // Added pt-20 to ensure content isn't hidden behind fixed header
     <div className="min-h-screen relative overflow-hidden" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
       
-      <SnowEffect />
-
       {/* Hero Section */}
       {/* Ensure your HeroSection handles its own transparency or background */}
       <HeroSection />

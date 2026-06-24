@@ -69,50 +69,19 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Header */}
-      {/* <header className="bg-white border-b border-slate-200 px-4 sm:px-6 lg:px-10 py-4">
-        <div className="flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-3 text-slate-900">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-lg">T</span>
-            </div>
-            <h2 className="text-slate-900 text-xl font-bold leading-tight tracking-tight">
-              Trek Buddies
-            </h2>
-          </Link>
-          
-          <div className="flex items-center gap-6">
-            <nav className="hidden md:flex items-center gap-6">
-              <Link href="/" className="text-slate-700 hover:text-slate-900 text-base font-medium transition-colors">
-                Home
-              </Link>
-              <Link href="/explore" className="text-slate-700 hover:text-slate-900 text-base font-medium transition-colors">
-                Explore Treks
-              </Link>
-              <Link href="/about" className="text-slate-700 hover:text-slate-900 text-base font-medium transition-colors">
-                About Us
-              </Link>
-            </nav>
-            <Link 
-              href="/auth/login"
-              className="flex min-w-[84px] cursor-pointer items-center justify-center overflow-hidden rounded-full h-10 px-6 bg-slate-100 hover:bg-slate-200 text-slate-800 text-sm font-bold leading-normal tracking-wide transition-colors"
-            >
-              Login
-            </Link>
-          </div>
-        </div>
-      </header> */}
-
+    <div
+      className="min-h-screen flex flex-col text-white relative overflow-hidden"
+      style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}
+    >
       {/* Main Content */}
-      <main className="flex-1 flex items-center justify-center py-8 px-4">
+      <main className="flex-1 flex items-center justify-center py-8 px-4 relative z-10">
         <div className="w-full max-w-md">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
+          <div className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl shadow-2xl p-8">
             <div className="text-center mb-8">
-              <h2 className="text-slate-900 text-3xl font-bold leading-tight tracking-tight">
+              <h2 className="text-white text-3xl font-bold leading-tight tracking-tight drop-shadow-md">
                 Create your account
               </h2>
-              <p className="text-slate-600 text-base mt-2">
+              <p className="text-blue-100/70 text-base mt-2">
                 Join the adventure and start exploring with us.
               </p>
             </div>
@@ -120,7 +89,7 @@ export default function SignupPage() {
             <form onSubmit={handleSubmit} className="space-y-5">
               {/* Full Name */}
               <div>
-                <label htmlFor="fullName" className="block text-slate-800 text-sm font-medium leading-normal mb-2">
+                <label htmlFor="fullName" className="block text-blue-100/80 text-sm font-medium leading-normal mb-2">
                   Full Name
                 </label>
                 <input
@@ -130,20 +99,20 @@ export default function SignupPage() {
                   value={formData.fullName}
                   onChange={handleInputChange}
                   placeholder="Enter your full name"
-                  className={`w-full rounded-lg border px-4 py-3 text-base text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition-colors ${
-                    errors.fullName 
-                      ? 'border-red-300 focus:border-red-500 focus:ring-red-500' 
-                      : 'border-slate-300 bg-slate-50 focus:border-blue-500 focus:ring-blue-500'
+                  className={`w-full rounded-lg border px-4 py-3 text-base text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-colors ${
+                    errors.fullName
+                      ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                      : 'border-white/15 bg-white/5 focus:border-blue-500 focus:ring-blue-500'
                   }`}
                 />
                 {errors.fullName && (
-                  <p className="mt-1 text-sm text-red-600">{errors.fullName}</p>
+                  <p className="mt-1 text-sm text-red-400">{errors.fullName}</p>
                 )}
               </div>
 
               {/* Email */}
               <div>
-                <label htmlFor="email" className="block text-slate-800 text-sm font-medium leading-normal mb-2">
+                <label htmlFor="email" className="block text-blue-100/80 text-sm font-medium leading-normal mb-2">
                   Email
                 </label>
                 <input
@@ -153,20 +122,20 @@ export default function SignupPage() {
                   value={formData.email}
                   onChange={handleInputChange}
                   placeholder="Enter your email"
-                  className={`w-full rounded-lg border px-4 py-3 text-base text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition-colors ${
-                    errors.email 
-                      ? 'border-red-300 focus:border-red-500 focus:ring-red-500' 
-                      : 'border-slate-300 bg-slate-50 focus:border-blue-500 focus:ring-blue-500'
+                  className={`w-full rounded-lg border px-4 py-3 text-base text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-colors ${
+                    errors.email
+                      ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                      : 'border-white/15 bg-white/5 focus:border-blue-500 focus:ring-blue-500'
                   }`}
                 />
                 {errors.email && (
-                  <p className="mt-1 text-sm text-red-600">{errors.email}</p>
+                  <p className="mt-1 text-sm text-red-400">{errors.email}</p>
                 )}
               </div>
 
               {/* Password */}
               <div>
-                <label htmlFor="password" className="block text-slate-800 text-sm font-medium leading-normal mb-2">
+                <label htmlFor="password" className="block text-blue-100/80 text-sm font-medium leading-normal mb-2">
                   Password
                 </label>
                 <div className="relative">
@@ -177,28 +146,28 @@ export default function SignupPage() {
                     value={formData.password}
                     onChange={handleInputChange}
                     placeholder="Create a password"
-                    className={`w-full rounded-lg border px-4 py-3 pr-12 text-base text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition-colors ${
-                      errors.password 
-                        ? 'border-red-300 focus:border-red-500 focus:ring-red-500' 
-                        : 'border-slate-300 bg-slate-50 focus:border-blue-500 focus:ring-blue-500'
+                    className={`w-full rounded-lg border px-4 py-3 pr-12 text-base text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-colors ${
+                      errors.password
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                        : 'border-white/15 bg-white/5 focus:border-blue-500 focus:ring-blue-500'
                     }`}
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-500 hover:text-slate-700"
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
                   >
                     {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                   </button>
                 </div>
                 {errors.password && (
-                  <p className="mt-1 text-sm text-red-600">{errors.password}</p>
+                  <p className="mt-1 text-sm text-red-400">{errors.password}</p>
                 )}
               </div>
 
               {/* Confirm Password */}
               <div>
-                <label htmlFor="confirmPassword" className="block text-slate-800 text-sm font-medium leading-normal mb-2">
+                <label htmlFor="confirmPassword" className="block text-blue-100/80 text-sm font-medium leading-normal mb-2">
                   Confirm Password
                 </label>
                 <div className="relative">
@@ -209,29 +178,29 @@ export default function SignupPage() {
                     value={formData.confirmPassword}
                     onChange={handleInputChange}
                     placeholder="Confirm your password"
-                    className={`w-full rounded-lg border px-4 py-3 pr-12 text-base text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 transition-colors ${
-                      errors.confirmPassword 
-                        ? 'border-red-300 focus:border-red-500 focus:ring-red-500' 
-                        : 'border-slate-300 bg-slate-50 focus:border-blue-500 focus:ring-blue-500'
+                    className={`w-full rounded-lg border px-4 py-3 pr-12 text-base text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-colors ${
+                      errors.confirmPassword
+                        ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+                        : 'border-white/15 bg-white/5 focus:border-blue-500 focus:ring-blue-500'
                     }`}
                   />
                   <button
                     type="button"
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-500 hover:text-slate-700"
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-white transition-colors"
                   >
                     {showConfirmPassword ? <EyeOff size={20} /> : <Eye size={20} />}
                   </button>
                 </div>
                 {errors.confirmPassword && (
-                  <p className="mt-1 text-sm text-red-600">{errors.confirmPassword}</p>
+                  <p className="mt-1 text-sm text-red-400">{errors.confirmPassword}</p>
                 )}
               </div>
 
               {/* Submit Button */}
               <button
                 type="submit"
-                className="w-full flex items-center justify-center rounded-full h-12 px-6 bg-blue-600 hover:bg-blue-700 text-white text-base font-bold leading-normal tracking-wide transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                className="w-full flex items-center justify-center rounded-full h-12 px-6 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white text-base font-bold leading-normal tracking-wide shadow-[0_0_20px_rgba(37,99,235,0.4)] hover:shadow-[0_0_30px_rgba(37,99,235,0.6)] transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
                 //  disabled={loading}
               >
                  {/* {loading ? 'Creating Account...' : 'Create Account'} */}
@@ -240,9 +209,9 @@ export default function SignupPage() {
             </form>
 
             {/* Login Link */}
-            <p className="text-slate-600 text-sm font-normal leading-normal pt-6 text-center">
+            <p className="text-blue-100/70 text-sm font-normal leading-normal pt-6 text-center">
               Already have an account?{' '}
-              <Link href="/auth/login" className="font-semibold text-blue-600 hover:text-blue-700 transition-colors">
+              <Link href="/auth/login" className="font-semibold text-blue-400 hover:text-blue-300 transition-colors">
                 Login
               </Link>
             </p>

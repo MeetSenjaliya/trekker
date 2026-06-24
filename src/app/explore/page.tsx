@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import TrekCard from '@/components/ui/TrekCard';
 import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
-import SnowEffect from '@/components/ui/SnowEffect';
 import { useSearchTreks } from '@/lib/queries';
 
 const DEFAULT_IMAGE_URL =
@@ -12,9 +11,44 @@ const DEFAULT_IMAGE_URL =
 
 const TREKS_PER_PAGE = 6;
 
+const FILTERS_STORAGE_KEY = 'explore-filters';
+
 export default function ExplorePage() {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Restore the last-applied filters + page when returning to this page, so
+  // going into a trek and back keeps the same results. Read in an effect (not a
+  // lazy initializer) so server and first client render match — sessionStorage
+  // isn't available during SSR.
+  useEffect(() => {
+    const saved = sessionStorage.getItem(FILTERS_STORAGE_KEY);
+    if (!saved) return;
+    try {
+      const { filters: savedFilters, page } = JSON.parse(saved);
+      if (savedFilters) setFilters({ ...DEFAULT_FILTERS, ...savedFilters });
+      if (page) setCurrentPage(page);
+    } catch {
+      sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+    }
+  }, []);
+
+  // Persist on user actions only — never via an effect keyed on `filters`,
+  // which would write the default state back over the saved value on the first
+  // render after remounting and reset everything.
+  const persist = (f: FilterState, page: number) =>
+    sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ filters: f, page }));
+
+  const handleFilterChange = (f: FilterState) => {
+    setFilters(f);
+    setCurrentPage(1); // a new filter set always starts on page 1
+    persist(f, 1);
+  };
+
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    persist(filters, page);
+  };
 
   // Debounce filter changes into the query key so typing doesn't fire a
   // request per keystroke (TanStack Query refetches whenever the key changes).
@@ -44,9 +78,6 @@ export default function ExplorePage() {
     // Main Container with Night Gradient
     <div className="min-h-screen py-12 pt-24 relative overflow-hidden" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
 
-      {/* Snow Effect Component */}
-      <SnowEffect />
-
       <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Page Header */}
@@ -62,8 +93,7 @@ export default function ExplorePage() {
         {/* Filter Section */}
         {/* Note: Ensure your FilterSection component supports dark mode or is transparent */}
         <div className="mb-8">
-          <FilterSection onFilterChange={(f) => { setCurrentPage(1); setFilters(f); }} />
-          {/* setCurrentPage on every filter change avoids landing on an out-of-range page */}
+          <FilterSection filters={filters} onFilterChange={handleFilterChange} />
         </div>
 
         {/* Results Summary */}
@@ -82,7 +112,7 @@ export default function ExplorePage() {
           <div className="text-center py-20 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
             <p className="text-xl text-gray-300">No treks found matching your filters.</p>
             <button
-              onClick={() => { setCurrentPage(1); setFilters(DEFAULT_FILTERS); }}
+              onClick={() => handleFilterChange(DEFAULT_FILTERS)}
               className="mt-4 text-blue-400 hover:text-blue-300 underline underline-offset-4"
             >
               Clear all filters
@@ -125,7 +155,7 @@ export default function ExplorePage() {
             <TrekPagination
               totalPages={totalPages}
               currentPage={currentPage}
-              onPageChange={(page) => setCurrentPage(page)}
+              onPageChange={handlePageChange}
             />
           </div>
         )}

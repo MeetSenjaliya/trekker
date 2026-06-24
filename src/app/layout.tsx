@@ -4,6 +4,7 @@ import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
 import { AuthProvider } from '@/contexts/AuthContext';
 import Providers from './providers';
+import WeatherEffect from '@/components/ui/WeatherEffect';
 
 export const metadata: Metadata = {
   title: 'Trek Buddies - Explore Together',
@@ -34,6 +35,7 @@ export default function RootLayout({
             <Footer />
           </AuthProvider>
         </Providers>
+        <WeatherEffect />
       </body>
     </html>
   );

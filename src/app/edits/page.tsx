@@ -4,11 +4,13 @@ import React, { useState, useEffect } from 'react';
 import { Camera, Save } from 'lucide-react';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
 
 export default function EditProfilePage() {
   const supabase = createClient();
+  useRequireAuth();
   const { user } = useAuth();
 
   const defaultFormData = {

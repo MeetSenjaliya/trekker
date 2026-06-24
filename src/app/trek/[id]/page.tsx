@@ -11,7 +11,6 @@ import {
   CheckCircle2, ChevronRight, Calendar, Lock
 } from 'lucide-react';
 import { motion, Variants } from 'framer-motion';
-import SnowEffect from '@/components/ui/SnowEffect';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
 import { toast } from 'sonner';
@@ -86,7 +85,7 @@ export default function TrekDetailPage() {
   const [reviews, setReviews] = useState<TrekReview[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(true);
 
-  const DEFAULT_IMAGE = 'https://your-project.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
+  const DEFAULT_IMAGE = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
   useEffect(() => {
     const fetchTrek = async () => {
@@ -215,14 +214,8 @@ export default function TrekDetailPage() {
     : null;
   const displayRating = avgRating ?? trek.rating ?? '4.8';
 
-  // Capacity hint for the booking button. Enforcement is server-side and
-  // per-batch; this is the trek-wide approximation the sidebar already shows.
-  const isFull = typeof trek.max_participants === 'number'
-    && realParticipantCount >= trek.max_participants;
-
   return (
     <div className="min-h-screen bg-[#090a0f] text-slate-200 selection:bg-blue-500/30 overflow-x-hidden">
-      <SnowEffect />
 
       {/* Hero Section */}
       <section className="relative h-[65vh] w-full overflow-hidden">
@@ -439,7 +432,7 @@ export default function TrekDetailPage() {
                         onClick={handleJoinTrek}
                         className="w-full bg-blue-600 hover:bg-blue-500 text-white py-5 rounded-2xl font-bold text-lg shadow-xl shadow-blue-900/40 flex items-center justify-center gap-3"
                       >
-                        {isFull ? 'Join Waitlist' : 'Book This Trek'} <ChevronRight className="w-5 h-5" />
+                        Book This Trek <ChevronRight className="w-5 h-5" />
                       </motion.button>
                     )}
                   </div>

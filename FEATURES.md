@@ -11,7 +11,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-06-20 (Tests + CI shipped — Vitest/RTL unit tests, Playwright smoke, GitHub Actions)_
+_Last updated: 2026-06-24 (Logout now actually returns to the home page and protected pages bounce when the session disappears — new `useRequireAuth()` guard + `Header` logout redirect; complements the middleware guard which only fires on navigation/refresh)_
 
 ---
 
@@ -34,10 +34,7 @@ _Last updated: 2026-06-20 (Tests + CI shipped — Vitest/RTL unit tests, Playwri
 
 | Feature | Status | Remaining work |
 |---------|--------|----------------|
-| Search & filters on Explore | 🟡 | Punctuation-only search returns whole catalog — see follow-up #3 |
-| Capacity + waitlist | 🟡 | `participants_joined` counter counts waitlisted → inflated "current/max" on cards — see follow-up #1; per-batch `isFull` — see #4; tie-break waitlist position — see #5 |
-| Trekker profiles & gamification | 🟡 | Badges/stats count waitlisted participations as joined/completed — see follow-up #2 |
-| TanStack Query migration | 🟡 | Trek detail + profile still on manual `fetch`/`useEffect`; favorites mutations need optimistic update + `useFeaturedTreks` N+1 — see follow-up #6 |
+| TanStack Query migration | 🟡 | Follow-up #6 done (optimistic favorites + single-RPC `useFeaturedTreks` in `src/lib/queries.ts`). Remaining: trek detail + profile still on manual `fetch`/`useEffect` |
 
 ## Phase 1 — Engineering foundation (remaining)
 
@@ -49,22 +46,8 @@ _Last updated: 2026-06-20 (Tests + CI shipped — Vitest/RTL unit tests, Playwri
 
 | Item | Status | Notes |
 |------|--------|-------|
-| NEW-5 — delete dead `increment_participants` | ❌ | Still in `supabase/schema.sql`. NOTE: `update_participants_count()` is **not** dead — it backs the `participants_joined` counter read by Explore/Favorites (schema.sql:1078); keep + fix it per follow-up #1, don't delete |
+| NEW-5 — delete dead `increment_participants` | ❌ | Still in `supabase/schema.sql`. NOTE: `update_participants_count()` is **not** dead — it backs the `participants_joined` counter read by Explore/Favorites and now counts confirmed only (follow-up #1, applied 2026-06-22); keep it, don't delete |
 | L4 — delete `src/app/test/*` | ❌ | ~7 routable pages remain, and `/test` is in the public allowlist |
-
-## Review follow-ups (2026-06-20)
-
-Open correctness/quality items surfaced by `/code-review` on the Phase 2 + TanStack
-Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below stay honest.
-
-| # | Severity | Area | Issue → fix | Location |
-|---|----------|------|-------------|----------|
-| 1 | High | Capacity + waitlist | `update_participants_count()` counts **all** participants regardless of `status`, so `treks.participants_joined` includes waitlisted joiners and can exceed `max` ("12/10 joined" on Explore/Favorites cards), inconsistent with the confirmed-only `get_trek_participant_count()` on trek detail. **Fix:** add `and tp.status = 'confirmed'`. | `supabase/schema.sql:832` |
-| 2 | Med | Gamification + stats | `award_user_achievements()` and `recompute_user_stats()` count waitlisted participations as joined/completed → badges (Trailblazer, distance, completions) and `treks_completed`/`total_distance_km` over-credit seats never actually held. **Fix:** filter `status = 'confirmed'` in both aggregations. | `supabase/schema.sql:655`, `:587` |
-| 3 | Med | Search & filters | Punctuation-only search (e.g. `!!!`) sanitizes to empty → `v_tsquery` stays NULL → FTS filter skipped → entire catalog returned instead of none. **Fix:** when sanitized input is empty, return no matches (or skip search but not silently). | `supabase/schema.sql:507` (`search_treks`) |
-| 4 | Low | Trek detail | `isFull` is computed trek-wide but capacity/waitlisting is per-batch, so the Book / Join-Waitlist button label can be wrong for the chosen batch (post-join alert still reports the true status). **Fix:** derive `isFull` from the target batch. | `src/app/trek/[id]/page.tsx:218` |
-| 5 | Low | Waitlist position | `waitlist_position` uses `joined_at <= mine`; identical timestamps would yield duplicate positions. **Fix:** tie-break by `id`. | `supabase/schema.sql:403` |
-| 6 | Low | TanStack Query | `useToggleFavorite`/`useRemoveFavorite` broadly invalidate `['favorites', userId]` with no optimistic update → one heart-click refetches every favorite-status query on the page and the heart only fills after the round-trip (regression vs old instant `setIsLiked`). `useFeaturedTreks` does an N+1 of 2 RPCs/trek (could reuse `search_treks` limit 3). | `src/lib/queries.ts:217`, `:84` |
 
 ---
 
@@ -82,6 +65,7 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 | Reviews (submit + showcase) | ✅ | `src/app/review/`, photo uploads compressed |
 | Favorites | ✅ | `src/app/favorites/` |
 | Profile view + edit | ✅ | `src/app/profile/` |
+| Seasonal theme (rain / snow) | ✅ | Switchable cosmetic theme. `src/components/ui/WeatherEffect.tsx` picks one effect from a single `WEATHER` const in `src/lib/weather.ts` (`'rain' | 'snow' | 'none'`); currently `'rain'`. **Rain**/**snow** (`RainEffect`/`SnowEffect`) are `z-50` pointer-events-none foreground particle overlays (CSS keyframes; falling rain lines / falling snowflakes). Flip the const to switch. Mounted once globally in `src/app/layout.tsx` (after `<Providers>`), so it overlays every route site-wide. (The earlier `'summit'` glassmorphism-droplet theme was removed.) `src/app/test/*` still on raw `SnowEffect` (slated for deletion, Phase 0 L4) |
 
 ## Phase 2 — Features (shipped)
 
@@ -89,9 +73,9 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 |---------|--------|----------|
 | 🔥 Realtime chat | ✅ | commit `696c385`; `src/app/messages/page.tsx` — `postgres_changes`, presence, typing, unread badges; `src/lib/chat.ts`. DB deps verified live 2026-06-20: `mark_conversation_read()` + `get_unread_counts()` RPCs, `conversation_participants.last_read_at`, and `conversation_messages` in the `supabase_realtime` publication all present |
 | Real ratings rollup | ✅ | DB: `get_trek_avg_rating()` in `supabase/schema.sql`; wired via `src/lib/utils.ts`, `src/components/ui/TrekCard.tsx` |
-| Search & filters on Explore | 🟡 | DB: `search_treks()` + `fts` tsvector/GIN in `supabase/schema.sql` (filters/sort/pagination + total_count in one RPC); wired at `src/app/explore/page.tsx`, `src/components/ui/FilterSection.tsx`. ⚠️ open item — see §1 follow-up #3 |
-| Capacity + waitlist | 🟡 | DB: `trek_participants.status` + `promote_waitlist_on_leave()` in `supabase/schema.sql` (per-batch capacity, FIFO promotion trigger); wired into `src/lib/joinTrek.ts`. ⚠️ open items — see §1 follow-ups #1, #4, #5 |
-| Trekker profiles & gamification | 🟡 | DB: `award_user_achievements()` + `get_user_profile()` in `supabase/schema.sql`; `src/lib/achievements.ts` (15 badges); wired at `src/app/profile/page.tsx`. Includes `src/components/ui/ItineraryView.tsx`. ⚠️ open item — see §1 follow-up #2 |
+| Search & filters on Explore | ✅ | DB: `search_treks()` + `fts` tsvector/GIN in `supabase/schema.sql` (filters/sort/pagination + total_count in one RPC); wired at `src/app/explore/page.tsx`, `src/components/ui/FilterSection.tsx`. Empty / punctuation-only search returns no matches (follow-up #3, applied 2026-06-22). `FilterSection` is now a controlled component (single source of truth in the page); applied filters **and** the current page persist across navigation via `sessionStorage` (`explore-filters`, shape `{ filters, page }`) so leaving and returning to Explore keeps the same results. Writes happen on user actions (filter/page change), not via a `filters` effect — an effect would write the default state back over the saved value on the first render after remount and reset everything |
+| Capacity + waitlist | ✅ | DB: `trek_participants.status` + `promote_waitlist_on_leave()` in `supabase/schema.sql` (per-batch capacity, FIFO promotion trigger); wired into `src/lib/joinTrek.ts`. `participants_joined` counts confirmed only (#1); `waitlist_position` tie-breaks by id (#5); trek-detail button no longer asserts a misleading trek-wide full state (#4) — all applied 2026-06-22 |
+| Trekker profiles & gamification | ✅ | DB: `award_user_achievements()` + `get_user_profile()` in `supabase/schema.sql`; `src/lib/achievements.ts` (15 badges); wired at `src/app/profile/page.tsx`. Includes `src/components/ui/ItineraryView.tsx`. Stats + badges count confirmed participations only (follow-up #2, applied 2026-06-22) |
 
 ## Phase 1 — Engineering foundation (shipped)
 
@@ -99,7 +83,7 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 |------------|--------|-------|
 | One UI system (drop MUI / Emotion / Bootstrap) | ✅ | All four removed from `package.json`; only Tailwind remains. Last MUI use (`TrekPagination`) rewritten in Tailwind + `lucide-react` (`src/components/ui/TrekPagination.tsx`) |
 | Zod validation (shared client+server) | ✅ | Closes M4. Shared, framework-agnostic schemas in `src/lib/schemas.ts` (`zod ^4`): sign-up/in, forgot/reset password, profile update, chat message + `fieldErrors()` helper. Wired into all 4 auth pages (`src/app/auth/*`), both profile editors (`src/app/profile/edit/page.tsx`, `src/app/edits/page.tsx`), and chat send (`src/app/messages/page.tsx`). New-password min unified to 8 chars (was 6 on sign-up). Module is React/Next/Supabase-free so the future Server layer can reuse it server-side |
-| TanStack Query | 🟡 | Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + hooks in `src/lib/queries.ts`. Migrated: home (`useFeaturedTreks`), explore (`useSearchTreks` — debounced filters + cached pagination), favorites (list + remove mutation), `FavCard` (status query + toggle mutation). Pending work tracked in §1 |
+| TanStack Query | 🟡 | Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + hooks in `src/lib/queries.ts`. Migrated: home (`useFeaturedTreks` — now a single `search_treks` RPC, no N+1), explore (`useSearchTreks` — debounced filters + cached pagination), favorites (list + remove mutation), `FavCard` (status query + toggle mutation). Favorite mutations are optimistic with scoped (`exact`) invalidation (follow-up #6, 2026-06-22). Pending work tracked in §1 (trek detail + profile still on manual `fetch`/`useEffect`) |
 | Tests + CI (Vitest/RTL + Playwright + GH Actions) | ✅ | **Unit/component:** Vitest + jsdom + React Testing Library — `vitest.config.ts`, `vitest.setup.ts`; 26 tests across `src/lib/schemas.test.ts` (all Zod schemas + `fieldErrors`), `src/components/ui/TrekPagination.test.tsx`, `src/components/ui/ConfirmationModal.test.tsx`. **E2E:** Playwright — `playwright.config.ts` (webServer: dev locally / prod `npm run start` in CI), `e2e/smoke.spec.ts` (home + explore smoke). **CI:** `.github/workflows/ci.yml` — lint → unit tests → build, then a Playwright job; runs with dummy public Supabase env. Scripts: `npm run test` / `test:watch` / `test:e2e`. Test/config files excluded from the Next build type-check (`tsconfig.json`); test artifacts gitignored; Deno edge functions added to ESLint ignores (already excluded from the TS build) |
 | Toasts + error boundaries + Sentry | ✅ | **Toasts:** `sonner` `<Toaster>` in `src/app/providers.tsx`; all 38 app-side `alert()` calls replaced with `toast.success/error/info` across treks, messages, auth, profile, edits, reviews, cards (8 `alert()`s in `src/app/test/*` left — pages slated for deletion, Phase 0 L4). **Error boundaries:** `src/app/error.tsx` + `src/app/global-error.tsx`, both report to Sentry via `captureException`. **Sentry:** `@sentry/nextjs` wired via `src/instrumentation.ts` (server/edge + `onRequestError`), `src/instrumentation-client.ts` (browser + router-transition tracing), and `withSentryConfig` in `next.config.js`. Inert until `NEXT_PUBLIC_SENTRY_DSN` is set; source-map upload gated on `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN` (CI only). Env documented in `.env.local.example` |
 
@@ -108,8 +92,22 @@ Query work. Not yet fixed — listed here so the affected ✅/🟡 rows below st
 | Item | Status | Notes |
 |------|--------|-------|
 | M2 — re-enable middleware guard | ✅ | Active in `src/utils/supabase/middleware.ts` (but `/test` still whitelisted) |
+| Client-side logout / session guard | ✅ | Logout now navigates to `/` (`handleSignOut` in `src/components/layout/Header.tsx`) instead of leaving stale authenticated content on screen. New `useRequireAuth()` hook (`src/hooks/useRequireAuth.ts`) redirects to `/` when the session disappears in-place (logout, multi-tab sign-out, or expiry); applied to all protected pages: `profile`, `profile/edit`, `favorites`, `messages`, `edits`. Complements the middleware guard, which only fires on navigation/refresh |
 | M3 — build error-checking on | ✅ | No `ignoreBuildErrors`/`ignoreDuringBuilds`; `noEmit: true` |
 | 3 open security advisors | ✅ | Resolved-by-design — no actionable dashboard toggle (`supabase/security-fixes.sql:376`). **(1)** `security_definer_view` on `public_profiles` is intentional (Known Gotcha — keep). **(2)** `auth_leaked_password_protection` toggle is Pro-only; enforced in app via `isPasswordPwned()` ([src/lib/auth.ts](src/lib/auth.ts), commit `65dfe82`). **(3)** `vulnerable_postgres_version` upgrade is Pro-only; acknowledged on free plan. Advisors keep flagging (1)+(2) since they only inspect the toggle, not the design/app-level mitigation. |
+
+## Review follow-ups (resolved 2026-06-22)
+
+Correctness/quality items surfaced by `/code-review` on the Phase 2 + TanStack Query work — all six closed. #1/#2/#3/#5 are schema changes (in `supabase/schema.sql`, applied + verified live on the DB via `supabase/apply-review-followups.sql`); #4/#6 shipped in code.
+
+| # | Sev | Area | Fix | Evidence |
+|---|-----|------|-----|----------|
+| 1 | High | Capacity + waitlist | `update_participants_count()` filters `tp.status = 'confirmed'`, so `treks.participants_joined` excludes waitlisted joiners (verified: no counter drift on live DB). | `schema.sql` · `update_participants_count()` |
+| 2 | Med | Gamification + stats | `award_user_achievements()` + `recompute_user_stats()` aggregate only `status = 'confirmed'` participations (badges, completions, distance, monthly joined/distance). | `schema.sql` · those two functions |
+| 3 | Med | Search & filters | `search_treks()` tracks `v_has_search`; a non-empty search that sanitizes to empty returns no matches instead of the whole catalog (verified live: `'!!!'` → 0 rows). | `schema.sql` · `search_treks()` |
+| 4 | Low | Trek detail | Misleading trek-wide `isFull` removed; button always reads "Book This Trek" — server + post-join toast report the true confirmed/waitlist status. | `src/app/trek/[id]/page.tsx` |
+| 5 | Low | Waitlist position | `waitlist_position` tie-breaks by `(joined_at, id)`, so identical timestamps yield distinct positions. | `schema.sql` · `join_trek_and_chat()` |
+| 6 | Low | TanStack Query | `useToggleFavorite`/`useRemoveFavorite` do optimistic updates with scoped (`exact`) invalidation; `useFeaturedTreks` is a single `search_treks` RPC (no N+1). | `src/lib/queries.ts` |
 
 ---
 
@@ -121,7 +119,7 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **`trg_initial_trek_message` trigger is broken in prod.** It calls `create_trek_initial_message()` which inserts into a `trek_messages` table that doesn't exist. Creating a trek via the API currently errors because of this trigger. It's reproduced in `schema.sql` with a BUG comment — don't fix silently without telling the user.
 
-- **`treks.participants_joined` is a denormalised counter** kept in sync by the `trek_participants_count_trigger`. Use `get_trek_participant_count()` RPC for reads if you need accuracy; don't trust the column in isolation. (See §1 follow-up #1 — it currently counts waitlisted participants.)
+- **`treks.participants_joined` is a denormalised counter** kept in sync by the `trek_participants_count_trigger`. As of follow-up #1 (2026-06-22) it counts **confirmed only** — matching `get_trek_participant_count()`. It's still trigger-maintained (recomputed on the next join/leave), so for guaranteed-fresh reads prefer the RPC.
 
 - **`src/app/test/*` pages are publicly routable in production.** They're included in the middleware public-path allowlist. Should be removed or guarded before any public launch. (See §1 Phase 0 item L4.)
 

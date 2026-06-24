@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Menu, X, Bell, Search, User, LogOut } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -9,6 +10,7 @@ const Header = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const { user, loading, signOut } = useAuth();
+  const router = useRouter();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -25,6 +27,7 @@ const Header = () => {
   const handleSignOut = async () => {
     await signOut();
     setIsMenuOpen(false);
+    router.replace('/');
   };
 
   const linkStyles = "text-blue-100/80 hover:text-white text-sm font-medium transition-colors duration-200 tracking-wide";

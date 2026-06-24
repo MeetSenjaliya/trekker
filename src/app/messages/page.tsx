@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
 import {
   Send, MessageCircle, MoreVertical, Phone,
   Video, Users, Trash2, ArrowLeft, SmilePlus, Reply, Edit3
@@ -63,6 +64,7 @@ type MessageRowRT = MessageRow & { conversation_id: string };
 
 function MessagesPageContent() {
   const supabase = createClient();
+  useRequireAuth();
   const { user, session } = useAuth();
   const searchParams = useSearchParams();
 

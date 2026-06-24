@@ -4,8 +4,8 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Calendar, MapPin, Star, Users, Camera, Edit, Settings, Clock, Activity, Award } from 'lucide-react';
-import SnowEffect from '@/components/ui/SnowEffect';
 import { ACHIEVEMENTS } from '@/lib/achievements';
 
 // Interfaces remain the same...
@@ -65,6 +65,7 @@ const defaultTrekImage = 'https://images.unsplash.com/photo-1551632811-561732d1e
 
 export default function ProfilePage() {
   const [supabase] = useState(() => createClient());
+  useRequireAuth();
   const { user, loading: isLoading } = useAuth();
 
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -202,7 +203,6 @@ export default function ProfilePage() {
   if (loading) {
     return (
       <div className="min-h-screen relative overflow-hidden flex items-center justify-center text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-        <SnowEffect />
         <div className="text-center relative z-10">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mx-auto mb-4"></div>
           <p className="text-blue-100/70">Loading profile...</p>
@@ -219,7 +219,6 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen pt-24 pb-12 relative overflow-hidden text-white" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-      <SnowEffect />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
 
         {/* =========================================================================

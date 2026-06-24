@@ -2,15 +2,16 @@
 
 import React, { useState, useEffect } from 'react';
 import { Camera, Save, Loader2, User, Mail, Phone, Heart, Shield, AlertTriangle } from 'lucide-react';
-import SnowEffect from '@/components/ui/SnowEffect';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
 
 export default function EditProfilePage() {
   const [supabase] = useState(() => createClient());
+  useRequireAuth();
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -198,7 +199,6 @@ export default function EditProfilePage() {
 
   return (
     <div className="min-h-screen relative overflow-hidden flex items-center justify-center py-12 px-4" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-      <SnowEffect />
 
       {/* Main Card Container */}
       <div className="relative z-10 w-full max-w-2xl bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl shadow-2xl overflow-hidden">

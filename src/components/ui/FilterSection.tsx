@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Search, X, Calendar, MapPin, Activity, Route, DollarSign, ArrowUpDown } from 'lucide-react';
 
 export interface FilterState {
@@ -38,6 +38,7 @@ const SORT_LABELS: Record<string, string> = {
 };
 
 interface FilterSectionProps {
+  filters: FilterState;
   onFilterChange?: (filters: FilterState) => void;
 }
 
@@ -55,13 +56,9 @@ const CHIP_LABELS: Partial<Record<keyof FilterState, string>> = {
   maxPrice: 'Max price',
 };
 
-const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
-
+const FilterSection: React.FC<FilterSectionProps> = ({ filters, onFilterChange }) => {
   const handleChange = (key: keyof FilterState, value: string) => {
-    const updatedFilters = { ...filters, [key]: value };
-    setFilters(updatedFilters);
-    onFilterChange?.(updatedFilters);
+    onFilterChange?.({ ...filters, [key]: value });
   };
 
   const clearFilter = (key: keyof FilterState) => {
@@ -69,7 +66,6 @@ const FilterSection: React.FC<FilterSectionProps> = ({ onFilterChange }) => {
   };
 
   const clearAllFilters = () => {
-    setFilters(DEFAULT_FILTERS);
     onFilterChange?.(DEFAULT_FILTERS);
   };
 

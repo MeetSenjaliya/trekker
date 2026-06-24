@@ -118,7 +118,7 @@ Route protection is enforced server-side (see Auth below).
 Heart toggles in `TrekCard`/`FavCard` insert/delete `favorites` rows (own-row RLS, unique per (user, trek)).
 
 ### Participant counts
-`src/lib/utils.ts → getParticipantCount(trekId)` calls RPC `get_trek_participant_count(trek_uuid)` (counts across the trek's batches). `treks.participants_joined` is **not** a reliable source (its maintenance code is dead — see Known issues).
+`src/lib/utils.ts → getParticipantCount(trekId)` calls RPC `get_trek_participant_count(trek_uuid)` (counts confirmed participants across the trek's batches). `treks.participants_joined` is a trigger-maintained denormalised counter (`trek_participants_count_trigger` → `update_participants_count()`); as of follow-up #1 (2026-06-22) it counts **confirmed only**, so it agrees with the RPC. Prefer the RPC when you need a guaranteed-fresh read.
 
 ---
 
@@ -160,7 +160,7 @@ App-level:
 - `src/components/ui/Chat.tsx` is a stub; `favcard2.tsx` looks like an unused variant.
 - No app-level rate limiting / security headers; verbose `console.error(JSON.stringify(error))` can leak DB detail.
 
-Database-level (see DATABASE.md §11 for detail): broken `trg_initial_trek_message` (insert into non-existent `trek_messages` ⇒ trek creation errors), dead `update_participants_count`, duplicate dead notification triggers, plus open advisors (security_definer_view on `public_profiles`, public-bucket listing, RPC-exposed SECURITY DEFINER functions, leaked-password protection off, Postgres patch pending).
+Database-level (see DATABASE.md §11 for detail): broken `trg_initial_trek_message` (insert into non-existent `trek_messages` ⇒ trek creation errors), duplicate dead notification triggers, plus open advisors (security_definer_view on `public_profiles`, public-bucket listing, RPC-exposed SECURITY DEFINER functions, leaked-password protection off, Postgres patch pending).
 
 Security history and the remaining hardening checklist live in [SECURITY_AUDIT_ISSUE.md](SECURITY_AUDIT_ISSUE.md); applied-fix SQL with rationale is in [supabase/security-fixes.sql](supabase/security-fixes.sql).
 
