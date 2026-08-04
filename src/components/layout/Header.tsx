@@ -5,12 +5,17 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Menu, X, Bell, Search, User, LogOut } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useMyCompanies, usePlatformAdmin } from '@/lib/queries';
 
 const Header = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const { user, loading, signOut } = useAuth();
   const router = useRouter();
+
+  const { data: memberships } = useMyCompanies(user?.id);
+  const { data: isAdmin } = usePlatformAdmin(user?.id);
+  const hasCompany = !!memberships && memberships.length > 0;
 
   useEffect(() => {
     const handleScroll = () => {
@@ -68,6 +73,8 @@ const Header = () => {
                 <Link href="/favorites" className={linkStyles}>Favorites</Link>
                 <Link href="/profile" className={linkStyles}>Profile</Link>
                 <Link href="/messages" className={linkStyles}>Messages</Link>
+                {hasCompany && <Link href="/dashboard" className={linkStyles}>Dashboard</Link>}
+                {isAdmin && <Link href="/admin" className={linkStyles}>Admin</Link>}
               </>
             )}
           </nav>
@@ -165,6 +172,8 @@ const Header = () => {
                   <Link href="/favorites" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Favorites</Link>
                   <Link href="/profile" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Profile</Link>
                   <Link href="/messages" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Messages</Link>
+                  {hasCompany && <Link href="/dashboard" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Dashboard</Link>}
+                  {isAdmin && <Link href="/admin" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Admin</Link>}
                   <button
                     onClick={handleSignOut}
                     className="w-full text-left text-red-300 hover:bg-red-500/10 px-3 py-2 rounded-lg flex items-center gap-2 mt-2"

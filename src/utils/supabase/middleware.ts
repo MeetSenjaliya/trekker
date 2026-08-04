@@ -39,9 +39,23 @@ export async function updateSession(request: NextRequest) {
 
   // Routes that don't require authentication. A path is public if it matches
   // one of these exactly or starts with it followed by a "/".
-  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/test']
+  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/test', '/company']
 
   const { pathname } = request.nextUrl
+
+  // Signed-in users have no business on the login / signup screens — send them
+  // home. (Recovery flows like /auth/reset-password are intentionally left
+  // reachable while a session exists.)
+  const authEntryPages = ['/auth/login', '/auth/signup']
+  const isAuthEntryPage = authEntryPages.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
+  )
+  if (user && isAuthEntryPage) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/'
+    return NextResponse.redirect(url)
+  }
+
   const isPublicRoute = publicRoutes.some(
     (route) => pathname === route || pathname.startsWith(`${route}/`)
   )

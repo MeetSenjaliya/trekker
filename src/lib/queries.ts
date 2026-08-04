@@ -7,35 +7,46 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
+import {
+  getMyCompanies,
+  getCompanyOverview,
+  getCompanyTreks,
+  getTrek,
+  getTrekBatches,
+  getBatchParticipants,
+  getCompanyMembers,
+  getAdminOverview,
+  getAllCompanies,
+  getAdminCompany,
+  isPlatformAdmin,
+} from '@/lib/company';
+import type { CompanyStatusFilter } from '@/lib/company';
 import type { FilterState } from '@/components/ui/FilterSection';
 
 // Central registry of query keys so reads and the mutations that invalidate
 // them stay in sync. Favorite keys are nested under ['favorites', userId] so a
 // single invalidation refreshes both the list and any per-trek status query.
 export const queryKeys = {
-  featuredTreks: ['treks', 'featured'] as const,
   searchTreks: (filters: FilterState, page: number) =>
     ['treks', 'search', filters, page] as const,
   favorites: (userId: string) => ['favorites', userId] as const,
   favoriteStatus: (userId: string, trekId: string) =>
     ['favorites', userId, trekId] as const,
+  myCompanies: (userId: string) => ['companies', 'mine', userId] as const,
+  platformAdmin: (userId: string) => ['platformAdmin', userId] as const,
+  companyOverview: (companyId: string) => ['companies', companyId, 'overview'] as const,
+  companyTreks: (companyId: string, includeArchived: boolean) =>
+    ['companies', companyId, 'treks', includeArchived] as const,
+  trek: (trekId: string) => ['treks', 'detail', trekId] as const,
+  trekBatches: (trekId: string) => ['treks', trekId, 'batches'] as const,
+  batchParticipants: (batchId: string) => ['batches', batchId, 'participants'] as const,
+  companyMembers: (companyId: string) => ['companies', companyId, 'members'] as const,
+  adminOverview: ['admin', 'overview'] as const,
+  adminCompanies: (status: string) => ['admin', 'companies', status] as const,
+  adminCompany: (companyId: string) => ['admin', 'company', companyId] as const,
 };
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v));
-
-export interface FeaturedTrek {
-  id: string;
-  title: string;
-  description: string;
-  cover_image_url: string;
-  location: string;
-  difficulty: 'Easy' | 'Moderate' | 'Hard' | 'Expert';
-  max_participants: number;
-  estimated_cost: number;
-  trek_batches?: { batch_date: string }[];
-  real_participant_count: number;
-  avg_rating: number | null;
-}
 
 export interface SearchTrek {
   id: string;
@@ -50,6 +61,9 @@ export interface SearchTrek {
   estimated_cost?: number;
   participants_joined?: number;
   next_batch_date?: string | null;
+  company_id?: string;
+  company_name?: string;
+  company_slug?: string;
   total_count?: number;
 }
 
@@ -69,55 +83,28 @@ export interface FavoriteRow {
   treks: FavoriteTrek | FavoriteTrek[] | null;
 }
 
-/** Featured treks for the home page, enriched with live counts + ratings. */
-export function useFeaturedTreks() {
-  return useQuery({
-    queryKey: queryKeys.featuredTreks,
-    queryFn: async (): Promise<FeaturedTrek[]> => {
-      // One RPC instead of N+1: search_treks already returns the avg rating and
-      // (confirmed-only) participants_joined counter plus the next batch date.
-      const { data, error } = await supabase.rpc('search_treks', {
-        p_search: null,
-        p_location: null,
-        p_difficulty: null,
-        p_min_distance: null,
-        p_max_distance: null,
-        p_min_price: null,
-        p_max_price: null,
-        p_date_from: null,
-        p_sort: 'date',
-        p_limit: 3,
-        p_offset: 0,
-      });
-      if (error) throw error;
-
-      return ((data ?? []) as SearchTrek[]).map((t) => ({
-        id: t.id,
-        title: t.title,
-        description: t.description,
-        cover_image_url: t.cover_image_url ?? '',
-        location: t.location,
-        difficulty: t.difficulty as FeaturedTrek['difficulty'],
-        max_participants: t.max_participants ?? 0,
-        estimated_cost: t.estimated_cost ?? 0,
-        trek_batches: t.next_batch_date ? [{ batch_date: t.next_batch_date }] : [],
-        real_participant_count: t.participants_joined ?? 0,
-        avg_rating: t.rating ?? null,
-      }));
-    },
-  });
-}
-
 export interface SearchTreksResult {
   treks: SearchTrek[];
   totalCount: number;
 }
 
-/** Filtered/sorted/paginated trek search backed by the `search_treks` RPC. */
-export function useSearchTreks(filters: FilterState, page: number, perPage: number) {
+/**
+ * Filtered/sorted/paginated trek search backed by the `search_treks` RPC.
+ *
+ * `initialData` seeds the one query the Explore server component already ran
+ * (default filters, page 1) so the SSR'd grid isn't immediately refetched. Pass
+ * it only for that exact key — TanStack stores it against the current key.
+ */
+export function useSearchTreks(
+  filters: FilterState,
+  page: number,
+  perPage: number,
+  initialData?: SearchTreksResult
+) {
   return useQuery({
     queryKey: queryKeys.searchTreks(filters, page),
     placeholderData: keepPreviousData,
+    initialData,
     queryFn: async (): Promise<SearchTreksResult> => {
       const { data, error } = await supabase.rpc('search_treks', {
         p_search: filters.search.trim() || null,
@@ -259,5 +246,102 @@ export function useToggleFavorite(userId: string | undefined) {
       queryClient.invalidateQueries({ queryKey: queryKeys.favoriteStatus(userId, trekId), exact: true });
       queryClient.invalidateQueries({ queryKey: queryKeys.favorites(userId), exact: true });
     },
+  });
+}
+
+/** Companies the signed-in user belongs to (any role). Disabled until a user id is known. */
+export function useMyCompanies(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.myCompanies(userId ?? ''),
+    enabled: !!userId,
+    queryFn: getMyCompanies,
+  });
+}
+
+/** Whether the signed-in user is a platform admin (gates the /admin nav link). */
+export function usePlatformAdmin(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.platformAdmin(userId ?? ''),
+    enabled: !!userId,
+    queryFn: isPlatformAdmin,
+  });
+}
+
+/** Dashboard headline stats for a company. */
+export function useCompanyOverview(companyId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.companyOverview(companyId ?? ''),
+    enabled: !!companyId,
+    queryFn: () => getCompanyOverview(companyId!),
+  });
+}
+
+/** A company's own treks for the dashboard. Disabled until a company id is known. */
+export function useCompanyTreks(companyId: string | undefined, includeArchived: boolean) {
+  return useQuery({
+    queryKey: queryKeys.companyTreks(companyId ?? '', includeArchived),
+    enabled: !!companyId,
+    queryFn: () => getCompanyTreks(companyId!, includeArchived),
+  });
+}
+
+/** A single trek for the edit form. */
+export function useTrek(trekId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.trek(trekId ?? ''),
+    enabled: !!trekId,
+    queryFn: () => getTrek(trekId!),
+  });
+}
+
+/** Dated departures for a trek, with live confirmed counts. */
+export function useTrekBatches(trekId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.trekBatches(trekId ?? ''),
+    enabled: !!trekId,
+    queryFn: () => getTrekBatches(trekId!),
+  });
+}
+
+/** Roster (with contact PII) for one batch, via the company roster RPC. */
+export function useBatchParticipants(batchId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.batchParticipants(batchId ?? ''),
+    enabled: !!batchId,
+    queryFn: () => getBatchParticipants(batchId!),
+  });
+}
+
+/** A company's team roster (identity via SECURITY DEFINER RPC). */
+export function useCompanyMembers(companyId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.companyMembers(companyId ?? ''),
+    enabled: !!companyId,
+    queryFn: () => getCompanyMembers(companyId!),
+  });
+}
+
+/** Platform-wide headline counts for the /admin overview. */
+export function useAdminOverview() {
+  return useQuery({
+    queryKey: queryKeys.adminOverview,
+    queryFn: getAdminOverview,
+  });
+}
+
+/** All companies for the /admin list, filtered by status. */
+export function useAdminCompanies(status: CompanyStatusFilter) {
+  return useQuery({
+    queryKey: queryKeys.adminCompanies(status),
+    queryFn: () => getAllCompanies(status),
+  });
+}
+
+/** A single company (with audit columns) for the /admin detail view. */
+export function useAdminCompany(companyId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.adminCompany(companyId ?? ''),
+    enabled: !!companyId,
+    queryFn: () => getAdminCompany(companyId!),
   });
 }

@@ -1,6 +1,6 @@
 # Trekker — Database Reference
 
-Complete reference for the **live Supabase database** (Postgres 17, project `dtjmyqogeozrzzbdjokr`), introspected **2026-06-13**. The runnable, authoritative DDL lives in [supabase/schema.sql](supabase/schema.sql); this document is the readable companion (tables, relationships, RLS matrix, storage, edge functions, and known issues).
+Complete reference for the **live Supabase database** (Postgres 17, project `dtjmyqogeozrzzbdjokr`), introspected **2026-06-13**, updated **2026-07-02** after the multi-tenant migration ([supabase/migration-multi-tenant.sql](supabase/migration-multi-tenant.sql)) was applied and verified live. The runnable, authoritative DDL lives in [supabase/schema.sql](supabase/schema.sql); this document is the readable companion (tables, relationships, RLS matrix, storage, edge functions, and known issues).
 
 - **Backend:** Supabase (Postgres + Auth + Storage + Edge Functions).
 - **Client access:** browser uses the **anon key** only; there is no service-role key in the app. RLS is therefore the primary security boundary.
@@ -12,17 +12,21 @@ Complete reference for the **live Supabase database** (Postgres 17, project `dtj
 
 ```
 auth.users ──1:1──> profiles ──┐
-                                ├─< trek_participants >── trek_batches >── treks
-                                ├─< trek_reviews ───────────────────────── treks
-                                ├─< favorites ──────────────────────────── treks
+                                ├─< trek_participants >── trek_batches >── treks >── companies
+                                ├─< trek_reviews ───────────────────────── treks         │
+                                ├─< favorites ──────────────────────────── treks         │
                                 ├─< conversation_participants >── conversations ──1:1── trek_batches
-                                ├─< conversation_messages ────────  conversations
+                                ├─< conversation_messages ────────  conversations        │
+                                ├─< company_members >────────────────────────────── companies
                                 ├─< user_stats (1:1)
                                 ├─< user_monthly_activity
                                 └─< user_achievements
+
+auth.users ──< platform_admins   (super-admin allowlist, SQL-Editor-only)
 ```
 
 - A **trek** is a catalogue entry. A **batch** is a dated departure of a trek (`UNIQUE(trek_id, batch_date)`).
+- Since 2026-07-02 every trek is **owned by a company** (`treks.company_id` NOT NULL) and soft-deletes via `is_active`. A trek is publicly visible only when `is_active` AND its company is `approved` (`is_trek_visible()`). Companies are created only via `apply_for_company()` (self-serve, lands `pending`) and moderated by **platform admins** (approve/reject/suspend RPCs).
 - Joining a batch creates/uses a **conversation** (one per batch, `conversations.batch_id` is `UNIQUE`) and adds the user to both `trek_participants` and `conversation_participants`. This is done atomically by the `join_trek_and_chat` RPC.
 - **Reviews** are one-per-(trek, user) and require the user to have actually joined the trek.
 
@@ -47,6 +51,8 @@ auth.users ──1:1──> profiles ──┐
 | `experience_level` | `Beginner, Intermediate, Expert` | `profiles.experience_level` |
 | `gender` | `Male, Female` | `profiles."Gender"` |
 | `mood` | `Biginer, intermediate, expert` | **unused** (typo'd; safe to drop) |
+| `company_status` | `pending, approved, rejected, suspended` | `companies.status` |
+| `company_role` | `owner, admin, staff` | `company_members.role` |
 
 ---
 
@@ -72,8 +78,8 @@ Holds **PII**. Public reads are blocked at the table; cross-user display data is
 
 Row created automatically by the `handle_new_user()` trigger on signup.
 
-### `treks` — catalogue (public read)
-No owner column → no legitimate client write path (seeded/admin only).
+### `treks` — catalogue (tenant-aware read since 2026-07-02)
+Owned by a company; company members create/edit their own treks via RLS, archive via `is_active=false` (the only delete path — no hard DELETE).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -93,6 +99,36 @@ No owner column → no legitimate client write path (seeded/admin only).
 | `plan` | text | itinerary |
 | `participants_joined` | smallint | denormalised counter, kept in sync by `trek_participants_count_trigger` → `update_participants_count()`; counts **confirmed only** (follow-up #1, so it equals `get_trek_participant_count()`). Used directly by the Explore listing. |
 | `fts` | tsvector | **generated** (`title`+`description`+`location`, `english`); GIN-indexed (`treks_fts_idx`). Backs Explore search via `search_treks()`. |
+| `company_id` | uuid | **NOT NULL**, FK → `companies(id)`, indexed. Added 2026-07-02; backfilled to "Trekker Originals". |
+| `is_active` | boolean | **NOT NULL** default `true`. Soft-delete: `false` = archived (hidden from public catalogue). |
+
+### `companies` — a tenant/operator (added 2026-07-02)
+Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow columns are pinned against self-edit by `trg_protect_company_admin_fields`. Client SELECT is **column-restricted**: `anon`/`authenticated` are granted SELECT only on the non-sensitive columns — the audit UUIDs `created_by`/`approved_by`/`approved_at` are excluded (RLS is row-level only, so without this a client could select them and deanonymize owners/approving admins via `public_profiles`). Admins read the audit columns via the `admin_list_companies` / `admin_get_company` SECURITY DEFINER RPCs.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid | **PK** |
+| `name` | text | **NOT NULL**, CHECK non-blank |
+| `slug` | text | **NOT NULL, UNIQUE**, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$`, ≤ 60 chars. Public URL `/company/[slug]`; **immutable** — pinned to OLD by `trg_protect_company_admin_fields` for non-platform-admins (blocks slug hijack of old links). No rename path in v1 |
+| `description` / `logo_url` / `cover_image_url` / `website` / `contact_email` / `contact_phone` | text | storefront profile, editable by company owner/admin |
+| `status` | `company_status` | **NOT NULL** default `'pending'`, indexed. Only platform admins can change it (trigger-pinned) |
+| `rejection_reason` | text | set by `reject_company()` / `suspend_company()` |
+| `created_by` | uuid | **NOT NULL**, FK → `auth.users(id)`. Partial unique index `companies_one_pending_per_creator`: **one pending application per user** (spam guard; rejected users can reapply) |
+| `approved_by` / `approved_at` | uuid / timestamptz | audit trail, set by `approve_company()` |
+| `created_at` | timestamptz | `now()` |
+
+### `company_members` — user ↔ company with role (added 2026-07-02)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid | **PK** |
+| `company_id` | uuid | **NOT NULL**, FK → `companies(id)` ON DELETE CASCADE, indexed |
+| `user_id` | uuid | **NOT NULL**, FK → `profiles(id)` ON DELETE CASCADE, indexed |
+| `role` | `company_role` | **NOT NULL** default `'staff'`. `'owner'` is written exactly once, by `apply_for_company()`; owner rows can't be updated/deleted via RLS |
+| `created_at` | timestamptz | `now()` |
+| | | **UNIQUE(`company_id`, `user_id`)** |
+
+### `platform_admins` — super-admin allowlist (added 2026-07-02)
+`user_id` (PK, FK → `auth.users`), `created_at`. **RLS enabled with zero policies = default-deny for every client role.** Rows are added only via the SQL Editor — there is deliberately no client path (see `supabase/phases/phase-d-platform-admin.sql`). ⚠️ **Empty as of 2026-07-02** — `/admin` and company moderation are unusable until the manual insert runs.
 
 ### `trek_batches` — a dated departure
 | Column | Type | Notes |
@@ -196,14 +232,25 @@ Composite **PK (`created_at`, `id`)**.
 | `get_trek_participant_count(uuid)` | integer | INVOKER | pinned | **Confirmed** participant count across a trek's batches (excludes waitlisted). |
 | `promote_waitlist_on_leave()` | trigger | **DEFINER** | pinned | After a confirmed participant leaves, promotes the oldest waitlisted joiner (FIFO) to confirmed and adds them to the batch chat. EXECUTE revoked from anon/authenticated. |
 | `get_trek_avg_rating(uuid)` | numeric | INVOKER | pinned | Live average of a trek's `trek_reviews.rating`, rounded to 1 dp; `null` when unrated. Single-trek card views (home page). Granted to anon + authenticated. |
-| `search_treks(text,text,text,numeric,numeric,numeric,numeric,date,text,int,int)` | setof rows | INVOKER | pinned | Explore page read path: FTS + filters (location/difficulty/distance/price/date) + sort + pagination in one call. `rating` is the live average of `trek_reviews` (numeric, 1 dp, `null` when unrated); the `rating` sort orders by it. Returns `total_count` per row (window count). A search that sanitizes to empty (e.g. punctuation-only `!!!`) returns **no matches** rather than the whole catalog (follow-up #3). Granted to anon + authenticated. |
+| `search_treks(…, p_company_id uuid)` — 12 args | setof rows | INVOKER | pinned | Explore page read path: FTS + filters (location/difficulty/distance/price/date) + sort + pagination in one call. `rating` is the live average of `trek_reviews` (numeric, 1 dp, `null` when unrated); the `rating` sort orders by it. Returns `total_count` per row (window count). A search that sanitizes to empty (e.g. punctuation-only `!!!`) returns **no matches** rather than the whole catalog (follow-up #3). **Rewritten 2026-07-02 (multi-tenant):** only returns treks that are `is_active` with an `approved` company; returns `company_id`/`company_name`/`company_slug`; optional `p_company_id` filter for the `/company/[slug]` storefront. The old 11-arg overload was dropped. Granted to anon + authenticated. |
+| `is_platform_admin()` | boolean | **DEFINER** | pinned | Caller ∈ `platform_admins`? Gates moderation RPCs + `/admin` layout. Granted to authenticated. |
+| `is_company_member(uuid)` / `is_company_admin(uuid)` | boolean | **DEFINER** | pinned | Membership / owner-or-admin checks; back every company-scoped RLS policy (same no-recursion pattern as `is_chat_participant`). |
+| `is_trek_visible(uuid)` | boolean | **DEFINER** | pinned | Single source of truth for trek visibility: `(is_active AND company approved) OR company member OR platform admin OR caller has a booking on one of the trek's batches`. The participant arm keeps a user's own booking readable after archive/suspension; it doesn't re-list the trek publicly (`search_treks` filters active+approved directly). Used by `treks` + `trek_batches` SELECT policies. Granted to anon + authenticated (policies run as the caller). |
+| `apply_for_company(text,text,text,text,text,text)` | jsonb | **DEFINER** | pinned | The ONLY way to create a company: forces `status='pending'`, makes the caller the `owner` member atomically. Raises user-facing errors (blank name, bad slug, duplicate pending/slug). |
+| `approve_company(uuid)` / `reject_company(uuid,text)` / `suspend_company(uuid,text)` | void | **DEFINER** | pinned | Platform-admin-only moderation (checked **inside** each function, not just via grants). Approve sets `approved_by/at`; reject/suspend record a reason. |
+| `get_company_batch_participants(uuid)` | setof rows | **DEFINER** | pinned | The ONLY path for company staff to see participant PII (name/phone/emergency). Re-checks the caller's membership against the batch's owning company; returns an **empty set** (not an error) for foreign batches. |
+| `get_trek_batch_confirmed_counts(uuid)` | setof rows | **DEFINER** | pinned | Confirmed-participant count per batch for one trek — **no PII** (batch id + integer). Powers the departure list without fanning out the roster RPC per batch. Same membership re-check; **empty set** for non-members/foreign treks. |
+| `get_company_members(uuid)` | setof rows | **DEFINER** | pinned | Team roster (name/email/avatar/role) for a company the caller belongs to. `profiles` is self-only under RLS, so the roster is mediated here. Returns an **empty set** for non-members. Added Phase C. |
+| `invite_company_member(uuid,text)` | jsonb | **DEFINER** | pinned | Owner/admin-only. Resolves an existing account by email and adds them as **staff** (never admin/owner). Re-checks `is_company_admin()` internally; raises for non-admins / unknown email. Added Phase C. |
+| `admin_list_companies(text)` / `admin_get_company(uuid)` | setof `companies` | **DEFINER** | pinned | Platform-admin-only reads that return the audit columns (`created_by`/`approved_by`/`approved_at`) the base-table client SELECT grant excludes. Raise for non-admins. EXECUTE revoked from PUBLIC + `anon`, granted to `authenticated`. |
+| `protect_company_admin_fields()` | trigger | **DEFINER** | pinned | BEFORE UPDATE on `companies`: pins `slug`/`status`/`approved_by`/`approved_at`/`rejection_reason`/`created_by` to OLD unless caller is a platform admin (blocks self-approval + slug hijack). EXECUTE revoked from clients. |
 | `update_user_stats_timestamp()` | trigger | INVOKER | pinned | Touch `user_stats.last_updated`. |
 | `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent), then calls `award_user_achievements()`. Aggregates **confirmed participations only** (follow-up #2). EXECUTE revoked from clients; called by triggers + daily pg_cron. |
 | `award_user_achievements(uuid)` | void | **DEFINER** | pinned | Evaluates the 15-badge catalog from source metrics (**confirmed participations only** — follow-up #2) and appends newly-qualifying badges to `user_achievements` (idempotent, on conflict do nothing — never removes). EXECUTE revoked from clients; called by `recompute_user_stats()`. |
 | `get_user_profile(uuid)` | jsonb | INVOKER | pinned | One read path for the profile page: `{ stats, current_month, achievements[] }` in a single round trip. INVOKER so own-row RLS still applies; `p_user_id` defaults to `auth.uid()`. Granted to `authenticated`. |
 | `trg_recompute_user_stats()` | trigger | **DEFINER** | pinned | Trigger glue → `recompute_user_stats()` for the affected user. |
 | `on_user_join_trek()` | trigger | INVOKER | pinned | No-op (legacy). |
-| `create_trek_initial_message()` | trigger | INVOKER | pinned | 🐞 **BROKEN** — inserts into non-existent `trek_messages`. |
+| `create_trek_initial_message()` | trigger | INVOKER | pinned | Inserts into non-existent `trek_messages` — its trigger was **dropped 2026-07-02** (multi-tenant migration), so trek creation no longer errors. Function kept, unused. |
 | `update_participants_count()` | trigger | **DEFINER** | pinned | Recomputes `treks.participants_joined` on join/leave; counts **confirmed only** as of follow-up #1 (2026-06-22). Attached & enabled via `trek_participants_count_trigger`. (Replaced the old dead version that referenced `trek_participants.trek_id`.) |
 | `notify_trek_join()` / `notify_trek_remove()` | trigger | INVOKER | pinned | `pg_net` POST to `trek-email-notification` edge fn that **does not exist**; redundant with the webhook triggers. Anon key hard-coded in live DB. |
 
@@ -218,7 +265,8 @@ Composite **PK (`created_at`, `id`)**.
 | `trek_participants` | `trg_participant_stats` | AFTER INSERT/DELETE | `trg_recompute_user_stats()` | ✅ active |
 | `trek_participants` | `trek_participants_count_trigger` | AFTER INSERT/DELETE | `update_participants_count()` | ✅ active — maintains `treks.participants_joined` (confirmed only) |
 | `trek_reviews` | `trg_review_stats` | AFTER INSERT/UPDATE/DELETE | `trg_recompute_user_stats()` | ✅ active |
-| `treks` | `trg_initial_trek_message` | AFTER INSERT | `create_trek_initial_message()` | 🐞 errors on insert |
+| `treks` | ~~`trg_initial_trek_message`~~ | ~~AFTER INSERT~~ | `create_trek_initial_message()` | ❌ **dropped 2026-07-02** (multi-tenant migration) — used to error every trek insert |
+| `companies` | `trg_protect_company_admin_fields` | BEFORE UPDATE | `protect_company_admin_fields()` | ✅ active — blocks self-approval + slug rename |
 | `trek_participants` | `trek-join-notification` | AFTER INSERT | webhook → `send-trek-notification` | ✅ active |
 | `trek_participants` | `trek-leave-notification` | AFTER DELETE | webhook → `send-trek-leave-notification` | ✅ active |
 | `trek_participants` | `trek_join_email_trigger` | AFTER INSERT | `notify_trek_join()` | 🐞 dead edge fn |
@@ -231,13 +279,16 @@ Composite **PK (`created_at`, `id`)**.
 
 ## 8. RLS policy matrix
 
-RLS is enabled on all 11 public tables. `auth.uid() = …` checks appear under both the `public` and `authenticated` roles in the live DB; effect is the same (anon has no `uid`).
+RLS is enabled on all 14 public tables. `auth.uid() = …` checks appear under both the `public` and `authenticated` roles in the live DB; effect is the same (anon has no `uid`).
 
 | Table | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
 | `profiles` | own (`id = uid`) | own | own | — |
-| `treks` | **public `true`** | — | — | — |
-| `trek_batches` | **public `true`** | — (RPC only) | — | — |
+| `treks` | `is_trek_visible(id)` (public rule: active + company approved; members/platform admins see own/all; participants keep read access to treks they've booked) | company member | company member or platform admin | — (soft-delete via `is_active`) |
+| `trek_batches` | `is_trek_visible(trek_id)` | company member (of parent trek) | company member | company member **AND no participants AND no chat conversation** (`batch_has_participants` / `batch_has_conversation`, both DEFINER; a lingering conversation FK would otherwise reject the delete) |
+| `companies` | approved, or own-company member, or platform admin | — (RPC only) | company owner/admin or platform admin (workflow columns trigger-pinned) | — (suspend, never delete) |
+| `company_members` | own-company members + platform admins | company owner/admin, **`role='staff'` only** | company owner/admin, non-owner rows, target role ∈ admin/staff | company owner/admin, non-owner rows |
+| `platform_admins` | — | — | — | — (**zero policies — SQL Editor only**) |
 | `trek_participants` | **own** (`user_id = uid`) | own | own | own |
 | `trek_reviews` | **public `true`** | own **AND joined the trek** | own | own |
 | `favorites` | own | own | — | own |
@@ -253,7 +304,9 @@ Key design points:
 - **`trek_participants` is own-row only** (NEW-4) — closes the logged-out + cross-user social-graph leak.
 - **Reviews require participation** (NEW-3) — the INSERT `WITH CHECK` verifies a matching `trek_participants → trek_batches` row for the trek.
 - **Chat writes** are membership-gated; `conversation_participants` INSERT is `service_role`-only, so users are added only via the `join_trek_and_chat` RPC (SECURITY DEFINER).
-- **Batch/trek writes** have no policy → denied to clients; created only by the SECURITY DEFINER RPC.
+- **Trek/batch writes are company-scoped** (2026-07-02): every policy goes through `is_company_member()`/`is_company_admin()`, never a client-supplied flag — the IDOR/cross-tenant boundary. Participants still join batches only via `join_trek_and_chat`.
+- **No client path to owner or platform-admin**: `role='owner'` is written only by `apply_for_company()`; the INSERT policy allows `'staff'` only and UPDATE's WITH CHECK excludes `'owner'`. `platform_admins` is default-deny with zero policies.
+- **PII stays out of company hands**: staff never get SELECT on `profiles`; rosters come only from `get_company_batch_participants()`, which re-checks membership per batch.
 
 ---
 
@@ -266,8 +319,10 @@ Buckets (all **public**, no size limit, any MIME):
 | `avatars` | public | owner-scoped INSERT/UPDATE/DELETE | path `{uid}/file` **or** `{uid}.ext` |
 | `trek-reviews` | public (`Public Access`) | owner-scoped INSERT/DELETE (no UPDATE) | path `{uid}/file` |
 | `trek-profile` | — | — | public bucket, **no object policies**; reachable only by public URL. Likely unused. |
+| `company-logos` | authenticated SELECT (anon listing blocked) | company-member-scoped INSERT/UPDATE/DELETE | added 2026-07-02; path `{company_id}/file` — first segment must be a company UUID the caller belongs to |
+| `trek-images` | authenticated SELECT (anon listing blocked) | company-member-scoped INSERT/UPDATE/DELETE | added 2026-07-02; path `{company_id}/…` (convention: `{company_id}/{trek_id}/file`) |
 
-⚠️ Advisor `public_bucket_allows_listing` flags `avatars` and `trek-reviews`: the broad public SELECT allows clients to **list** all files. Object URLs don't need listing — consider narrowing.
+⚠️ Advisor `public_bucket_allows_listing` flags `avatars`, `trek-reviews` and (since 2026-07-02) `company-logos`, `trek-images`: a broad SELECT policy allows signed-in clients to **list** all files. Object URLs don't need listing — deliberate trade-off (blocks *anon* listing, keeps CDN URLs working), consistent across all four buckets.
 
 ---
 
@@ -284,17 +339,18 @@ Source is **not** in this repo (`supabase/functions/` is empty locally). The `tr
 
 ## 11. Known issues / advisors
 
-Security advisor (live, 2026-06-13):
+Security advisor (live, re-checked **2026-07-02** after the multi-tenant migration):
 
 - **ERROR** `security_definer_view` — `public_profiles`. Intentional (documented above). [ref](https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view)
-- **WARN** `public_bucket_allows_listing` — `avatars`, `trek-reviews`. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0025_public_bucket_allows_listing)
-- **WARN** `anon/authenticated_security_definer_function_executable` — `handle_new_user`, `is_chat_participant`, `join_trek_and_chat` are callable via `/rest/v1/rpc`. `handle_new_user` is a trigger fn and should have EXECUTE revoked. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable)
+- **INFO** `rls_enabled_no_policy` — `platform_admins`. **Intentional**: zero policies = default-deny; the only write path is the SQL Editor. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy)
+- **WARN** `public_bucket_allows_listing` — `company-logos`, `trek-images` (and historically `avatars`, `trek-reviews`). Deliberate pattern: authenticated-only SELECT blocks anon listing; CDN URLs still work. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0025_public_bucket_allows_listing)
+- **WARN** `anon/authenticated_security_definer_function_executable` — the multi-tenant RPCs (`apply_for_company`, `approve/reject/suspend_company`, `get_company_batch_participants`, `get_company_members`, `invite_company_member`, the `is_*` helpers) plus pre-existing `join_trek_and_chat`, `is_chat_participant`, `get_unread_counts`, `mark_conversation_read` are callable via `/rest/v1/rpc`, including by `anon` (default PUBLIC grant). **All fail safely** — each checks `auth.uid()` / `is_company_member()` / `is_company_admin()` / `is_platform_admin()` internally (`get_company_members` returns an empty set for anon, `invite_company_member` raises — both verified live 2026-07-02) — but revoking anon EXECUTE on the company action RPCs would silence the linter; optional hardening tracked in `FEATURES.md` §1. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable)
 - **WARN** `auth_leaked_password_protection` — disabled. The built-in toggle is **Pro-only**, so it's handled in app code instead: `isPasswordPwned()` in [src/lib/auth.ts](src/lib/auth.ts) checks signups/password-updates against HaveIBeenPwned's range API (k-anonymity). The advisor will still flag this since it only inspects the Auth toggle. [ref](https://supabase.com/docs/guides/auth/password-security)
 - **WARN** `vulnerable_postgres_version` — `supabase-postgres-17.4.1.069` has patches available. Manual upgrade is **Pro-only**; on the free plan this is acknowledged (Supabase patches free-tier infra on their own schedule). [ref](https://supabase.com/docs/guides/platform/upgrading)
 
 Correctness bugs (in DB):
 
-- `create_trek_initial_message()` + `trg_initial_trek_message` insert into non-existent `trek_messages` → **creating a trek errors**.
+- ~~`create_trek_initial_message()` + `trg_initial_trek_message` insert into non-existent `trek_messages` → creating a trek errors.~~ **FIXED 2026-07-02** — the multi-tenant migration dropped the trigger; the (unused) function remains.
 - `treks.participants_joined` is kept in sync by `trek_participants_count_trigger` → `update_participants_count()` on every join/leave (NEW-5); it counts **confirmed only** (follow-up #1), so it now agrees with `get_trek_participant_count()`.
 - Duplicate dead notification triggers (`notify_trek_join/remove` → non-existent edge fn).
 - App-side dead code: [src/lib/database.ts](src/lib/database.ts) targets a non-existent `reviews` table and `trek_participants.trek_id` column and the non-existent `increment_participants` RPC. Not on any live path (the app uses [src/lib/joinTrek.ts](src/lib/joinTrek.ts)).

@@ -1,20 +1,17 @@
-'use client';
-
 import Link from 'next/link';
 import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
-import { useFeaturedTreks } from '@/lib/queries';
+import { getFeaturedTreks } from '@/lib/server-queries';
+import { DEFAULT_TREK_IMAGE } from '@/lib/site';
 
-const DEFAULT_IMAGE_URL = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
-
-export default function HomePage() {
-  const { data: treks = [], isPending: loading } = useFeaturedTreks();
+export default async function HomePage() {
+  const treks = await getFeaturedTreks(3);
 
   return (
     // MAIN CONTAINER: Dark Gradient + Snow
     // Added pt-20 to ensure content isn't hidden behind fixed header
     <div className="min-h-screen relative overflow-hidden" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-      
+
       {/* Hero Section */}
       {/* Ensure your HeroSection handles its own transparency or background */}
       <HeroSection />
@@ -32,47 +29,35 @@ export default function HomePage() {
             </p>
           </div>
 
-          {loading ? (
-             <div className="flex justify-center py-10">
-                <p className="text-white/60 animate-pulse text-lg">Loading adventures...</p>
-             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {treks.map((trek) => {
-                const batches = trek.trek_batches || [];
-                const upcomingBatches = batches
-                  .filter(b => new Date(b.batch_date) >= new Date())
-                  .sort((a, b) => new Date(a.batch_date).getTime() - new Date(b.batch_date).getTime());
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {treks.map((trek) => {
+              const nextDate = trek.next_batch_date || undefined;
+              const dateDisplay = nextDate
+                ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                : 'No upcoming dates';
 
-                const nextBatch = upcomingBatches[0];
-                const nextDate = nextBatch ? nextBatch.batch_date : 'No upcoming dates';
-                const dateDisplay = nextDate !== 'No upcoming dates'
-                  ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                  : nextDate;
-
-                return (
-                  <div key={trek.id} className="transform hover:-translate-y-2 transition-transform duration-300">
-                      <TrekCard
-                        id={trek.id}
-                        title={trek.title}
-                        description={trek.description}
-                        image={trek.cover_image_url || DEFAULT_IMAGE_URL}
-                        date={dateDisplay}
-                        location={trek.location}
-                        difficulty={trek.difficulty}
-                        participants={{
-                          current: trek.real_participant_count || 0,
-                          max: trek.max_participants,
-                        }}
-                        rating={trek.avg_rating ?? undefined}
-                        price={trek.estimated_cost}
-                        next_batch_date={nextDate !== 'No upcoming dates' ? nextDate : undefined}
-                      />
-                  </div>
-                );
-              })}
-            </div>
-          )}
+              return (
+                <div key={trek.id} className="transform hover:-translate-y-2 transition-transform duration-300">
+                    <TrekCard
+                      id={String(trek.id)}
+                      title={trek.title}
+                      description={trek.description}
+                      image={trek.cover_image_url || DEFAULT_TREK_IMAGE}
+                      date={dateDisplay}
+                      location={trek.location}
+                      difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
+                      participants={{
+                        current: trek.participants_joined ?? 0,
+                        max: trek.max_participants ?? 0,
+                      }}
+                      rating={trek.rating != null ? Number(trek.rating) : undefined}
+                      price={trek.estimated_cost}
+                      next_batch_date={nextDate}
+                    />
+                </div>
+              );
+            })}
+          </div>
 
           <div className="text-center mt-16">
             <Link
@@ -98,7 +83,7 @@ export default function HomePage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            
+
             {/* Feature 1: Glass Card */}
             <div className="text-center p-8 bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl hover:bg-white/10 transition-colors duration-300">
               <div className="w-16 h-16 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_15px_rgba(59,130,246,0.3)]">

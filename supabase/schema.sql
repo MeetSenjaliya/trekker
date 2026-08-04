@@ -4,6 +4,10 @@
 -- This file mirrors the LIVE Supabase database (project dtjmyqogeozrzzbdjokr)
 -- as introspected on 2026-06-13: tables, constraints, enums, views, functions,
 -- triggers, RLS policies (public + storage), and storage buckets.
+-- UPDATED 2026-07-02: the multi-tenant migration
+-- (supabase/migration-multi-tenant.sql) was applied and is folded in — new
+-- objects live in §12; search_treks (§5), the treks/trek_batches read policies
+-- (§8), and the trg_initial_trek_message trigger (§6) changed in place.
 --
 -- It SUPERSEDES the older fragmented files that used to live in this folder
 -- (policies.sql, profiles-rls-policies.sql, multi-photo-setup.sql, fix-rls.sql,
@@ -70,7 +74,9 @@ create table if not exists public.profiles (
   emergency_no       varchar
 );
 
--- treks — the catalogue. Publicly readable. No owner column.
+-- treks — the catalogue. Since 2026-07-02 every trek is owned by a company:
+-- §12 adds company_id (NOT NULL) + is_active (soft-delete), and public reads
+-- go through is_trek_visible() instead of an unconditional policy.
 create table if not exists public.treks (
   id                  uuid primary key default gen_random_uuid(),
   title               text not null,
@@ -462,6 +468,11 @@ grant execute on function public.get_trek_avg_rating(uuid) to anon, authenticate
 -- count(*) over () returns the total match count on every row so the client
 -- gets rows + total in ONE request (no N+1). SECURITY INVOKER — treks is
 -- publicly readable, so this is granted to anon + authenticated.
+-- REWRITTEN 2026-07-02 (multi-tenant, §12): joins companies, only surfaces
+-- treks where is_active AND the owning company is approved, returns
+-- company_id/name/slug, and takes an optional p_company_id filter (used by the
+-- /company/[slug] storefront). The old 11-arg overload was dropped so
+-- PostgREST has exactly one signature to resolve.
 create or replace function public.search_treks(
   p_search       text    default null,
   p_location     text    default null,
@@ -473,7 +484,8 @@ create or replace function public.search_treks(
   p_date_from    date    default null,
   p_sort         text    default 'date',
   p_limit        int     default 6,
-  p_offset       int     default 0
+  p_offset       int     default 0,
+  p_company_id   uuid    default null
 )
 returns table (
   id                  uuid,
@@ -489,6 +501,9 @@ returns table (
   rating              numeric,
   participants_joined smallint,
   next_batch_date     date,
+  company_id          uuid,
+  company_name        text,
+  company_slug        text,
   total_count         bigint
 )
 language plpgsql
@@ -500,8 +515,6 @@ declare
   v_tsquery    tsquery := null;
   v_has_search boolean := false;
 begin
-  -- Build a prefix tsquery: "base camp" -> 'base:* & camp:*'. Strip anything
-  -- that isn't a letter/digit/space so user input can't break to_tsquery.
   if p_search is not null and length(trim(p_search)) > 0 then
     v_has_search := true;
     v_str := (
@@ -525,25 +538,24 @@ begin
       t.distance_km, t.duration_hours, t.max_participants, t.estimated_cost,
       rr.avg_rating as rating, t.participants_joined,
       nb.next_batch_date,
+      c.id as company_id, c.name as company_name, c.slug as company_slug,
       case when v_tsquery is not null then ts_rank(t.fts, v_tsquery) else 0 end as rank
     from public.treks t
+    join public.companies c on c.id = t.company_id
     left join lateral (
       select min(b.batch_date) as next_batch_date
       from public.trek_batches b
       where b.trek_id = t.id
         and b.batch_date >= coalesce(p_date_from, current_date)
     ) nb on true
-    -- Real ratings rollup: average of trek_reviews.rating (null when no reviews,
-    -- so the card's rating badge hides). Replaces the static treks.rating column.
     left join lateral (
       select round(avg(r.rating), 1) as avg_rating
       from public.trek_reviews r
       where r.trek_id = t.id
     ) rr on true
     where
-      -- A non-empty search that sanitizes to nothing (e.g. "!!!") leaves
-      -- v_tsquery null: treat it as "no matches", not "no filter".
-      (not v_has_search or (v_tsquery is not null and t.fts @@ v_tsquery))
+      t.is_active and c.status = 'approved'
+      and (not v_has_search or (v_tsquery is not null and t.fts @@ v_tsquery))
       and (p_location     is null or t.location ilike '%' || p_location || '%')
       and (p_difficulty   is null or t.difficulty::text = p_difficulty)
       and (p_min_distance is null or t.distance_km    >= p_min_distance)
@@ -551,11 +563,13 @@ begin
       and (p_min_price    is null or t.estimated_cost >= p_min_price)
       and (p_max_price    is null or t.estimated_cost <= p_max_price)
       and (p_date_from    is null or nb.next_batch_date is not null)
+      and (p_company_id   is null or t.company_id = p_company_id)
   )
   select
     f.id, f.title, f.description, f.location, f.cover_image_url, f.difficulty,
     f.distance_km, f.duration_hours, f.max_participants, f.estimated_cost,
     f.rating, f.participants_joined, f.next_batch_date,
+    f.company_id, f.company_name, f.company_slug,
     count(*) over () as total_count
   from filtered f
   order by
@@ -573,8 +587,12 @@ end;
 $$;
 
 grant execute on function public.search_treks(
-  text, text, text, numeric, numeric, numeric, numeric, date, text, int, int
+  text, text, text, numeric, numeric, numeric, numeric, date, text, int, int, uuid
 ) to anon, authenticated;
+
+drop function if exists public.search_treks(
+  text, text, text, numeric, numeric, numeric, numeric, date, text, int, int
+);
 
 -- recompute_user_stats — rebuild all stats for one user from source truth.
 -- Idempotent (sets, never blindly adds): safe to re-run, handles leaves/deletes.
@@ -778,10 +796,11 @@ begin
 end;
 $$;
 
--- BUG: create_trek_initial_message inserts into `trek_messages`, a table that
--- does NOT exist. Its trigger (trg_initial_trek_message) fires AFTER INSERT on
--- treks, so creating a trek via SQL/PostgREST currently ERRORS. Left as-is to
--- match live; fix by dropping the trigger or rewriting to use conversation_*.
+-- create_trek_initial_message inserts into `trek_messages`, a table that does
+-- NOT exist — every trek INSERT used to error because of it. FIXED 2026-07-02:
+-- the multi-tenant migration dropped its trigger (trg_initial_trek_message, §6)
+-- so company admins can create treks. The function is kept (unused) per the
+-- repo convention of not deleting pre-existing code out of scope.
 create or replace function public.create_trek_initial_message()
 returns trigger
 language plpgsql
@@ -1048,11 +1067,10 @@ create trigger trg_review_stats
   after insert or update or delete on public.trek_reviews
   for each row execute function public.trg_recompute_user_stats();
 
--- BUG (see function note): fires the broken trek_messages insert on trek create.
+-- trg_initial_trek_message DROPPED 2026-07-02 (multi-tenant migration): it fired
+-- the broken trek_messages insert on every trek create (see function note in §5).
+-- Its intent (seed a welcome message) is superseded by join_trek_and_chat().
 drop trigger if exists trg_initial_trek_message on public.treks;
-create trigger trg_initial_trek_message
-  after insert on public.treks
-  for each row execute function public.create_trek_initial_message();
 
 -- Email-notification webhooks on join/leave. These call the DEPLOYED edge
 -- functions via notify_trek_participation(), which reads the bearer token from
@@ -1147,13 +1165,11 @@ create policy "Users can insert own profile" on public.profiles for insert to au
 drop policy if exists "Users can update own profile" on public.profiles;
 create policy "Users can update own profile" on public.profiles for update to authenticated using (auth.uid() = id);
 
--- ---- treks (public read) ----------------------------------------------------
-drop policy if exists "view all treks" on public.treks;
-create policy "view all treks" on public.treks for select to public using (true);
-
--- ---- trek_batches (public read; writes only via SECURITY DEFINER RPC) --------
-drop policy if exists "Anyone can view trek batches" on public.trek_batches;
-create policy "Anyone can view trek batches" on public.trek_batches for select to public using (true);
+-- ---- treks / trek_batches ---------------------------------------------------
+-- REPLACED 2026-07-02 (multi-tenant): the old unconditional public-read
+-- policies ("view all treks", "Anyone can view trek batches") were dropped.
+-- Reads now go through is_trek_visible() and companies get scoped write
+-- policies — see §12.
 
 -- ---- trek_participants (own rows only — NEW-4) ------------------------------
 drop policy if exists "Users can view own trek participation" on public.trek_participants;
@@ -1295,12 +1311,18 @@ using (bucket_id = 'trek-reviews' and (storage.foldername(name))[1] = auth.uid()
 -- ============================================================================
 -- 10. OPEN ADVISOR ITEMS (not enforced here — see SECURITY_AUDIT_ISSUE.md)
 -- ============================================================================
+-- Advisor state re-checked 2026-07-02 after the multi-tenant migration:
 -- * security_definer_view: public_profiles (intentional; documented above).
--- * public_bucket_allows_listing: avatars, trek-reviews (broad SELECT allows
---   listing; object URLs don't need it — consider narrowing).
--- * anon/authenticated can EXECUTE handle_new_user / is_chat_participant /
---   join_trek_and_chat via /rest/v1/rpc. handle_new_user is a trigger fn and
---   should have EXECUTE revoked from anon, authenticated.
+-- * public_bucket_allows_listing: avatars, trek-reviews + NEW company-logos,
+--   trek-images (broad authenticated SELECT allows listing; object URLs don't
+--   need it — deliberate, mirrors the avatars pattern to block anon listing).
+-- * anon can EXECUTE the multi-tenant SECURITY DEFINER RPCs (apply_for_company,
+--   approve/reject/suspend_company, get_company_batch_participants, helpers)
+--   via the default PUBLIC grant. Every one fails safely for anon (auth.uid()
+--   / is_platform_admin() checked inside), but revoking anon EXECUTE on the
+--   five action RPCs would silence the linter — optional hardening, tracked in
+--   FEATURES.md §1.
+-- * rls_enabled_no_policy on platform_admins: INTENTIONAL default-deny (§12).
 -- * Auth: leaked-password protection disabled; raise min password length.
 -- * Postgres has pending security patches (upgrade in dashboard).
 -- ============================================================================
@@ -1318,3 +1340,685 @@ set participants_joined = (
   join public.trek_batches tb on tb.id = tp.batch_id
   where tb.trek_id = t.id
 );
+
+
+-- ============================================================================
+-- 12. MULTI-TENANT (companies) — applied 2026-07-02 via
+--     supabase/migration-multi-tenant.sql; design rationale in
+--     MULTI_TENANT_PLAN.md. search_treks (§5), the treks/trek_batches read
+--     policies (§8) and trg_initial_trek_message (§6) were changed in place
+--     above by the same migration.
+-- ============================================================================
+
+-- ---- 12.1 Enums ---------------------------------------------------------------
+do $$ begin
+  create type public.company_status as enum ('pending', 'approved', 'rejected', 'suspended');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type public.company_role as enum ('owner', 'admin', 'staff');
+exception when duplicate_object then null; end $$;
+
+-- ---- 12.2 Tables ----------------------------------------------------------------
+
+-- companies — a tenant/operator. Approval-workflow fields (status/approved_by/
+-- approved_at/rejection_reason/created_by) are pinned against self-edit by the
+-- trigger in 12.5.
+create table if not exists public.companies (
+  id                uuid primary key default gen_random_uuid(),
+  name              text not null check (length(trim(name)) > 0),
+  slug              text not null check (slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$' and length(slug) <= 60),
+  description       text,
+  logo_url          text,
+  cover_image_url   text,
+  website           text,
+  contact_email     text,
+  contact_phone     text,
+  status            public.company_status not null default 'pending',
+  rejection_reason  text,
+  created_by        uuid not null references auth.users(id),
+  approved_by       uuid references auth.users(id),
+  approved_at       timestamptz,
+  created_at        timestamptz not null default now(),
+  constraint companies_slug_key unique (slug)
+);
+
+create index if not exists companies_status_idx on public.companies (status);
+
+-- Spam guard: one pending application per user (rejected users can reapply).
+create unique index if not exists companies_one_pending_per_creator
+  on public.companies (created_by) where (status = 'pending');
+
+-- company_members — user ↔ company with role. role='owner' is set exactly once,
+-- by apply_for_company(); no client write path can create or reassign an owner.
+create table if not exists public.company_members (
+  id          uuid primary key default gen_random_uuid(),
+  company_id  uuid not null references public.companies(id) on delete cascade,
+  user_id     uuid not null references public.profiles(id) on delete cascade,
+  role        public.company_role not null default 'staff',
+  created_at  timestamptz not null default now(),
+  constraint company_members_company_user_key unique (company_id, user_id)
+);
+
+create index if not exists company_members_user_idx    on public.company_members (user_id);
+create index if not exists company_members_company_idx on public.company_members (company_id);
+
+-- platform_admins — super-admin allowlist. RLS enabled with ZERO policies =
+-- default-deny for every client role; rows are added ONLY via the SQL Editor.
+-- A client-reachable "make me admin" path would be a privilege escalation, so
+-- there deliberately isn't one. Checked via is_platform_admin().
+create table if not exists public.platform_admins (
+  user_id    uuid primary key references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+-- treks: tenant ownership + soft-delete flag (see table comment in §3).
+alter table public.treks add column if not exists company_id uuid references public.companies(id);
+alter table public.treks add column if not exists is_active boolean not null default true;
+
+create index if not exists treks_company_id_idx on public.treks (company_id);
+
+-- ---- 12.3 Helper functions (SECURITY DEFINER — same pattern as
+--          is_chat_participant: bypass RLS on membership tables so policies
+--          calling them don't recurse; pinned search_path) --------------------
+
+create or replace function public.is_platform_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.platform_admins pa where pa.user_id = auth.uid()
+  );
+$$;
+grant execute on function public.is_platform_admin() to authenticated;
+
+create or replace function public.is_company_member(p_company_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.company_members cm
+    where cm.company_id = p_company_id and cm.user_id = auth.uid()
+  );
+$$;
+grant execute on function public.is_company_member(uuid) to authenticated;
+
+create or replace function public.is_company_admin(p_company_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.company_members cm
+    where cm.company_id = p_company_id and cm.user_id = auth.uid()
+      and cm.role in ('owner', 'admin')
+  );
+$$;
+grant execute on function public.is_company_admin(uuid) to authenticated;
+
+-- is_trek_visible — single source of truth for "can the caller see this trek":
+-- public rule (active + company approved) OR owning-company staff OR platform
+-- admin OR the caller already holds a booking on one of the trek's batches.
+-- Used by treks AND trek_batches SELECT policies so a batch can't leak dates
+-- for a hidden trek. Granted to anon: the policies run as the caller.
+-- The participant arm keeps a user's OWN booking history readable after a trek
+-- is archived or its company suspended (the trek_batches!inner->treks joins in
+-- profile history/favorites would otherwise drop the row); it does NOT re-list
+-- the trek publicly — search_treks() filters on active+approved directly.
+create or replace function public.is_trek_visible(p_trek_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.treks t
+    join public.companies c on c.id = t.company_id
+    where t.id = p_trek_id
+      and (
+        (t.is_active and c.status = 'approved')
+        or public.is_company_member(t.company_id)
+        or public.is_platform_admin()
+        or exists (
+          select 1
+          from public.trek_participants tp
+          join public.trek_batches tb on tb.id = tp.batch_id
+          where tb.trek_id = t.id and tp.user_id = auth.uid()
+        )
+      )
+  );
+$$;
+grant execute on function public.is_trek_visible(uuid) to anon, authenticated;
+
+-- batch_has_participants — does ANY user hold a booking in this batch? Runs as
+-- SECURITY DEFINER so it sees every participant row, not just the caller's own:
+-- trek_participants SELECT is own-row-only, so an inline `not exists (... tp)`
+-- subquery in the delete policy would only test whether the CALLER joined,
+-- letting an owner/admin who never booked delete a batch full of other users'
+-- bookings. Used by the "company deletes empty batches" policy below.
+create or replace function public.batch_has_participants(p_batch_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.trek_participants tp
+    where tp.batch_id = p_batch_id
+  );
+$$;
+grant execute on function public.batch_has_participants(uuid) to authenticated;
+
+-- batch_has_conversation — does this batch own a chat conversation? SECURITY
+-- DEFINER for the same reason as batch_has_participants: conversations SELECT is
+-- is_chat_participant-only, so an inline subquery in the delete policy would be
+-- blind to a chat the deleting owner never joined and wrongly pass the guard.
+-- join_trek_and_chat creates one conversation per batch on the first join and
+-- nothing deletes it, so a vacated batch keeps its conversation; the FK
+-- (conversations.batch_id, NO ACTION) would otherwise reject the delete (23503).
+create or replace function public.batch_has_conversation(p_batch_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.conversations c
+    where c.batch_id = p_batch_id
+  );
+$$;
+grant execute on function public.batch_has_conversation(uuid) to authenticated;
+
+-- ---- 12.4 RPCs — mediated write paths (mirror join_trek_and_chat: SECURITY
+--          DEFINER, caller derived from auth.uid(), auth re-checked inside) ---
+
+-- apply_for_company — the ONLY way a company row is created (no INSERT policy
+-- on companies). Forces status='pending' and makes the applicant the owner.
+create or replace function public.apply_for_company(
+  p_name          text,
+  p_slug          text,
+  p_description   text default null,
+  p_contact_email text default null,
+  p_contact_phone text default null,
+  p_website       text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_company_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if p_name is null or length(trim(p_name)) = 0 then
+    raise exception 'Company name is required';
+  end if;
+  if p_slug is null or p_slug !~ '^[a-z0-9]+(-[a-z0-9]+)*$' then
+    raise exception 'Slug must be lowercase letters, numbers and hyphens only';
+  end if;
+
+  insert into public.companies
+    (name, slug, description, contact_email, contact_phone, website, created_by, status)
+  values
+    (trim(p_name), p_slug, p_description, p_contact_email, p_contact_phone, p_website, v_uid, 'pending')
+  returning id into v_company_id;
+
+  insert into public.company_members (company_id, user_id, role)
+  values (v_company_id, v_uid, 'owner');
+
+  return jsonb_build_object('company_id', v_company_id, 'status', 'pending');
+exception
+  when unique_violation then
+    raise exception 'You already have a pending application, or that URL slug is taken';
+end;
+$$;
+grant execute on function public.apply_for_company(text, text, text, text, text, text) to authenticated;
+
+-- approve/reject/suspend — platform-admin only; the check is INSIDE each
+-- function (defense in depth, not just grants).
+create or replace function public.approve_company(p_company_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can approve companies';
+  end if;
+  update public.companies
+  set status = 'approved', approved_by = auth.uid(), approved_at = now(), rejection_reason = null
+  where id = p_company_id;
+end;
+$$;
+grant execute on function public.approve_company(uuid) to authenticated;
+
+create or replace function public.reject_company(p_company_id uuid, p_reason text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can reject companies';
+  end if;
+  update public.companies
+  set status = 'rejected', rejection_reason = p_reason, approved_by = null, approved_at = null
+  where id = p_company_id;
+end;
+$$;
+grant execute on function public.reject_company(uuid, text) to authenticated;
+
+create or replace function public.suspend_company(p_company_id uuid, p_reason text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can suspend companies';
+  end if;
+  update public.companies
+  set status = 'suspended', rejection_reason = p_reason
+  where id = p_company_id;
+end;
+$$;
+grant execute on function public.suspend_company(uuid, text) to authenticated;
+
+-- get_company_batch_participants — the ONLY way company staff see participant
+-- PII. Re-checks membership against the batch's owning company on every call;
+-- returns an empty set (not an error) on foreign batches to avoid leaking
+-- "this batch id exists".
+create or replace function public.get_company_batch_participants(p_batch_id uuid)
+returns table (
+  participant_id     uuid,
+  user_id             uuid,
+  full_name           text,
+  avatar_url          text,
+  phone_no            varchar,
+  emergency_contact   text,
+  emergency_no        varchar,
+  status              text,
+  joined_at           timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_company_id uuid;
+begin
+  select t.company_id into v_company_id
+  from public.trek_batches tb
+  join public.treks t on t.id = tb.trek_id
+  where tb.id = p_batch_id;
+
+  if v_company_id is null or not public.is_company_member(v_company_id) then
+    return;
+  end if;
+
+  return query
+  select tp.id, p.id, p.full_name, p.avatar_url, p.phone_no, p.emergency_contact, p.emergency_no,
+         tp.status, tp.joined_at
+  from public.trek_participants tp
+  join public.profiles p on p.id = tp.user_id
+  where tp.batch_id = p_batch_id
+  order by tp.joined_at asc;
+end;
+$$;
+grant execute on function public.get_company_batch_participants(uuid) to authenticated;
+
+-- get_trek_batch_confirmed_counts — confirmed-participant counts for every batch
+-- of a trek in ONE call, returning NO PII (batch id + integer only). Rendering a
+-- departure list used to fan out get_company_batch_participants per batch and
+-- discard everything but a count; this replaces that N+1 and its PII exposure.
+-- Same membership re-check + empty-set-on-foreign pattern as the roster RPC.
+-- Applied + verified live 2026-07-04 (member → counts; non-member/anon/unknown → empty set).
+create or replace function public.get_trek_batch_confirmed_counts(p_trek_id uuid)
+returns table (
+  batch_id        uuid,
+  confirmed_count bigint
+)
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_company_id uuid;
+begin
+  select t.company_id into v_company_id
+  from public.treks t
+  where t.id = p_trek_id;
+
+  if v_company_id is null or not public.is_company_member(v_company_id) then
+    return;
+  end if;
+
+  return query
+  select tb.id, count(tp.id) filter (where tp.status = 'confirmed')
+  from public.trek_batches tb
+  left join public.trek_participants tp on tp.batch_id = tb.id
+  where tb.trek_id = p_trek_id
+  group by tb.id;
+end;
+$$;
+grant execute on function public.get_trek_batch_confirmed_counts(uuid) to authenticated;
+
+-- get_company_members / invite_company_member — added in Phase C (dashboard team
+-- page). Both must read profiles the caller doesn't own, and public.profiles is
+-- self-only under RLS, so they're mediated by SECURITY DEFINER RPCs (same
+-- pattern as get_company_batch_participants). Applied + verified live 2026-07-02.
+create or replace function public.get_company_members(p_company_id uuid)
+returns table (
+  member_id  uuid,
+  user_id    uuid,
+  role       public.company_role,
+  full_name  text,
+  email      text,
+  avatar_url text,
+  created_at timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_company_member(p_company_id) then
+    return;
+  end if;
+
+  return query
+  select cm.id, p.id, cm.role, p.full_name, p.email, p.avatar_url, cm.created_at
+  from public.company_members cm
+  join public.profiles p on p.id = cm.user_id
+  where cm.company_id = p_company_id
+  order by cm.role, p.full_name nulls last, cm.created_at;
+end;
+$$;
+grant execute on function public.get_company_members(uuid) to authenticated;
+
+-- invite_company_member — owner/admin-only; resolves an existing account by
+-- email and adds them as STAFF (role escalation impossible from the client).
+-- Authorization is re-checked inside the function (defense-in-depth).
+create or replace function public.invite_company_member(p_company_id uuid, p_email text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_user_id uuid;
+  v_count   int;
+begin
+  if not public.is_company_admin(p_company_id) then
+    raise exception 'Only company owners/admins can invite members';
+  end if;
+
+  select id into v_user_id
+  from public.profiles
+  where lower(email) = lower(trim(p_email));
+
+  if v_user_id is null then
+    raise exception 'No Trekker account found with that email';
+  end if;
+
+  insert into public.company_members (company_id, user_id, role)
+  values (p_company_id, v_user_id, 'staff')
+  on conflict (company_id, user_id) do nothing;
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    return jsonb_build_object('already_member', true);
+  end if;
+  return jsonb_build_object('user_id', v_user_id);
+end;
+$$;
+grant execute on function public.invite_company_member(uuid, text) to authenticated;
+
+-- admin_list_companies / admin_get_company — audit-column reads for the
+-- platform-admin dashboard. The base table's client SELECT grant excludes
+-- created_by/approved_by/approved_at (see §12.6 column grant), so these
+-- SECURITY DEFINER, admin-gated RPCs are the only client path to them.
+create or replace function public.admin_list_companies(p_status text default 'all')
+returns setof public.companies
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can list companies';
+  end if;
+  return query
+    select *
+    from public.companies c
+    where p_status = 'all' or c.status = p_status::public.company_status
+    order by c.created_at desc;
+end;
+$$;
+revoke execute on function public.admin_list_companies(text) from public, anon;
+grant execute on function public.admin_list_companies(text) to authenticated;
+
+create or replace function public.admin_get_company(p_company_id uuid)
+returns setof public.companies
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can view company audit details';
+  end if;
+  return query
+    select * from public.companies c where c.id = p_company_id;
+end;
+$$;
+revoke execute on function public.admin_get_company(uuid) from public, anon;
+grant execute on function public.admin_get_company(uuid) to authenticated;
+
+-- ---- 12.5 Trigger — protect approval-workflow columns ------------------------
+-- Pins slug/status/approved_by/approved_at/rejection_reason/created_by back to
+-- OLD on any UPDATE from a non-platform-admin (slug is immutable to prevent a
+-- freed slug being reclaimed by another company → old links hijacked). RLS WITH
+-- CHECK can't compare NEW vs
+-- OLD, so a BEFORE UPDATE trigger is the standard way to protect columns; it
+-- runs inside Postgres no matter what request shape the client crafts.
+create or replace function public.protect_company_admin_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    new.slug              := old.slug;
+    new.status            := old.status;
+    new.approved_by       := old.approved_by;
+    new.approved_at       := old.approved_at;
+    new.rejection_reason  := old.rejection_reason;
+    new.created_by        := old.created_by;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_protect_company_admin_fields on public.companies;
+create trigger trg_protect_company_admin_fields
+  before update on public.companies
+  for each row execute function public.protect_company_admin_fields();
+
+revoke execute on function public.protect_company_admin_fields() from public, anon, authenticated;
+
+-- ---- 12.6 RLS -----------------------------------------------------------------
+alter table public.companies       enable row level security;
+alter table public.company_members enable row level security;
+alter table public.platform_admins enable row level security;
+-- platform_admins gets ZERO policies — intentional default-deny (see 12.2).
+
+-- companies: public sees approved; members see their own regardless of status;
+-- platform admins see everything. No INSERT policy (RPC-only creation); no
+-- DELETE policy (companies suspend, never hard-delete).
+drop policy if exists "view companies" on public.companies;
+create policy "view companies" on public.companies for select to public using (
+  status = 'approved' or public.is_company_member(id) or public.is_platform_admin()
+);
+-- Column-level SELECT: RLS is row-level only, so without this a client could
+-- select the audit UUIDs (created_by/approved_by) on approved rows and cross-
+-- reference them against public_profiles to deanonymize owners + approving
+-- admins. Grant SELECT on non-sensitive columns only; audit columns are read
+-- solely via admin_list_companies / admin_get_company below.
+revoke select on public.companies from anon, authenticated;
+grant select (
+  id, name, slug, description, logo_url, cover_image_url, website,
+  contact_email, contact_phone, status, rejection_reason, created_at
+) on public.companies to anon, authenticated;
+drop policy if exists "company admins update own company" on public.companies;
+create policy "company admins update own company" on public.companies for update to authenticated
+using (public.is_company_admin(id) or public.is_platform_admin())
+with check (public.is_company_admin(id) or public.is_platform_admin());
+
+-- company_members: members see own roster; owners/admins invite STAFF only
+-- (owner rows are created solely by apply_for_company, can't be updated to
+-- owner, and can't be deleted — a company can never lose its owner via client).
+drop policy if exists "view company members" on public.company_members;
+create policy "view company members" on public.company_members for select to authenticated using (
+  public.is_company_member(company_id) or public.is_platform_admin()
+);
+drop policy if exists "company admins invite staff" on public.company_members;
+create policy "company admins invite staff" on public.company_members for insert to authenticated
+with check (public.is_company_admin(company_id) and role = 'staff');
+-- (user_id <> auth.uid() blocks self-demotion / self-removal, so an admin can't
+-- lock themselves out of management on their own row).
+drop policy if exists "company admins manage member roles" on public.company_members;
+create policy "company admins manage member roles" on public.company_members for update to authenticated
+using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid())
+with check (public.is_company_admin(company_id) and role in ('admin', 'staff'));
+drop policy if exists "company admins remove members" on public.company_members;
+create policy "company admins remove members" on public.company_members for delete to authenticated
+using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid());
+
+-- treks: tenant-aware read; company members create/update own treks (archive =
+-- is_active=false, the ONLY delete path — no hard DELETE policy).
+drop policy if exists "view all treks" on public.treks;
+drop policy if exists "view treks" on public.treks;
+create policy "view treks" on public.treks for select to public using (public.is_trek_visible(id));
+
+drop policy if exists "company members create treks" on public.treks;
+create policy "company members create treks" on public.treks for insert to authenticated
+with check (public.is_company_member(company_id));
+
+drop policy if exists "company members manage own treks" on public.treks;
+create policy "company members manage own treks" on public.treks for update to authenticated
+using (public.is_company_member(company_id) or public.is_platform_admin())
+with check (public.is_company_member(company_id) or public.is_platform_admin());
+
+-- trek_batches: tenant-aware read; company-managed writes; delete only while
+-- the batch has zero participants AND no chat conversation (never orphan a
+-- booking/chat; the conversation FK would otherwise reject the delete, 23503).
+drop policy if exists "Anyone can view trek batches" on public.trek_batches;
+drop policy if exists "view visible trek batches" on public.trek_batches;
+create policy "view visible trek batches" on public.trek_batches for select to public
+using (public.is_trek_visible(trek_id));
+
+drop policy if exists "company manages own batches insert" on public.trek_batches;
+create policy "company manages own batches insert" on public.trek_batches for insert to authenticated
+with check (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+);
+drop policy if exists "company manages own batches update" on public.trek_batches;
+create policy "company manages own batches update" on public.trek_batches for update to authenticated
+using (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+)
+with check (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+);
+drop policy if exists "company deletes empty batches" on public.trek_batches;
+create policy "company deletes empty batches" on public.trek_batches for delete to authenticated
+using (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  and not public.batch_has_participants(trek_batches.id)
+  and not public.batch_has_conversation(trek_batches.id)
+);
+
+-- ---- 12.7 Storage — company-scoped buckets ------------------------------------
+-- Mirrors the avatars/trek-reviews pattern but keyed by company_id (first path
+-- segment must be a company UUID the caller belongs to). Authenticated-only
+-- SELECT blocks anon listing; public CDN URLs still serve files.
+insert into storage.buckets (id, name, public) values ('company-logos', 'company-logos', true) on conflict (id) do nothing;
+insert into storage.buckets (id, name, public) values ('trek-images',   'trek-images',   true) on conflict (id) do nothing;
+
+drop policy if exists "Authenticated users can view company logos" on storage.objects;
+create policy "Authenticated users can view company logos" on storage.objects
+  for select to authenticated using (bucket_id = 'company-logos');
+
+drop policy if exists "Company members upload own logo" on storage.objects;
+create policy "Company members upload own logo" on storage.objects for insert to authenticated
+with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+drop policy if exists "Company members update own logo" on storage.objects;
+create policy "Company members update own logo" on storage.objects for update to authenticated
+using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid))
+with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+drop policy if exists "Company members delete own logo" on storage.objects;
+create policy "Company members delete own logo" on storage.objects for delete to authenticated
+using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+drop policy if exists "Authenticated users can view trek images" on storage.objects;
+create policy "Authenticated users can view trek images" on storage.objects
+  for select to authenticated using (bucket_id = 'trek-images');
+
+drop policy if exists "Company members upload trek images" on storage.objects;
+create policy "Company members upload trek images" on storage.objects for insert to authenticated
+with check (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+drop policy if exists "Company members update trek images" on storage.objects;
+create policy "Company members update trek images" on storage.objects for update to authenticated
+using (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid))
+with check (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+drop policy if exists "Company members delete trek images" on storage.objects;
+create policy "Company members delete trek images" on storage.objects for delete to authenticated
+using (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+-- ---- 12.8 Backfill (RAN 2026-07-02, one-time) ---------------------------------
+-- The migration created the default "Trekker Originals" company (approved,
+-- owned by the earliest profile), attached every pre-existing trek to it, then
+-- locked company_id to NOT NULL. Verified live: 0 ownerless treks, 1 approved
+-- default company with exactly 1 owner. The do-block itself lives in
+-- supabase/migration-multi-tenant.sql §9 and is not reproduced here (fresh
+-- projects have no ownerless treks to backfill).
+alter table public.treks alter column company_id set not null;
+
+-- ---- 12.9 Manual step — platform admins ---------------------------------------
+-- There is NO client path to add a platform admin (by design). Run once in the
+-- SQL Editor with your own account's email (template also in
+-- supabase/phases/phase-d-platform-admin.sql):
+--
+--   insert into public.platform_admins (user_id)
+--   select id from auth.users where email = 'YOUR_EMAIL_HERE'
+--   on conflict (user_id) do nothing;
+--
+-- STATUS 2026-07-02: platform_admins is EMPTY — /admin and company
+-- approve/reject/suspend are unusable until this runs.

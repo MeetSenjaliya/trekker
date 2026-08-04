@@ -29,7 +29,9 @@ interface TrekCardProps {
     avatar: string;
   };
   whatsappGroupLink?: string;
-  next_batch_date?: string; 
+  next_batch_date?: string;
+  companyName?: string;
+  companySlug?: string;
 }
 
 const TrekCard: React.FC<TrekCardProps> = ({
@@ -43,6 +45,8 @@ const TrekCard: React.FC<TrekCardProps> = ({
   participants,
   rating,
   next_batch_date,
+  companyName,
+  companySlug,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
@@ -188,6 +192,22 @@ const TrekCard: React.FC<TrekCardProps> = ({
             {difficulty}
           </span>
         </div>
+
+        {companyName && (
+          <p className="text-xs text-gray-400 mb-4 -mt-2">
+            By{' '}
+            {companySlug ? (
+              <Link
+                href={`/company/${companySlug}`}
+                className="text-blue-400 hover:text-blue-300 transition-colors font-medium"
+              >
+                {companyName}
+              </Link>
+            ) : (
+              <span className="text-gray-300 font-medium">{companyName}</span>
+            )}
+          </p>
+        )}
 
         <div className="space-y-3 mb-5">
           <div className="flex items-center text-sm text-gray-300">

@@ -387,3 +387,251 @@ revoke all on function public.recompute_user_stats(uuid) from public, anon, auth
 --   #1 security_definer_view (public_profiles): intentional, see
 --      DATABASE.md / schema.sql. No change. No SQL to run for any of these.
 -- =====================================================================
+
+-- =====================================================================
+-- SLUG-IMMUTABILITY (2026-07-03, applied + verified live): pin companies.slug
+-- against self-edit. Verified: non-admin UPDATE silently pinned back to OLD
+-- (begin/update/rollback as postgres); platform admin still able to change slug.
+-- Problem: protect_company_admin_fields() pinned status/approval/created_by
+-- but NOT slug. The companies UPDATE policy lets an owner/admin edit their
+-- row, so they could PATCH companies set slug=… directly via PostgREST.
+-- Because slug is UNIQUE, a freed slug can then be reclaimed by another
+-- application → every old /company/[slug] link (shared/indexed/bookmarked)
+-- now resolves to a different company (link hijack / impersonation).
+-- Fix: pin new.slug := old.slug in the non-platform-admin branch (platform
+-- admins can still correct an abusive slug). Reflected in schema.sql §12.5.
+-- =====================================================================
+create or replace function public.protect_company_admin_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    new.slug              := old.slug;
+    new.status            := old.status;
+    new.approved_by       := old.approved_by;
+    new.approved_at       := old.approved_at;
+    new.rejection_reason  := old.rejection_reason;
+    new.created_by        := old.created_by;
+  end if;
+  return new;
+end;
+$$;
+
+-- =====================================================================
+-- EMPTY-BATCH DELETE GUARD (2026-07-04): make the "company deletes empty
+-- batches" trek_batches DELETE policy actually verify the batch is empty.
+-- Problem: the policy used an inline
+--   not exists (select 1 from trek_participants tp where tp.batch_id = ...)
+-- subquery. RLS policy subqueries run under the CALLER's own RLS, and
+-- trek_participants SELECT is own-row-only — so the check only tested whether
+-- the *caller* had joined the batch, not whether anyone had. An owner/admin
+-- who never personally booked passes the "empty" test for a batch full of
+-- other users' bookings. Today the trek_participants.batch_id FK (NO ACTION)
+-- incidentally blocks the delete with a generic FK error, but if that FK is
+-- ever changed to CASCADE the guard would silently delete real bookings/chats.
+-- Fix: wrap the participant existence check in a SECURITY DEFINER function
+-- (batch_has_participants) that bypasses the caller's own-row RLS and sees
+-- every participant row, then reference it from the policy. Reflected in
+-- schema.sql (helper near is_trek_visible; §12.6 batch policy) and
+-- migration-multi-tenant.sql.
+-- =====================================================================
+create or replace function public.batch_has_participants(p_batch_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.trek_participants tp
+    where tp.batch_id = p_batch_id
+  );
+$$;
+grant execute on function public.batch_has_participants(uuid) to authenticated;
+
+drop policy if exists "company deletes empty batches" on public.trek_batches;
+create policy "company deletes empty batches" on public.trek_batches for delete to authenticated
+using (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  and not public.batch_has_participants(trek_batches.id)
+);
+
+-- =====================================================================
+-- Admin self-lockout on own company_members row
+-- Problem: the "manage member roles" (UPDATE) and "remove members" (DELETE)
+-- policies only required is_company_admin AND role <> 'owner'. An admin's own
+-- row satisfies both, so an admin could self-demote to staff or delete their
+-- own membership — losing all management access with no confirmation.
+-- Fix: add `and user_id <> auth.uid()` to both USING clauses so an admin can
+-- never modify or remove their own row (owner is still protected by role<>'owner').
+-- UI: dashboard/team hides the role select + Remove button on the self row.
+-- Reflected in schema.sql §12 company_members policies.
+-- =====================================================================
+drop policy if exists "company admins manage member roles" on public.company_members;
+create policy "company admins manage member roles" on public.company_members for update to authenticated
+using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid())
+with check (public.is_company_admin(company_id) and role in ('admin', 'staff'));
+
+drop policy if exists "company admins remove members" on public.company_members;
+create policy "company admins remove members" on public.company_members for delete to authenticated
+using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid());
+-- =====================================================================
+-- Fix: companies SELECT exposes audit UUID columns to the public
+-- ---------------------------------------------------------------------
+-- Problem: the "view companies" RLS policy is row-level only, and
+-- anon/authenticated hold a table-wide SELECT grant (relacl arwdDxtm).
+-- Because PostgREST column selection is client-controlled, any client
+-- could `select=created_by,approved_by` on approved companies and cross-
+-- reference those UUIDs against the world-readable public_profiles view
+-- to deanonymize each company's owner and every approving platform admin.
+-- The app-side COMPANY_COLUMNS allowlist gives no protection (it's just
+-- the default select, not a server-enforced boundary).
+--
+-- Fix: replace the table-wide SELECT grant with a column-level SELECT
+-- grant covering only the non-sensitive columns. created_by/approved_by/
+-- approved_at are removed from every client role's SELECT surface. The
+-- admin dashboard, which legitimately needs those columns, reads them via
+-- the SECURITY DEFINER RPCs below (gated by is_platform_admin(); the
+-- function owner bypasses the column grant). INSERT/UPDATE/DELETE grants
+-- are untouched — those paths are governed by RLS + RPCs as before, and
+-- the client update path uses return=minimal so it needs no SELECT.
+-- =====================================================================
+
+revoke select on public.companies from anon, authenticated;
+grant select (
+  id, name, slug, description, logo_url, cover_image_url, website,
+  contact_email, contact_phone, status, rejection_reason, created_at
+) on public.companies to anon, authenticated;
+
+-- admin_list_companies — audit-column company list for the platform-admin
+-- dashboard. Replaces the direct table read that selected created_by/
+-- approved_by/approved_at (no longer client-selectable). Admin-gated.
+create or replace function public.admin_list_companies(p_status text default 'all')
+returns setof public.companies
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can list companies';
+  end if;
+  return query
+    select *
+    from public.companies c
+    where p_status = 'all' or c.status = p_status::public.company_status
+    order by c.created_at desc;
+end;
+$$;
+revoke execute on function public.admin_list_companies(text) from public, anon;
+grant execute on function public.admin_list_companies(text) to authenticated;
+
+-- admin_get_company — single company with audit columns for the admin
+-- detail view. Admin-gated; returns 0 or 1 row.
+create or replace function public.admin_get_company(p_company_id uuid)
+returns setof public.companies
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.is_platform_admin() then
+    raise exception 'Only platform admins can view company audit details';
+  end if;
+  return query
+    select * from public.companies c where c.id = p_company_id;
+end;
+$$;
+revoke execute on function public.admin_get_company(uuid) from public, anon;
+grant execute on function public.admin_get_company(uuid) to authenticated;
+
+-- ============================================================================
+-- get_trek_batch_confirmed_counts — data-minimization + N+1 fix (2026-07-04)
+-- ----------------------------------------------------------------------------
+-- Rendering a trek's departure list called get_company_batch_participants once
+-- per batch and kept only .filter(status='confirmed').length. That shipped the
+-- full contact-PII roster (full_name/phone_no/emergency_contact/emergency_no) of
+-- every batch to the browser just to compute an integer, and fired N RPCs for N
+-- departures. This RPC returns one count per batch in a single call with no PII.
+-- Same membership re-check + empty-set-on-foreign pattern as the roster RPC.
+-- Applied + verified live 2026-07-04 (member → correct counts; non-member/anon/unknown trek → empty set).
+create or replace function public.get_trek_batch_confirmed_counts(p_trek_id uuid)
+returns table (
+  batch_id        uuid,
+  confirmed_count bigint
+)
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_company_id uuid;
+begin
+  select t.company_id into v_company_id
+  from public.treks t
+  where t.id = p_trek_id;
+
+  if v_company_id is null or not public.is_company_member(v_company_id) then
+    return;
+  end if;
+
+  return query
+  select tb.id, count(tp.id) filter (where tp.status = 'confirmed')
+  from public.trek_batches tb
+  left join public.trek_participants tp on tp.batch_id = tb.id
+  where tb.trek_id = p_trek_id
+  group by tb.id;
+end;
+$$;
+grant execute on function public.get_trek_batch_confirmed_counts(uuid) to authenticated;
+
+-- ============================================================================
+-- BATCH DELETE — orphaned-conversation FK guard (2026-07-15)
+-- ----------------------------------------------------------------------------
+-- deleteBatch() (src/lib/company.ts) failed with an opaque "Error deleting
+-- batch: {}" — a PostgREST FK violation (23503) surfaced as a bare object.
+-- Cause: join_trek_and_chat creates one conversations row per batch on the
+-- first join (conversations.batch_id -> trek_batches.id, FK NO ACTION) and
+-- nothing ever deletes it (leaveTrek removes only conversation_participants +
+-- trek_participants). So a batch that was joined then fully vacated has ZERO
+-- participants — batch_has_participants=false, so the "company deletes empty
+-- batches" policy PERMITTED the delete — but still owned a conversations row,
+-- and the FK rejected it. This is the exact trap the EMPTY-BATCH DELETE GUARD
+-- entry above flagged for the trek_participants FK, reachable here on batches
+-- with no participants.
+-- Fix (rule: block deletion while any chat exists — no data loss): add a
+-- SECURITY DEFINER batch_has_conversation() and require it false in the policy.
+-- Definer is mandatory, not an inline subquery: conversations SELECT is
+-- is_chat_participant(id) — own-participation-only — so an inline
+-- `not exists (... conversations)` runs under the caller's RLS and is blind to
+-- a chat the deleting owner never joined, wrongly passing the guard (same
+-- reasoning as batch_has_participants). Reflected in schema.sql (helper near
+-- batch_has_participants; §12.6 batch policy) and migration-multi-tenant.sql.
+-- Now a vacated-but-chatted batch is blocked by RLS (0 rows, no error) and
+-- deleteBatch surfaces the friendly "has bookings or chat history" message.
+-- =====================================================================
+create or replace function public.batch_has_conversation(p_batch_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.conversations c
+    where c.batch_id = p_batch_id
+  );
+$$;
+grant execute on function public.batch_has_conversation(uuid) to authenticated;
+
+drop policy if exists "company deletes empty batches" on public.trek_batches;
+create policy "company deletes empty batches" on public.trek_batches for delete to authenticated
+using (
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  and not public.batch_has_participants(trek_batches.id)
+  and not public.batch_has_conversation(trek_batches.id)
+);

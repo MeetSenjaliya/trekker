@@ -1,185 +1,28 @@
-'use client';
+import type { Metadata } from 'next';
+import { DEFAULT_FILTERS } from '@/components/ui/FilterSection';
+import { getDefaultExploreTreks } from '@/lib/server-queries';
+import ExploreClient from './ExploreClient';
 
-import { useEffect, useState } from 'react';
-import TrekCard from '@/components/ui/TrekCard';
-import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
-import TrekPagination from '@/components/ui/TrekPagination';
-import { useSearchTreks } from '@/lib/queries';
-
-const DEFAULT_IMAGE_URL =
-  'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
-
+// Must match TREKS_PER_PAGE in ExploreClient — the server renders page 1 and the
+// client adopts it as initialData, so a mismatch would show the wrong page size.
 const TREKS_PER_PAGE = 6;
 
-const FILTERS_STORAGE_KEY = 'explore-filters';
+export const metadata: Metadata = {
+  title: 'Explore Treks',
+  description:
+    'Browse upcoming treks by location, difficulty, distance, date and price. Book your next Himalayan or weekend trek with verified organizers.',
+  alternates: { canonical: '/explore' },
+  openGraph: {
+    title: 'Explore Treks',
+    description:
+      'Browse upcoming treks by location, difficulty, distance, date and price. Book your next adventure with verified organizers.',
+    url: '/explore',
+    type: 'website',
+  },
+};
 
-export default function ExplorePage() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
-  const [currentPage, setCurrentPage] = useState(1);
+export default async function ExplorePage() {
+  const initialData = await getDefaultExploreTreks(DEFAULT_FILTERS, TREKS_PER_PAGE);
 
-  // Restore the last-applied filters + page when returning to this page, so
-  // going into a trek and back keeps the same results. Read in an effect (not a
-  // lazy initializer) so server and first client render match — sessionStorage
-  // isn't available during SSR.
-  useEffect(() => {
-    const saved = sessionStorage.getItem(FILTERS_STORAGE_KEY);
-    if (!saved) return;
-    try {
-      const { filters: savedFilters, page } = JSON.parse(saved);
-      if (savedFilters) setFilters({ ...DEFAULT_FILTERS, ...savedFilters });
-      if (page) setCurrentPage(page);
-    } catch {
-      sessionStorage.removeItem(FILTERS_STORAGE_KEY);
-    }
-  }, []);
-
-  // Persist on user actions only — never via an effect keyed on `filters`,
-  // which would write the default state back over the saved value on the first
-  // render after remounting and reset everything.
-  const persist = (f: FilterState, page: number) =>
-    sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ filters: f, page }));
-
-  const handleFilterChange = (f: FilterState) => {
-    setFilters(f);
-    setCurrentPage(1); // a new filter set always starts on page 1
-    persist(f, 1);
-  };
-
-  const handlePageChange = (page: number) => {
-    setCurrentPage(page);
-    persist(filters, page);
-  };
-
-  // Debounce filter changes into the query key so typing doesn't fire a
-  // request per keystroke (TanStack Query refetches whenever the key changes).
-  const [debouncedFilters, setDebouncedFilters] = useState<FilterState>(DEFAULT_FILTERS);
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedFilters(filters), 300);
-    return () => clearTimeout(t);
-  }, [filters]);
-
-  const { data, isFetching } = useSearchTreks(
-    debouncedFilters,
-    currentPage,
-    TREKS_PER_PAGE
-  );
-
-  const treks = data?.treks ?? [];
-  const totalCount = data?.totalCount ?? 0;
-  const totalPages = Math.max(1, Math.ceil(totalCount / TREKS_PER_PAGE));
-  // Loading while a fetch is in flight or while a filter change is still
-  // waiting out the debounce (filters is a fresh object until it settles).
-  const loading = isFetching || filters !== debouncedFilters;
-
-  const startIdx = (currentPage - 1) * TREKS_PER_PAGE + 1;
-  const endIdx = Math.min(currentPage * TREKS_PER_PAGE, totalCount);
-
-  return (
-    // Main Container with Night Gradient
-    <div className="min-h-screen py-12 pt-24 relative overflow-hidden" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
-
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-        {/* Page Header */}
-        <div className="mb-10 text-center sm:text-left">
-          <h1 className="text-5xl font-extralight text-white tracking-wide mb-3 drop-shadow-md">
-            Explore Treks
-          </h1>
-          <p className="text-lg text-blue-100/80 font-light">
-            Find your next adventure with our curated list of treks around the world.
-          </p>
-        </div>
-
-        {/* Filter Section */}
-        {/* Note: Ensure your FilterSection component supports dark mode or is transparent */}
-        <div className="mb-8">
-          <FilterSection filters={filters} onFilterChange={handleFilterChange} />
-        </div>
-
-        {/* Results Summary */}
-        <div className="mb-6 flex items-center justify-between">
-          <p className="text-blue-200/70 text-sm tracking-wider uppercase">
-            Showing <span className="font-bold text-white">{totalCount > 0 ? startIdx : 0}–{endIdx}</span> of <span className="font-bold text-white">{totalCount}</span> treks
-          </p>
-        </div>
-
-        {/* Trek Grid */}
-        {loading ? (
-          <div className="min-h-[400px] flex items-center justify-center">
-            <p className="text-white/60 animate-pulse text-xl">Loading adventures...</p>
-          </div>
-        ) : treks.length === 0 ? (
-          <div className="text-center py-20 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
-            <p className="text-xl text-gray-300">No treks found matching your filters.</p>
-            <button
-              onClick={() => handleFilterChange(DEFAULT_FILTERS)}
-              className="mt-4 text-blue-400 hover:text-blue-300 underline underline-offset-4"
-            >
-              Clear all filters
-            </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 mb-16">
-            {treks.map((trek) => {
-              const nextDate = trek.next_batch_date || undefined;
-              const dateDisplay = nextDate
-                ? new Date(nextDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                : 'No upcoming dates';
-
-              return (
-                <div key={trek.id} className="transform hover:scale-[1.02] transition-transform duration-300">
-                  <TrekCard
-                    id={String(trek.id)}
-                    title={trek.title}
-                    description={trek.description}
-                    image={trek.cover_image_url || DEFAULT_IMAGE_URL}
-                    date={dateDisplay}
-                    location={trek.location}
-                    difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}
-                    participants={{
-                      current: trek.participants_joined ?? 0,
-                      max: trek.max_participants ?? 0,
-                    }}
-                    rating={trek.rating != null ? Number(trek.rating) : undefined}
-                    price={trek.estimated_cost}
-                    next_batch_date={nextDate}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {!loading && totalPages > 1 && (
-          <div className="flex justify-center mt-8">
-            <TrekPagination
-              totalPages={totalPages}
-              currentPage={currentPage}
-              onPageChange={handlePageChange}
-            />
-          </div>
-        )}
-
-        {/* Call to Action - UPDATED: Glassmorphism Style */}
-        <div className="mt-20 relative overflow-hidden rounded-3xl border border-white/10 p-10 text-center shadow-2xl">
-          {/* Glass Background Layer */}
-          <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-white/5 backdrop-blur-md" />
-
-          {/* Content Layer */}
-          <div className="relative z-10">
-            <h2 className="text-3xl font-light text-white mb-4 tracking-wide">
-              Can&apos;t find the perfect trek?
-            </h2>
-            <p className="text-blue-100/70 mb-8 max-w-2xl mx-auto text-lg leading-relaxed">
-              Create your own trek and invite fellow adventurers to join you on a custom expedition
-              tailored to your preferences and schedule.
-            </p>
-            <button className="inline-flex items-center justify-center px-8 py-4 bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-medium rounded-full shadow-[0_0_20px_rgba(59,130,246,0.5)] hover:shadow-[0_0_30px_rgba(59,130,246,0.7)] transition-all duration-300 transform hover:-translate-y-1">
-              Create Your Own Trek
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+  return <ExploreClient initialData={initialData} />;
 }
