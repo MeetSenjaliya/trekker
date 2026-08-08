@@ -28,6 +28,7 @@
 create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 create extension if not exists "pg_net";          -- used by notify_trek_* functions
+create extension if not exists "pg_cron";         -- prunes rate_events (§13.5)
 -- Also present on the project (managed by Supabase): pg_stat_statements, supabase_vault.
 
 
@@ -60,7 +61,7 @@ exception when duplicate_object then null; end $$;
 -- profiles — 1:1 with auth.users. Holds PII (email/phone/emergency/age/Gender).
 -- Public reads go through the public_profiles view, NOT this table (see RLS).
 create table if not exists public.profiles (
-  id                 uuid primary key references auth.users(id),
+  id                 uuid primary key references auth.users(id) on delete cascade,
   full_name          text,
   avatar_url         text,
   bio                text,
@@ -111,7 +112,7 @@ create index if not exists treks_distance_km_idx    on public.treks (distance_km
 -- trek_batches — a dated departure of a trek. One chat per batch.
 create table if not exists public.trek_batches (
   id               uuid primary key default gen_random_uuid(),
-  trek_id          uuid not null references public.treks(id),
+  trek_id          uuid not null references public.treks(id) on delete cascade,
   batch_date       date not null,
   max_participants integer,
   created_at       timestamptz default now(),
@@ -124,7 +125,7 @@ create table if not exists public.trek_batches (
 create table if not exists public.trek_participants (
   id        uuid primary key default gen_random_uuid(),
   user_id   uuid references public.profiles(id),
-  batch_id  uuid references public.trek_batches(id),
+  batch_id  uuid references public.trek_batches(id) on delete cascade,
   joined_at timestamptz default now(),
   status    text not null default 'confirmed'
             check (status in ('confirmed', 'waitlisted')),
@@ -137,7 +138,7 @@ create index if not exists trek_participants_batch_status_idx
 -- trek_reviews — one review per (trek, user). photo_urls/trek_date added later.
 create table if not exists public.trek_reviews (
   id         uuid primary key default gen_random_uuid(),
-  trek_id    uuid references public.treks(id),
+  trek_id    uuid references public.treks(id) on delete cascade,
   user_id    uuid references public.profiles(id),
   rating     integer check (rating >= 1 and rating <= 5),
   comment    text,
@@ -150,7 +151,7 @@ create table if not exists public.trek_reviews (
 -- favorites — user ⇔ trek wishlist. No surrogate PK; uniqueness on (user,trek).
 create table if not exists public.favorites (
   user_id    uuid not null references public.profiles(id),
-  trek_id    uuid references public.treks(id),
+  trek_id    uuid references public.treks(id) on delete cascade,
   created_at timestamptz default now(),
   constraint favorites_user_id_trek_id_key unique (user_id, trek_id)
 );
@@ -164,18 +165,21 @@ create table if not exists public.conversations (
 );
 
 -- conversation_participants — chat membership. Uniqueness on (conversation,user).
+-- last_read_at is the unread-count watermark: get_unread_counts() counts messages
+-- newer than it, mark_conversation_read() advances it (both §5).
 create table if not exists public.conversation_participants (
-  conversation_id uuid not null references public.conversations(id),
-  user_id         uuid not null references public.profiles(id),
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  user_id         uuid not null references public.profiles(id) on delete cascade,
   joined_at       timestamptz default now(),
+  last_read_at    timestamptz not null default now(),
   constraint conversation_participants_conv_user_key unique (conversation_id, user_id)
 );
 
 -- conversation_messages — chat messages. Composite PK (created_at, id).
 -- Supports soft-delete, reply threading, and emoji reactions (jsonb).
 create table if not exists public.conversation_messages (
-  conversation_id uuid not null references public.conversations(id),
-  user_id         uuid not null references public.profiles(id),
+  conversation_id uuid not null references public.conversations(id) on delete cascade,
+  user_id         uuid not null references public.profiles(id) on delete cascade,
   message         text not null,
   created_at      timestamptz not null default now(),
   id              uuid not null default gen_random_uuid(),
@@ -190,7 +194,7 @@ create table if not exists public.conversation_messages (
 -- recompute_user_stats() (triggers + daily pg_cron). treks_organised has no
 -- data source yet (no organiser column) and stays 0. avg_rating was dropped.
 create table if not exists public.user_stats (
-  user_id          uuid primary key references public.profiles(id),
+  user_id          uuid primary key references public.profiles(id) on delete cascade,
   treks_completed  integer default 0 check (treks_completed >= 0),
   treks_organised  integer default 0 check (treks_organised >= 0),
   total_distance_km numeric default 0 check (total_distance_km >= 0),
@@ -199,7 +203,7 @@ create table if not exists public.user_stats (
 
 -- user_monthly_activity — per-user per-month counters. `month` must be day 1.
 create table if not exists public.user_monthly_activity (
-  user_id         uuid not null references public.profiles(id),
+  user_id         uuid not null references public.profiles(id) on delete cascade,
   month           date not null check (extract(day from month) = 1),
   treks_joined    integer default 0 check (treks_joined >= 0),
   photos_shared   integer default 0 check (photos_shared >= 0),
@@ -273,6 +277,42 @@ begin
       and cp.user_id = auth.uid()
   );
 end;
+$$;
+
+-- mark_conversation_read — advance the caller's unread watermark (§3
+-- conversation_participants.last_read_at). Called by markConversationRead()
+-- in src/lib/chat.ts. SECURITY DEFINER because conversation_participants has
+-- no UPDATE policy; the auth.uid() predicate is what scopes the write.
+create or replace function public.mark_conversation_read(p_conversation_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.conversation_participants
+     set last_read_at = now()
+   where conversation_id = p_conversation_id and user_id = auth.uid();
+$$;
+
+-- get_unread_counts — per-conversation unread badge counts for the caller.
+-- Counts only OTHER users' non-deleted messages newer than last_read_at.
+-- Called by getUnreadCounts() in src/lib/chat.ts.
+-- ADVISOR: anon holds EXECUTE (default PUBLIC grant). Harmless — auth.uid() is
+--   null for anon so the join matches nothing — but see §10.
+create or replace function public.get_unread_counts()
+returns table (conversation_id uuid, unread bigint)
+language sql
+security definer
+set search_path = public
+as $$
+  select m.conversation_id, count(*)
+    from public.conversation_messages m
+    join public.conversation_participants cp
+      on cp.conversation_id = m.conversation_id and cp.user_id = auth.uid()
+   where m.created_at > cp.last_read_at
+     and m.user_id <> auth.uid()
+     and coalesce(m.is_deleted, false) = false
+   group by m.conversation_id;
 $$;
 
 -- handle_new_user — creates the profiles row when an auth user is created.
@@ -1264,7 +1304,20 @@ insert into storage.buckets (id, name, public) values ('avatars',      'avatars'
 insert into storage.buckets (id, name, public) values ('trek-reviews', 'trek-reviews', true) on conflict (id) do nothing;
 insert into storage.buckets (id, name, public) values ('trek-profile', 'trek-profile', true) on conflict (id) do nothing;
 -- NOTE: bucket `trek-profile` is public but has NO object policies (no client
--- write path; objects are reachable only via public URL). Likely unused.
+-- write path; objects are reachable only via public URL). Likely unused — and
+-- deliberately left uncapped below for that reason.
+
+-- Per-upload ceiling (§13.4 caps how many; this caps how big). Enforced by
+-- storage-api at the edge, before the bytes are stored — compressImage() runs
+-- in the browser and is skipped by calling the Storage API directly with the
+-- publishable key. 3 MiB, not tighter, because compressImage() returns the
+-- ORIGINAL file when compression fails (src/utils/imageCompression.ts).
+-- The MIME list is a guardrail, not a scanner: it stops a 40MB video/mp4 in the
+-- avatars bucket, not a renamed file.
+update storage.buckets
+set file_size_limit    = 3145728,  -- 3 MiB
+    allowed_mime_types = array['image/jpeg','image/png','image/webp']
+where id in ('avatars','trek-reviews');
 
 -- ---- avatars: authenticated read (anon listing blocked), owner-scoped writes -
 -- Ownership accepts both layouts: avatars/{uid}/file AND avatars/{uid}.ext
@@ -1463,6 +1516,52 @@ as $$
   );
 $$;
 grant execute on function public.is_company_admin(uuid) to authenticated;
+
+-- is_approved_company_member — is_company_member + the company must be approved.
+-- The PUBLISHING tier (§16, applied 2026-08-08): treks + trek_batches writes and
+-- the trek-images bucket. Orphaned from the multi-tenant migration until then.
+create or replace function public.is_approved_company_member(p_company_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.company_members cm
+    join public.companies c on c.id = cm.company_id
+    where cm.company_id = p_company_id
+      and cm.user_id = auth.uid()
+      and c.status = 'approved'
+  );
+$$;
+grant execute on function public.is_approved_company_member(uuid) to authenticated;
+
+-- is_company_writable — the frozen/not-frozen test (§16, applied 2026-08-08).
+-- About the COMPANY only; composed with is_company_member / is_company_admin at
+-- each call site rather than forking those into status-aware twins. pending and
+-- approved are writable (an applicant sets up while it waits); rejected and
+-- suspended are FROZEN — read-only tenant.
+--
+-- DEFINER because two callers need it where the caller can't see the companies
+-- row under RLS: the invitee in accept_company_invite() (a non-member sees only
+-- approved rows), and the companies UPDATE policy, which must not recurse into
+-- "view companies".
+create or replace function public.is_company_writable(p_company_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.companies c
+    where c.id = p_company_id
+      and c.status in ('pending', 'approved')
+  );
+$$;
+grant execute on function public.is_company_writable(uuid) to authenticated;
 
 -- is_trek_visible — single source of truth for "can the caller see this trek":
 -- public rule (active + company approved) OR owning-company staff OR platform
@@ -1760,6 +1859,11 @@ grant execute on function public.get_company_members(uuid) to authenticated;
 -- invite_company_member — owner/admin-only; resolves an existing account by
 -- email and adds them as STAFF (role escalation impossible from the client).
 -- Authorization is re-checked inside the function (defense-in-depth).
+-- Rate-limited to 20 probes/hour/user (§13): the function answers whether an
+-- email has a Trekker account, so uncapped it enumerates a mailing list. The
+-- "not found" branch RETURNS instead of RAISING — a raised exception rolls back
+-- the rate_events row recording the attempt, so every failed probe would erase
+-- its own evidence and the limit would count nothing.
 create or replace function public.invite_company_member(p_company_id uuid, p_email text)
 returns jsonb
 language plpgsql
@@ -1769,17 +1873,28 @@ as $$
 declare
   v_user_id uuid;
   v_count   int;
+  v_uid     uuid := auth.uid();
 begin
   if not public.is_company_admin(p_company_id) then
     raise exception 'Only company owners/admins can invite members';
   end if;
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = v_uid and action = 'invite' and at > now() - interval '1 hour';
+
+  if v_count >= 20 then
+    return jsonb_build_object('error', 'rate_limited');
+  end if;
+
+  insert into public.rate_events (actor, action) values (v_uid, 'invite');
 
   select id into v_user_id
   from public.profiles
   where lower(email) = lower(trim(p_email));
 
   if v_user_id is null then
-    raise exception 'No Trekker account found with that email';
+    return jsonb_build_object('error', 'not_found');
   end if;
 
   insert into public.company_members (company_id, user_id, role)
@@ -1892,10 +2007,21 @@ grant select (
   id, name, slug, description, logo_url, cover_image_url, website,
   contact_email, contact_phone, status, rejection_reason, created_at
 ) on public.companies to anon, authenticated;
+-- Frozen tenants are read-only (§16): a suspended company editing its storefront
+-- copy is editing a page the platform has taken down. The platform-admin arm is
+-- deliberately NOT status-gated — freezing must not lock out the role that
+-- un-freezes. trg_protect_company_admin_fields still pins status/slug/approved_*,
+-- so nothing here lets a company approve or un-freeze itself.
 drop policy if exists "company admins update own company" on public.companies;
 create policy "company admins update own company" on public.companies for update to authenticated
-using (public.is_company_admin(id) or public.is_platform_admin())
-with check (public.is_company_admin(id) or public.is_platform_admin());
+using (
+  (public.is_company_admin(id) and public.is_company_writable(id))
+  or public.is_platform_admin()
+)
+with check (
+  (public.is_company_admin(id) and public.is_company_writable(id))
+  or public.is_platform_admin()
+);
 
 -- company_members: members see own roster; owners/admins invite STAFF only
 -- (owner rows are created solely by apply_for_company, can't be updated to
@@ -1904,37 +2030,63 @@ drop policy if exists "view company members" on public.company_members;
 create policy "view company members" on public.company_members for select to authenticated using (
   public.is_company_member(company_id) or public.is_platform_admin()
 );
+-- ⚠️ DROPPED 2026-08-06 by §15.8 — kept here only to record what was live until
+-- then. It constrained the company and the role but NOT user_id, so any company
+-- admin could POST /rest/v1/company_members with an arbitrary user_id and add a
+-- stranger to their team. Do not re-create it; memberships are RPC-only now.
 drop policy if exists "company admins invite staff" on public.company_members;
-create policy "company admins invite staff" on public.company_members for insert to authenticated
-with check (public.is_company_admin(company_id) and role = 'staff');
+-- create policy "company admins invite staff" on public.company_members for insert to authenticated
+-- with check (public.is_company_admin(company_id) and role = 'staff');
 -- (user_id <> auth.uid() blocks self-demotion / self-removal, so an admin can't
 -- lock themselves out of management on their own row).
+-- is_company_writable added by §16: a frozen company's roster is fixed as it
+-- stands. role <> 'owner' and user_id <> auth.uid() are unchanged.
 drop policy if exists "company admins manage member roles" on public.company_members;
 create policy "company admins manage member roles" on public.company_members for update to authenticated
-using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid())
-with check (public.is_company_admin(company_id) and role in ('admin', 'staff'));
+using (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role <> 'owner'
+  and user_id <> auth.uid()
+)
+with check (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role in ('admin', 'staff')
+);
 drop policy if exists "company admins remove members" on public.company_members;
 create policy "company admins remove members" on public.company_members for delete to authenticated
-using (public.is_company_admin(company_id) and role <> 'owner' and user_id <> auth.uid());
+using (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role <> 'owner'
+  and user_id <> auth.uid()
+);
 
--- treks: tenant-aware read; company members create/update own treks (archive =
--- is_active=false, the ONLY delete path — no hard DELETE policy).
+-- treks: tenant-aware read; APPROVED company members create/update own treks
+-- (archive = is_active=false, the ONLY delete path — no hard DELETE policy).
+-- §16 swapped is_company_member → is_approved_company_member on both writes:
+-- publishing is approved-only (the UI always claimed this; the policy didn't
+-- enforce it), and archive/restore is closed for a frozen company too. SELECT is
+-- untouched — is_trek_visible must keep serving staff and existing bookers.
 drop policy if exists "view all treks" on public.treks;
 drop policy if exists "view treks" on public.treks;
 create policy "view treks" on public.treks for select to public using (public.is_trek_visible(id));
 
 drop policy if exists "company members create treks" on public.treks;
 create policy "company members create treks" on public.treks for insert to authenticated
-with check (public.is_company_member(company_id));
+with check (public.is_approved_company_member(company_id));
 
 drop policy if exists "company members manage own treks" on public.treks;
 create policy "company members manage own treks" on public.treks for update to authenticated
-using (public.is_company_member(company_id) or public.is_platform_admin())
-with check (public.is_company_member(company_id) or public.is_platform_admin());
+using (public.is_approved_company_member(company_id) or public.is_platform_admin())
+with check (public.is_approved_company_member(company_id) or public.is_platform_admin());
 
--- trek_batches: tenant-aware read; company-managed writes; delete only while
--- the batch has zero participants AND no chat conversation (never orphan a
--- booking/chat; the conversation FK would otherwise reject the delete, 23503).
+-- trek_batches: tenant-aware read; APPROVED-company-managed writes (§16 — a
+-- departure is a sellable date, so it follows its trek's publishing tier);
+-- delete only while the batch has zero participants AND no chat conversation
+-- (never orphan a booking/chat; the conversation FK would otherwise reject the
+-- delete, 23503).
 drop policy if exists "Anyone can view trek batches" on public.trek_batches;
 drop policy if exists "view visible trek batches" on public.trek_batches;
 create policy "view visible trek batches" on public.trek_batches for select to public
@@ -1943,20 +2095,20 @@ using (public.is_trek_visible(trek_id));
 drop policy if exists "company manages own batches insert" on public.trek_batches;
 create policy "company manages own batches insert" on public.trek_batches for insert to authenticated
 with check (
-  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_approved_company_member(t.company_id))
 );
 drop policy if exists "company manages own batches update" on public.trek_batches;
 create policy "company manages own batches update" on public.trek_batches for update to authenticated
 using (
-  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_approved_company_member(t.company_id))
 )
 with check (
-  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_approved_company_member(t.company_id))
 );
 drop policy if exists "company deletes empty batches" on public.trek_batches;
 create policy "company deletes empty batches" on public.trek_batches for delete to authenticated
 using (
-  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_company_member(t.company_id))
+  exists (select 1 from public.treks t where t.id = trek_batches.trek_id and public.is_approved_company_member(t.company_id))
   and not public.batch_has_participants(trek_batches.id)
   and not public.batch_has_conversation(trek_batches.id)
 );
@@ -1965,8 +2117,22 @@ using (
 -- Mirrors the avatars/trek-reviews pattern but keyed by company_id (first path
 -- segment must be a company UUID the caller belongs to). Authenticated-only
 -- SELECT blocks anon listing; public CDN URLs still serve files.
+--
+-- WRITE policies carry the same status tiers as the tables they feed (§16):
+-- company-logos → writable (pending companies upload branding while they wait),
+-- trek-images → approved-only. Both buckets are PUBLIC, so a write policy left
+-- on bare membership would let a frozen company overwrite its logo/cover at the
+-- exact CDN paths the storefront already links to, with no companies row ever
+-- changing. SELECT stays open to all authenticated — existing images must keep
+-- resolving for people who already hold bookings.
 insert into storage.buckets (id, name, public) values ('company-logos', 'company-logos', true) on conflict (id) do nothing;
 insert into storage.buckets (id, name, public) values ('trek-images',   'trek-images',   true) on conflict (id) do nothing;
+
+-- Same per-upload ceiling as §9; rationale there.
+update storage.buckets
+set file_size_limit    = 3145728,  -- 3 MiB
+    allowed_mime_types = array['image/jpeg','image/png','image/webp']
+where id in ('company-logos','trek-images');
 
 drop policy if exists "Authenticated users can view company logos" on storage.objects;
 create policy "Authenticated users can view company logos" on storage.objects
@@ -1974,16 +2140,20 @@ create policy "Authenticated users can view company logos" on storage.objects
 
 drop policy if exists "Company members upload own logo" on storage.objects;
 create policy "Company members upload own logo" on storage.objects for insert to authenticated
-with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid)
+            and public.is_company_writable(((storage.foldername(name))[1])::uuid));
 
 drop policy if exists "Company members update own logo" on storage.objects;
 create policy "Company members update own logo" on storage.objects for update to authenticated
-using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid))
-with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid)
+       and public.is_company_writable(((storage.foldername(name))[1])::uuid))
+with check (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid)
+            and public.is_company_writable(((storage.foldername(name))[1])::uuid));
 
 drop policy if exists "Company members delete own logo" on storage.objects;
 create policy "Company members delete own logo" on storage.objects for delete to authenticated
-using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+using (bucket_id = 'company-logos' and public.is_company_member(((storage.foldername(name))[1])::uuid)
+       and public.is_company_writable(((storage.foldername(name))[1])::uuid));
 
 drop policy if exists "Authenticated users can view trek images" on storage.objects;
 create policy "Authenticated users can view trek images" on storage.objects
@@ -1991,16 +2161,16 @@ create policy "Authenticated users can view trek images" on storage.objects
 
 drop policy if exists "Company members upload trek images" on storage.objects;
 create policy "Company members upload trek images" on storage.objects for insert to authenticated
-with check (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+with check (bucket_id = 'trek-images' and public.is_approved_company_member(((storage.foldername(name))[1])::uuid));
 
 drop policy if exists "Company members update trek images" on storage.objects;
 create policy "Company members update trek images" on storage.objects for update to authenticated
-using (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid))
-with check (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+using (bucket_id = 'trek-images' and public.is_approved_company_member(((storage.foldername(name))[1])::uuid))
+with check (bucket_id = 'trek-images' and public.is_approved_company_member(((storage.foldername(name))[1])::uuid));
 
 drop policy if exists "Company members delete trek images" on storage.objects;
 create policy "Company members delete trek images" on storage.objects for delete to authenticated
-using (bucket_id = 'trek-images' and public.is_company_member(((storage.foldername(name))[1])::uuid));
+using (bucket_id = 'trek-images' and public.is_approved_company_member(((storage.foldername(name))[1])::uuid));
 
 -- ---- 12.8 Backfill (RAN 2026-07-02, one-time) ---------------------------------
 -- The migration created the default "Trekker Originals" company (approved,
@@ -2022,3 +2192,824 @@ alter table public.treks alter column company_id set not null;
 --
 -- STATUS 2026-07-02: platform_admins is EMPTY — /admin and company
 -- approve/reject/suspend are unusable until this runs.
+
+
+-- ============================================================================
+-- 13. RATE LIMITING — applied 2026-08-05 via
+--     supabase/phases/rate-limiting.sql        (core write paths, §13.1–13.3)
+--     supabase/phases/rate-limiting-storage.sql (uploads, §13.4 + §9/§12.7 caps)
+--     all verified live; the upload guard was then corrected twice —
+--     supabase/phases/fix-storage-rate-limit-owner.sql   (2026-08-05, identity)
+--     supabase/phases/fix-storage-rate-limit-message.sql (2026-08-08, §13.5)
+-- ============================================================================
+-- Every limit lives in Postgres, not a Route Handler: the publishable key ships
+-- in the client bundle, so anything enforced in Next.js is skipped by calling
+-- PostgREST directly. Guards sit in triggers rather than RPC bodies because
+-- these tables also carry a direct client INSERT policy alongside their RPC.
+--
+-- Already bounded by unique constraints and needing nothing (verified live):
+-- favorites, trek_reviews, company_members, trek_batches, companies.
+--
+-- The 20/hr invite-enumeration guard is inline in §12's invite_company_member.
+-- (plpgsql resolves tables at runtime, so §12 creating that function before
+-- rate_events exists is fine on a fresh apply.)
+
+-- ---- 13.1 rate_events — append-only counter -----------------------------------
+-- Used ONLY where the evidence of an action does not survive (a left trek, a
+-- failed lookup). Chat counts its own rows instead — messages are soft-deleted
+-- (is_deleted), never removed, so the table is its own accurate counter.
+create table if not exists public.rate_events (
+  id     bigint generated always as identity primary key,
+  actor  uuid        not null references auth.users(id) on delete cascade,
+  action text        not null,
+  at     timestamptz not null default now()
+);
+
+create index if not exists rate_events_actor_action_at_idx
+  on public.rate_events (actor, action, at desc);
+
+-- No policies and no grants: RLS on with zero policies denies everything, and
+-- the revoke removes the table from PostgREST's reach. Only the SECURITY
+-- DEFINER functions below (which bypass RLS) touch it, so a user can neither
+-- read their own counter nor delete it to reset a limit.
+alter table public.rate_events enable row level security;
+revoke all on public.rate_events from anon, authenticated;
+
+-- ---- 13.2 Chat flood — 30 messages / minute / user ----------------------------
+-- AFTER ... FOR EACH STATEMENT, not an RLS WITH CHECK: a per-row check cannot
+-- see the other rows of its own statement, so PostgREST's bulk insert (POST an
+-- array) would pass 1000 messages through a check reading a count of 0 every
+-- time. A statement trigger runs once the command is complete and sees all of
+-- them; it also raises a real message where a failed WITH CHECK gives an opaque
+-- 42501.
+create index if not exists conversation_messages_user_created_idx
+  on public.conversation_messages (user_id, created_at desc);
+
+create or replace function public.enforce_message_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_count int;
+begin
+  -- Service-role / trigger-internal writes have no auth.uid(); never block them.
+  if v_uid is null then
+    return null;
+  end if;
+
+  select count(*) into v_count
+  from public.conversation_messages
+  where user_id = v_uid and created_at > now() - interval '1 minute';
+
+  -- The rows just inserted are already visible here, so the cap is `>`.
+  if v_count > 30 then
+    raise exception 'You are sending messages too quickly. Please wait a moment.'
+      using errcode = 'P0001';
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists conversation_messages_rate_limit on public.conversation_messages;
+create trigger conversation_messages_rate_limit
+  after insert on public.conversation_messages
+  for each statement
+  execute function public.enforce_message_rate_limit();
+
+-- ---- 13.3 Join/leave email amplification — 10 joins / hour / user -------------
+-- The cost here is outbound email, not rows: trek_participants carries
+-- notify_trek_participation() on INSERT *and* DELETE, so one join/leave cycle
+-- sends two emails to real people. UNIQUE (user_id, batch_id) does not help,
+-- because leaving deletes the row and frees the slot to be re-used — which is
+-- also why this counts rate_events rather than the table itself.
+-- A row trigger, not a guard inside join_trek_and_chat(): the "Users can join
+-- treks" policy lets a client INSERT into trek_participants directly and skip
+-- the RPC. AFTER ROW triggers see earlier rows of the same statement, so a bulk
+-- insert is covered too.
+create or replace function public.enforce_join_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_count int;
+begin
+  -- Waitlist promotion and other system writes run without a session.
+  if v_uid is null then
+    return new;
+  end if;
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = v_uid and action = 'join' and at > now() - interval '1 hour';
+
+  if v_count >= 10 then
+    raise exception 'You have joined too many treks in the last hour. Please try again later.'
+      using errcode = 'P0001';
+  end if;
+
+  insert into public.rate_events (actor, action) values (v_uid, 'join');
+  return new;
+end;
+$$;
+
+drop trigger if exists trek_participants_rate_limit on public.trek_participants;
+create trigger trek_participants_rate_limit
+  after insert on public.trek_participants
+  for each row
+  execute function public.enforce_join_rate_limit();
+
+-- ---- 13.4 Storage uploads — 6/hour (20/hour for review photos) ----------------
+-- Pairs with the per-upload size/MIME caps on the buckets themselves (§9 and
+-- §12.7): the caps bound ONE upload, this bounds how many.
+--
+-- INSERT OR UPDATE, not INSERT: avatars use the fixed path {uid}.{ext} with
+-- upsert:true, so after the first upload every avatar write is an UPDATE and an
+-- INSERT-only trigger would leave that path unguarded. storage-api issues a new
+-- `version` per real upload, so the version check keeps renames/metadata
+-- touches from consuming budget.
+--
+-- Counted in rate_events, not from storage.objects: avatars are one row forever
+-- (upsert to a fixed path) and review photos are user-deletable, so the object
+-- table is not a truthful counter in exactly the two places that matter.
+--
+-- trek-reviews gets 20/hour because the review form is `multiple` with no file
+-- count cap and uploads every photo in one Promise.all — at 6 a single
+-- legitimate 8-photo submission would fail partway through its own submit.
+--
+-- The function lives in public, not storage: `postgres` holds TRIGGER on
+-- storage.objects (so the trigger is creatable) but not CREATE on the storage
+-- schema.
+--
+-- ⚠️ IDENTITY COMES FROM new.owner, NOT auth.uid(). auth.uid() returns NULL
+-- inside this trigger on the storage-api path (verified live 2026-08-05 by
+-- instrumenting it) even though RLS policies on the very same INSERT resolve it
+-- correctly — the claims GUC is not visible in the trigger's context there.
+-- Using auth.uid() made the guard silently inert: it fired, hit the null guard,
+-- and recorded nothing. storage-api populates owner from the JWT sub on every
+-- upload and the client cannot forge it (the storage schema is not exposed
+-- through PostgREST). Do not "simplify" this back to auth.uid().
+--
+-- The bucket -> (action, limit) mapping is factored into storage_rate_rule()
+-- because the probe in §13.5 reads the same mapping. Two copies of "6" would
+-- drift on the first tuning pass and the app would report a limit that is not
+-- the one being enforced. v_action is null for an uncovered bucket.
+create or replace function public.storage_rate_rule(
+  p_bucket text,
+  out v_action text,
+  out v_limit  int
+)
+language sql
+immutable
+set search_path = public, pg_temp
+as $$
+  select case
+           when p_bucket = 'trek-reviews' then 'upload:review'
+           when p_bucket in ('avatars','company-logos','trek-images') then 'upload'
+         end,
+         case
+           when p_bucket = 'trek-reviews' then 20
+           when p_bucket in ('avatars','company-logos','trek-images') then 6
+         end;
+$$;
+
+revoke all on function public.storage_rate_rule(text) from public, anon, authenticated;
+
+create or replace function public.enforce_storage_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid   uuid := coalesce(new.owner, auth.uid());
+  v_rule  record;
+  v_count int;
+begin
+  if v_uid is null then
+    return null;
+  end if;
+
+  if tg_op = 'UPDATE' and new.version is not distinct from old.version then
+    return null;
+  end if;
+
+  select * into v_rule from public.storage_rate_rule(new.bucket_id);
+  if v_rule.v_action is null then
+    return null;
+  end if;
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = v_uid and action = v_rule.v_action and at > now() - interval '1 hour';
+
+  if v_count >= v_rule.v_limit then
+    -- For the Postgres log only. storage-api does not forward a database error
+    -- message: it answers 500 with a body of `{}`. See §13.5.
+    raise exception 'You have uploaded too many images in the last hour. Please try again later.'
+      using errcode = 'P0001';
+  end if;
+
+  insert into public.rate_events (actor, action) values (v_uid, v_rule.v_action);
+  return null;
+end;
+$$;
+
+drop trigger if exists storage_objects_rate_limit on storage.objects;
+create trigger storage_objects_rate_limit
+  after insert or update on storage.objects
+  for each row
+  execute function public.enforce_storage_rate_limit();
+
+
+-- ---- 13.5 Upload rate-limit probe — how the user learns why -------------------
+-- The §13.4 raise never reaches the browser. storage-api does not forward a
+-- database error message; it answers 500 with a body of `{}`, which supabase-js
+-- turns into the StorageApiError message "{}". No errcode gets around this —
+-- storage-api maps 42501 to its own hardcoded RLS text and 23505/23503 to
+-- key/bucket errors, everything else to an opaque 500. So a rate-limited upload
+-- was indistinguishable from any other failure and the user was told to "try
+-- again", which cannot succeed for another hour.
+--
+-- Rather than parse an error body that will never carry the reason, the client
+-- asks. src/lib/uploadErrors.ts calls this only after an upload has already
+-- failed with an unrecognised error, so the happy path costs no round trip.
+--
+-- Read-only and consumes no budget, so probing after a rejection cannot push
+-- the caller further into the limit. Returns ONE boolean about the caller's own
+-- counter — rate_events itself stays at zero policies and zero grants, so no
+-- count, timestamp or other actor is exposed. auth.uid() is reliable here: this
+-- is an ordinary PostgREST call, not the storage-api trigger context.
+create or replace function public.upload_rate_limited(p_bucket text)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_rule  record;
+  v_count int;
+begin
+  if v_uid is null then
+    return false;
+  end if;
+
+  select * into v_rule from public.storage_rate_rule(p_bucket);
+  if v_rule.v_action is null then
+    return false;
+  end if;
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = v_uid and action = v_rule.v_action and at > now() - interval '1 hour';
+
+  return v_count >= v_rule.v_limit;
+end;
+$$;
+
+revoke all on function public.upload_rate_limited(text) from public, anon;
+grant execute on function public.upload_rate_limited(text) to authenticated;
+
+-- ---- 13.5 Pruning — pg_cron ---------------------------------------------------
+-- Only the last hour is ever read; a day is kept for debugging.
+select cron.unschedule('prune-rate-events')
+where exists (select 1 from cron.job where jobname = 'prune-rate-events');
+
+select cron.schedule(
+  'prune-rate-events',
+  '17 * * * *',
+  $$delete from public.rate_events where at < now() - interval '1 day'$$
+);
+
+
+-- ============================================================================
+-- 14. ACCOUNT TYPES — trekker vs company (applied 2026-08-06)
+-- ============================================================================
+-- Splits the single account model in two. Before this, every auth user was a
+-- full trekker and "being a company" was an add-on (a company_members row), so
+-- company owners could also join treks, favourite, chat and review.
+-- Full rationale + verification block: supabase/phases/phase-f-account-types.sql
+--
+-- Reviews need no rule of their own — "Users can review treks they joined"
+-- already requires participation. conversation_participants INSERT is
+-- service_role-only, so chat has no client bypass either.
+
+-- ---- 14.1 Enum + column -------------------------------------------------------
+create type public.account_type as enum ('trekker', 'company');
+
+alter table public.profiles
+  add column if not exists account_type public.account_type not null default 'trekker';
+
+-- ---- 14.2 is_trekker() — single source of truth -------------------------------
+-- Mirrors is_platform_admin(). The `or is_platform_admin()` is the admin
+-- exemption: platform admins keep full trekker access while owning a company,
+-- so trekker flows stay testable from the admin account.
+create or replace function public.is_trekker()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.account_type = 'trekker'
+  ) or public.is_platform_admin();
+$$;
+
+revoke execute on function public.is_trekker() from public, anon;
+grant execute on function public.is_trekker() to authenticated;
+
+-- ---- 14.3 Trigger — pin account_type against self-edit ------------------------
+-- Without this, "Users can update own profile" lets any company account demote
+-- itself to 'trekker' with a one-line PATCH and walk past every rule below.
+-- The auth.uid() null-check is NOT redundant with is_platform_admin(): auth.uid()
+-- is NULL in the SQL Editor, so an admin-only check would evaluate FALSE there
+-- and silently revert manual corrections. No client can reach that branch — the
+-- profiles UPDATE policy is `to authenticated`.
+--
+-- UPDATED 2026-08-06 by §15: the GUC branch is the invite-accept escape hatch.
+-- accept_company_invite() sets it transaction-locally right before its UPDATE
+-- and clears it right after. PostgREST cannot call set_config, so the branch is
+-- reachable only from inside a definer function that opts in. See §15.7.
+create or replace function public.protect_profile_account_type()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if coalesce(current_setting('app.account_type_change', true), '') = 'allow' then
+    return new;
+  end if;
+
+  if auth.uid() is not null and not public.is_platform_admin() then
+    new.account_type := old.account_type;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_protect_profile_account_type on public.profiles;
+create trigger trg_protect_profile_account_type
+  before update on public.profiles
+  for each row execute function public.protect_profile_account_type();
+
+revoke execute on function public.protect_profile_account_type()
+  from public, anon, authenticated;
+
+-- ---- 14.4 handle_new_user — account_type at signup ----------------------------
+-- See §2 for the full function. raw_user_meta_data is client-supplied, which is
+-- safe in this one direction: signing up as a company is self-service (the
+-- company still needs admin approval) and anything but the literal 'company'
+-- falls back to 'trekker'. The escalation that matters — company → trekker — is
+-- blocked by §14.3.
+--   insert into public.profiles (id, email, full_name, account_type)
+--   values (..., case when new.raw_user_meta_data->>'account_type' = 'company'
+--                     then 'company'::public.account_type
+--                     else 'trekker'::public.account_type end)
+
+-- ---- 14.5 join_trek_and_chat — refuse company accounts ------------------------
+-- Guard added immediately after the caller-identity checks, before any write, so
+-- a blocked join creates no batch and no conversation. See §2 for the function.
+--   if not public.is_trekker() then
+--     raise exception 'Company accounts cannot join treks';
+--   end if;
+
+-- ---- 14.6 RLS — trekker-only writes -------------------------------------------
+-- Defence in depth for trek_participants (the RPC in §14.5 is the real guard);
+-- for favourites there is no RPC, so this IS the enforcement.
+drop policy if exists "Users can join treks" on public.trek_participants;
+create policy "Users can join treks" on public.trek_participants for insert to authenticated
+  with check (auth.uid() = user_id and public.is_trekker());
+
+drop policy if exists "Users can favorite treks" on public.favorites;
+create policy "Users can favorite treks" on public.favorites for insert to authenticated
+  with check (auth.uid() = user_id and public.is_trekker());
+
+-- ---- 14.7 apply_for_company — company accounts only ---------------------------
+-- The inverse restriction: a trekker can no longer convert mid-life. Companies
+-- are created by signing up as one. See §12.4 for the full function.
+--   if not exists (select 1 from public.profiles p
+--                  where p.id = v_uid and p.account_type = 'company') then
+--     raise exception 'Only company accounts can apply. Sign up as a trek company instead.';
+--   end if;
+
+-- ---- 14.8 Backfill (RAN 2026-08-06, one-time) ---------------------------------
+-- Platform admins were NOT skipped — the data reflects reality; their exemption
+-- lives in is_trekker() as one documented rule rather than two half-rules.
+-- Result: 2 company / 2 trekker profiles; 0 company_members rows left as trekker.
+--   update public.profiles p set account_type = 'company'
+--   where p.account_type <> 'company'
+--     and exists (select 1 from public.company_members cm where cm.user_id = p.id);
+
+
+-- ============================================================================
+-- 15. INVITE → ACCEPT — consent before conversion (applied 2026-08-06)
+-- ============================================================================
+-- §14 made account_type immutable, which left a trekker who genuinely wants to
+-- join a company team with no way across. This section builds that path as a
+-- CONSENT step. Before it, invite_company_member() inserted straight into
+-- company_members and answered "Teammate added" — bolting conversion onto that
+-- would let any company admin end a trekker's account by typing their email.
+-- Full rationale + verification block: supabase/phases/phase-g-invite-accept.sql
+--
+-- Conversion deletes nothing. account_type flips, RLS then refuses new joins /
+-- favourites and the (trekker) route group redirects to /dashboard; existing
+-- bookings, favourites, chats and reviews stay in the database, unreachable via
+-- the app. Only a platform admin can flip it back.
+
+-- ---- 15.1 company_invites -----------------------------------------------------
+-- No token column and no email delivery on purpose: invite_company_member()
+-- requires the invitee to already have a Trekker account (it resolves them in
+-- profiles by email), so the invite is simply shown to them at /invites when
+-- they sign in. Inviting people WITHOUT accounts is what would need a hashed
+-- token + a mail step. email is stored lowercased+trimmed by the RPC and every
+-- lookup lowercases, so a typo'd case cannot create a second live invite.
+create table if not exists public.company_invites (
+  id           uuid primary key default gen_random_uuid(),
+  company_id   uuid not null references public.companies(id) on delete cascade,
+  email        text not null,
+  invited_by   uuid not null references public.profiles(id),
+  role         public.company_role not null default 'staff' check (role <> 'owner'),
+  status       text not null default 'pending'
+               check (status in ('pending', 'accepted', 'declined', 'revoked')),
+  created_at   timestamptz not null default now(),
+  expires_at   timestamptz not null default now() + interval '14 days',
+  responded_at timestamptz
+);
+
+-- One live invite per (company, email); partial so accepted/declined/revoked
+-- history doesn't block re-inviting the same person.
+create unique index if not exists company_invites_pending_key
+  on public.company_invites (company_id, lower(email))
+  where status = 'pending';
+
+create index if not exists company_invites_email_idx
+  on public.company_invites (lower(email))
+  where status = 'pending';
+
+-- ---- 15.2 RLS — read for the company, writes RPC-only -------------------------
+-- The invitee gets NO read policy here: their screen needs the company name and
+-- the inviter's name, and as a non-member "view companies" hides an unapproved
+-- company from them while profiles is self-only. They read through
+-- get_my_invites() instead — same reason get_company_members() exists (§12).
+-- The grant revokes are belt-and-braces so a carelessly added policy later
+-- cannot by itself open a direct write path.
+alter table public.company_invites enable row level security;
+
+drop policy if exists "view company invites" on public.company_invites;
+create policy "view company invites" on public.company_invites for select to authenticated
+using (public.is_company_member(company_id) or public.is_platform_admin());
+
+revoke all on public.company_invites from anon;
+revoke insert, update, delete on public.company_invites from authenticated;
+grant select on public.company_invites to authenticated;
+
+-- ---- 15.3 invite_company_member — writes an invite, not a membership ----------
+-- KEEPS from §13: the is_company_admin() gate, the 20/hour rate_events cap, and
+-- the RETURNED (not raised) 'not_found' — a raise rolls back the rate_events row
+-- recording the attempt, so every failed probe would erase its own evidence.
+-- CHANGED: the tail writes a pending invite. Expired pendings are swept to
+-- 'revoked' first, or a timed-out invite would hold the partial unique index and
+-- make that person permanently un-invitable behind a confusing "already invited".
+-- §16 ADDED the is_company_writable() gate, BEFORE the rate-limit insert: rate
+-- limiting exists to blunt email enumeration through 'not_found', and a frozen
+-- company is refused before it learns anything, so there is nothing to meter.
+-- Returned as 'company_frozen' (not raised) to match the other expected answers
+-- the client maps to copy.
+create or replace function public.invite_company_member(p_company_id uuid, p_email text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_user_id   uuid;
+  v_count     int;
+  v_uid       uuid := auth.uid();
+  v_email     text := lower(trim(p_email));
+  v_invite_id uuid;
+begin
+  if not public.is_company_admin(p_company_id) then
+    raise exception 'Only company owners/admins can invite members';
+  end if;
+
+  if not public.is_company_writable(p_company_id) then
+    return jsonb_build_object('error', 'company_frozen');
+  end if;
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = v_uid and action = 'invite' and at > now() - interval '1 hour';
+
+  if v_count >= 20 then
+    return jsonb_build_object('error', 'rate_limited');
+  end if;
+
+  insert into public.rate_events (actor, action) values (v_uid, 'invite');
+
+  select id into v_user_id from public.profiles where lower(email) = v_email;
+
+  if v_user_id is null then
+    return jsonb_build_object('error', 'not_found');
+  end if;
+
+  if exists (
+    select 1 from public.company_members
+    where company_id = p_company_id and user_id = v_user_id
+  ) then
+    return jsonb_build_object('already_member', true);
+  end if;
+
+  update public.company_invites
+     set status = 'revoked', responded_at = now()
+   where company_id = p_company_id
+     and lower(email) = v_email
+     and status = 'pending'
+     and expires_at <= now();
+
+  if exists (
+    select 1 from public.company_invites
+    where company_id = p_company_id and lower(email) = v_email and status = 'pending'
+  ) then
+    return jsonb_build_object('error', 'already_invited');
+  end if;
+
+  insert into public.company_invites (company_id, email, invited_by, role)
+  values (p_company_id, v_email, v_uid, 'staff')
+  returning id into v_invite_id;
+
+  return jsonb_build_object('invite_id', v_invite_id);
+end;
+$$;
+grant execute on function public.invite_company_member(uuid, text) to authenticated;
+
+-- ---- 15.4 get_my_invites — the invitee's side ---------------------------------
+-- DEFINER because the invitee is not a member yet. The caller's email comes from
+-- their own profile row, never from an argument or a JWT claim; signed out the
+-- subquery is NULL and no row matches.
+create or replace function public.get_my_invites()
+returns table (
+  invite_id        uuid,
+  company_id       uuid,
+  company_name     text,
+  company_slug     text,
+  company_logo_url text,
+  role             public.company_role,
+  invited_by_name  text,
+  created_at       timestamptz,
+  expires_at       timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select i.id, c.id, c.name, c.slug, c.logo_url, i.role,
+         p.full_name, i.created_at, i.expires_at
+  from public.company_invites i
+  join public.companies c on c.id = i.company_id
+  left join public.profiles p on p.id = i.invited_by
+  where i.status = 'pending'
+    and i.expires_at > now()
+    and lower(i.email) = (
+      select lower(me.email) from public.profiles me where me.id = auth.uid()
+    )
+  order by i.created_at desc;
+$$;
+revoke execute on function public.get_my_invites() from public, anon;
+grant execute on function public.get_my_invites() to authenticated;
+
+-- ---- 15.5 accept_company_invite — the only trekker → company path -------------
+-- The invite is matched against the caller's OWN profiles.email, so holding an
+-- invite id is not enough to accept someone else's invite.
+--
+-- Branches on the RAW account_type, deliberately NOT is_trekker(): that returns
+-- true for platform admins whatever their column says, which would send an admin
+-- who is already a company account down the conversion branch. An account that
+-- is already 'company' just gains the membership — company accounts could always
+-- be added to a second team and §15.8 must not silently remove that.
+--
+-- Upcoming participation blocks conversion because a converted account can no
+-- longer open /messages: a booking would strand them in a batch chat they can't
+-- reach. WAITLISTED rows count too — promote_waitlist_on_leave() promotes FIFO
+-- without consulting account_type, so a waitlisted row is a booking that can
+-- activate itself after the conversion.
+--
+-- DIRECTION: the UPDATE hard-codes 'company' inside the trekker branch. Nothing
+-- here can move an account back; company → trekker stays platform-admin-only.
+create or replace function public.accept_company_invite(p_invite_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid          uuid := auth.uid();
+  v_email        text;
+  v_account_type public.account_type;
+  v_company_id   uuid;
+  v_role         public.company_role;
+  v_converted    boolean := false;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select lower(p.email), p.account_type into v_email, v_account_type
+  from public.profiles p where p.id = v_uid;
+
+  if v_email is null then
+    raise exception 'Your account has no email address';
+  end if;
+
+  select i.company_id, i.role into v_company_id, v_role
+  from public.company_invites i
+  where i.id = p_invite_id
+    and i.status = 'pending'
+    and i.expires_at > now()
+    and lower(i.email) = v_email
+  for update;
+
+  if v_company_id is null then
+    raise exception 'That invitation is no longer valid';
+  end if;
+
+  -- §16: status is re-checked HERE, not only at invite time — an invite issued
+  -- while approved stays live after a reject/suspend, and accepting it converts
+  -- the trekker's account irreversibly for a seat on a tenant that can do
+  -- nothing. After the lookup, so a non-owner still gets 'no longer valid' and
+  -- learns nothing about the company's status.
+  if not public.is_company_writable(v_company_id) then
+    raise exception 'That company is no longer active on Trekker, so this invitation can no longer be accepted.';
+  end if;
+
+  if v_account_type = 'trekker' then
+    if exists (
+      select 1
+      from public.trek_participants tp
+      join public.trek_batches b on b.id = tp.batch_id
+      where tp.user_id = v_uid and b.batch_date >= current_date
+    ) then
+      raise exception 'You have an upcoming trek booked. Leave it before joining a company team.';
+    end if;
+
+    perform set_config('app.account_type_change', 'allow', true);
+    update public.profiles set account_type = 'company' where id = v_uid;
+    perform set_config('app.account_type_change', '', true);
+
+    v_converted := true;
+  end if;
+
+  insert into public.company_members (company_id, user_id, role)
+  values (v_company_id, v_uid, v_role)
+  on conflict (company_id, user_id) do nothing;
+
+  update public.company_invites
+     set status = 'accepted', responded_at = now()
+   where id = p_invite_id;
+
+  return jsonb_build_object('company_id', v_company_id, 'converted', v_converted);
+end;
+$$;
+revoke execute on function public.accept_company_invite(uuid) from public, anon;
+grant execute on function public.accept_company_invite(uuid) to authenticated;
+
+-- ---- 15.6 decline / revoke ----------------------------------------------------
+-- decline: same ownership rule as accept (matched on the caller's own email).
+-- revoke: the company's side, gated on is_company_admin of the invite's company.
+create or replace function public.decline_company_invite(p_invite_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_count int;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  update public.company_invites
+     set status = 'declined', responded_at = now()
+   where id = p_invite_id
+     and status = 'pending'
+     and lower(email) = (
+       select lower(me.email) from public.profiles me where me.id = v_uid
+     );
+
+  get diagnostics v_count = row_count;
+  if v_count = 0 then
+    raise exception 'That invitation is no longer valid';
+  end if;
+
+  return jsonb_build_object('declined', true);
+end;
+$$;
+revoke execute on function public.decline_company_invite(uuid) from public, anon;
+grant execute on function public.decline_company_invite(uuid) to authenticated;
+
+create or replace function public.revoke_company_invite(p_invite_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_company_id uuid;
+begin
+  select company_id into v_company_id
+  from public.company_invites
+  where id = p_invite_id and status = 'pending';
+
+  if v_company_id is null then
+    raise exception 'That invitation is no longer pending';
+  end if;
+
+  if not public.is_company_admin(v_company_id) then
+    raise exception 'Only company owners/admins can revoke invites';
+  end if;
+
+  update public.company_invites
+     set status = 'revoked', responded_at = now()
+   where id = p_invite_id;
+
+  return jsonb_build_object('revoked', true);
+end;
+$$;
+revoke execute on function public.revoke_company_invite(uuid) from public, anon;
+grant execute on function public.revoke_company_invite(uuid) to authenticated;
+
+-- ---- 15.7 protect_profile_account_type — the escape hatch ---------------------
+-- Definition lives in §14.3 (updated in place). The GUC is transaction-local and
+-- only settable by SQL running inside the database: PostgREST exposes functions
+-- in the API schema, set_config lives in pg_catalog and is not among them, and
+-- the only GUCs a request can influence are the request.* ones PostgREST sets
+-- itself. If that ever stops being true, the §14 pin is gone and with it every
+-- rule that depends on account_type.
+
+-- ---- 15.8 Close the direct-insert bypass --------------------------------------
+-- The dropped policy is quoted at §12 where it used to live. company_members now
+-- has SELECT / UPDATE / DELETE policies only; the sole INSERT paths are
+-- apply_for_company() (owner row, §12.4) and accept_company_invite() (§15.5),
+-- both SECURITY DEFINER and both re-checking authorization internally. Verified
+-- before dropping that no app code inserts into company_members directly.
+-- UPDATE/DELETE untouched: reversible acts on a membership the admin can already
+-- see, still carrying role <> 'owner' and user_id <> auth.uid().
+drop policy if exists "company admins invite staff" on public.company_members;
+revoke insert on public.company_members from anon, authenticated;
+
+
+-- ============================================================================
+-- 16. FROZEN COMPANIES — rejected / suspended tenants are read-only
+--     (applied + verified live 2026-08-08)
+-- ============================================================================
+-- Until this section, every company-scoped WRITE policy asked only "is the
+-- caller a member?". Status was consulted for READS (is_trek_visible hides an
+-- unapproved catalogue) and nothing else, so a company a platform admin had
+-- rejected or suspended kept full write access to its own tenant: invite staff,
+-- change roles, remove members, rewrite its public storefront copy,
+-- archive/restore treks, add and delete departures.
+--
+-- TWO TIERS, because "not approved yet" and "approval withdrawn" differ:
+--   is_company_writable()        pending + approved   settings, team, logos
+--   is_approved_company_member() approved only        treks, batches, trek images
+-- Plain is_company_member / is_company_admin now mean "is a member", NOT "may
+-- write" — pair them with is_company_writable(), or use the approved helper for
+-- anything that reaches the public catalogue.
+--
+-- SELECT is deliberately never gated by either (is_trek_visible already handles
+-- read visibility, and staff plus existing bookers must keep reading a hidden
+-- trek), and neither are the is_platform_admin() arms — freezing must not lock
+-- out the role that un-freezes.
+--
+-- The DDL is folded in place rather than repeated here:
+--   §12.4  is_company_writable() definition + grant; is_approved_company_member
+--          grant (orphaned since the multi-tenant migration until now)
+--   §12.6  companies UPDATE, company_members UPDATE/DELETE  → + writable
+--          treks INSERT/UPDATE, trek_batches INSERT/UPDATE/DELETE → approved
+--   §12.7  storage write policies, tier-matched per bucket
+--   §15.3  invite_company_member → returns {"error":"company_frozen"}
+--   §15.5  accept_company_invite → re-checks status at ACCEPT time
+--
+-- NOT gated, deliberately: revoke_company_invite / decline_company_invite (both
+-- de-escalating), the platform-admin arms, and every participant-facing flow
+-- (join_trek_and_chat + the waitlist/count triggers are SECURITY DEFINER, so no
+-- existing booking or chat on a suspended company's trek is touched).
+--
+-- Non-destructive and reversible: no data was deleted or rewritten, and
+-- re-approving a company restores every capability with no backfill.
+--
+-- Full rationale + verification blocks:
+--   supabase/phases/phase-h-frozen-companies.sql

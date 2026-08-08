@@ -25,7 +25,10 @@ export default function TrekBatchesPage() {
   const [adding, setAdding] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const owns = !!trek && companies.some((m) => m.company.id === trek.company_id);
+  const owner = trek ? companies.find((m) => m.company.id === trek.company_id) : undefined;
+  // Departures are bookable dates, so adding or removing one needs the owning
+  // company approved (trek_batches RLS). Viewing them stays open to any member.
+  const canManage = owner?.company.status === 'approved';
   const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.trekBatches(trekId) });
 
   const add = async (e: React.FormEvent) => {
@@ -85,12 +88,20 @@ export default function TrekBatchesPage() {
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           This trek couldn&apos;t be found.
         </p>
-      ) : !owns ? (
+      ) : !owner ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           You don&apos;t have access to manage this trek&apos;s departures.
         </p>
       ) : (
         <>
+          {!canManage && (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Departures can&apos;t be added or removed while {owner.company.name} is{' '}
+              {owner.company.status}.
+            </p>
+          )}
+
+          {canManage && (
           <form onSubmit={add} className="rounded-2xl border border-gray-200 bg-white p-5" noValidate>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
               <div className="flex-1">
@@ -132,6 +143,7 @@ export default function TrekBatchesPage() {
               </button>
             </div>
           </form>
+          )}
 
           {isError ? (
             <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -174,19 +186,21 @@ export default function TrekBatchesPage() {
                       <Users className="h-4 w-4" />
                       Roster
                     </Link>
-                    <button
-                      type="button"
-                      onClick={() => remove(batch.id)}
-                      disabled={busyId === batch.id}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-60"
-                    >
-                      {busyId === batch.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                      Remove
-                    </button>
+                    {canManage && (
+                      <button
+                        type="button"
+                        onClick={() => remove(batch.id)}
+                        disabled={busyId === batch.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-60"
+                      >
+                        {busyId === batch.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}

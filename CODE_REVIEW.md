@@ -315,7 +315,7 @@ Your test suite currently does not cover the thing most likely to break catastro
 - [ ] Delete `src/lib/database.ts` — 199 lines, dead, wrong tables, documented as dead for months
 - [ ] Delete `src/components/ui/Chat.tsx` — stub
 - [ ] Delete `src/components/ui/favcard2.tsx` — duplicate of `FavCard`
-- [ ] Resolve `/edits` vs `/profile/edit` — two profile editors, pick one
+- [ ] Delete `src/app/edits/` — **decided 2026-08-05: `/profile/edit` is the real profile editor.** `/edits` is the duplicate: nothing links to it (the only reference anywhere is the `robots.ts` disallow list), so it is reachable only by typing the URL. Both were kept in sync during the storage rate-limit work (`compressImage()` + `uploadErrors` wired into each), so deleting `/edits` loses nothing. Note the two use different avatar path layouts — `/edits` writes `{uid}.{ext}` (fixed path, upsert-overwrite), `/profile/edit` writes `{uid}/{ts}.{ext}` (new object each time); the storage RLS policy accepts both, so removing `/edits` does not need a policy change. Remove `'/edits'` from `src/app/robots.ts` at the same time
 - [ ] Delete one of `postcss.config.js` / `postcss.config.mjs` — one is ignored
 - [ ] Drop the unused `mood` enum and the dead `increment_participants` RPC (Phase 0 NEW-5).
       **Keep `update_participants_count()`** — it backs the `participants_joined` counter.

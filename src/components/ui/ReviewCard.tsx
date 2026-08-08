@@ -26,10 +26,13 @@ const ReviewCard: React.FC<ReviewCardProps> = ({ review, trekTitle }) => {
     const { rating, comment, created_at, photo_urls, profiles } = review;
     const userName = profiles?.full_name || 'Anonymous Trekker';
     const userAvatar = profiles?.avatar_url || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100'; // Default avatar
-    const date = new Date(created_at).toLocaleDateString(undefined, {
+    // Locale + zone are pinned: this card is server-rendered, and letting either
+    // default makes the server (en-US/UTC) and browser (en-IN/IST) disagree → hydration mismatch.
+    const date = new Date(created_at).toLocaleDateString('en-IN', {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
+        timeZone: 'Asia/Kolkata',
     });
 
     return (

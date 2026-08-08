@@ -16,6 +16,7 @@ import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
 import { toast } from 'sonner';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
+import { useIsTrekker } from '@/lib/queries';
 import ReviewCard from '@/components/ui/ReviewCard';
 import ItineraryView from '@/components/ui/ItineraryView';
 import type { TrekBatch, TrekDetail, TrekReview } from '@/lib/server-queries';
@@ -114,6 +115,12 @@ export default function TrekDetailClient({
     }
   };
 
+  // Company accounts browse the catalogue but can't book or favourite — both are
+  // refused in Postgres, so don't offer controls guaranteed to fail. Signed-out
+  // visitors keep them; they prompt for login.
+  const { data: isTrekker } = useIsTrekker(user?.id);
+  const canBook = !user || isTrekker === true;
+
   const handleCheckboxChange = (item: string) => setCheckedItems(prev => ({ ...prev, [item]: !prev[item] }));
   const handleJoinTrek = () => setIsModalOpen(true);
   const handleConfirmJoin = async (date: string) => {
@@ -174,14 +181,16 @@ export default function TrekDetailClient({
 
         {/* Actions */}
         <div className="absolute top-24 right-6 flex flex-col gap-3 z-20">
-          <motion.button
-            whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
-            onClick={toggleFavorite}
-            className={`p-3 rounded-full backdrop-blur-md transition-all ${isLiked ? 'bg-red-500 shadow-lg shadow-red-500/40' : 'bg-white/10 hover:bg-white/20 border border-white/20'
-              }`}
-          >
-            <Heart className={`w-5 h-5 ${isLiked ? 'fill-current' : ''}`} />
-          </motion.button>
+          {canBook && (
+            <motion.button
+              whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
+              onClick={toggleFavorite}
+              className={`p-3 rounded-full backdrop-blur-md transition-all ${isLiked ? 'bg-red-500 shadow-lg shadow-red-500/40' : 'bg-white/10 hover:bg-white/20 border border-white/20'
+                }`}
+            >
+              <Heart className={`w-5 h-5 ${isLiked ? 'fill-current' : ''}`} />
+            </motion.button>
+          )}
           <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} className="p-3 rounded-full bg-white/10 backdrop-blur-md hover:bg-white/20 border border-white/20 transition-all">
             <Share2 className="w-5 h-5" />
           </motion.button>
@@ -378,7 +387,7 @@ export default function TrekDetailClient({
                           Leave
                         </button>
                       </div>
-                    ) : (
+                    ) : canBook ? (
                       <motion.button
                         whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
                         onClick={handleJoinTrek}
@@ -386,6 +395,10 @@ export default function TrekDetailClient({
                       >
                         Book This Trek <ChevronRight className="w-5 h-5" />
                       </motion.button>
+                    ) : (
+                      <div className="w-full bg-white/5 border border-white/10 text-slate-400 py-5 rounded-2xl text-center text-sm">
+                        You&apos;re signed in as a trek company — booking is for trekker accounts.
+                      </div>
                     )}
                   </div>
 

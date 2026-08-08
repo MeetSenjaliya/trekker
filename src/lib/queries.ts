@@ -15,10 +15,14 @@ import {
   getTrekBatches,
   getBatchParticipants,
   getCompanyMembers,
+  listCompanyInvites,
+  getMyInvites,
   getAdminOverview,
   getAllCompanies,
   getAdminCompany,
   isPlatformAdmin,
+  isTrekker,
+  getMyAccountType,
 } from '@/lib/company';
 import type { CompanyStatusFilter } from '@/lib/company';
 import type { FilterState } from '@/components/ui/FilterSection';
@@ -34,6 +38,8 @@ export const queryKeys = {
     ['favorites', userId, trekId] as const,
   myCompanies: (userId: string) => ['companies', 'mine', userId] as const,
   platformAdmin: (userId: string) => ['platformAdmin', userId] as const,
+  isTrekker: (userId: string) => ['isTrekker', userId] as const,
+  accountType: (userId: string) => ['accountType', userId] as const,
   companyOverview: (companyId: string) => ['companies', companyId, 'overview'] as const,
   companyTreks: (companyId: string, includeArchived: boolean) =>
     ['companies', companyId, 'treks', includeArchived] as const,
@@ -41,6 +47,8 @@ export const queryKeys = {
   trekBatches: (trekId: string) => ['treks', trekId, 'batches'] as const,
   batchParticipants: (batchId: string) => ['batches', batchId, 'participants'] as const,
   companyMembers: (companyId: string) => ['companies', companyId, 'members'] as const,
+  companyInvites: (companyId: string) => ['companies', companyId, 'invites'] as const,
+  myInvites: (userId: string) => ['invites', 'mine', userId] as const,
   adminOverview: ['admin', 'overview'] as const,
   adminCompanies: (status: string) => ['admin', 'companies', status] as const,
   adminCompany: (companyId: string) => ['admin', 'company', companyId] as const,
@@ -267,6 +275,32 @@ export function usePlatformAdmin(userId: string | undefined) {
   });
 }
 
+/**
+ * Whether the signed-in user may act as a trekker (gates the customer-side nav
+ * and the Join buttons). Company accounts get false; platform admins get true.
+ */
+export function useIsTrekker(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.isTrekker(userId ?? ''),
+    enabled: !!userId,
+    queryFn: isTrekker,
+  });
+}
+
+/**
+ * The signed-in user's raw account kind. Use this (not `useIsTrekker`) wherever
+ * the UI mirrors a rule the DB states in terms of account_type itself — notably
+ * `/company/apply`, since platform admins read 'company' here but true from
+ * `is_trekker()`.
+ */
+export function useAccountType(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.accountType(userId ?? ''),
+    enabled: !!userId,
+    queryFn: getMyAccountType,
+  });
+}
+
 /** Dashboard headline stats for a company. */
 export function useCompanyOverview(companyId: string | undefined) {
   return useQuery({
@@ -318,6 +352,29 @@ export function useCompanyMembers(companyId: string | undefined) {
     queryKey: queryKeys.companyMembers(companyId ?? ''),
     enabled: !!companyId,
     queryFn: () => getCompanyMembers(companyId!),
+  });
+}
+
+/** A company's live (pending, unexpired) invites. */
+export function useCompanyInvites(companyId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.companyInvites(companyId ?? ''),
+    enabled: !!companyId,
+    queryFn: () => listCompanyInvites(companyId!),
+  });
+}
+
+/**
+ * Invites addressed to the signed-in user. Read by the Header on every page to
+ * badge /invites, so it's cached for a minute rather than refetched per route —
+ * an invite nobody has told them about can wait that long.
+ */
+export function useMyInvites(userId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.myInvites(userId ?? ''),
+    enabled: !!userId,
+    queryFn: getMyInvites,
+    staleTime: 60_000,
   });
 }
 

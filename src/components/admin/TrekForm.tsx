@@ -10,6 +10,7 @@ import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
 import { trekFormSchema, difficultyValues, fieldErrors } from '@/lib/schemas';
 import { createTrek, updateTrek, type EditableTrek, type TrekInput } from '@/lib/company';
 import { queryKeys } from '@/lib/queries';
+import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
 
 interface TrekFormProps {
   companyId: string;
@@ -81,8 +82,7 @@ export default function TrekForm({ companyId, trek }: TrekFormProps) {
     const path = `${companyId}/${trekId}/${Date.now()}-${sanitizeFileName(coverFile.name)}`;
     const { error } = await supabase.storage.from('trek-images').upload(path, coverFile, { upsert: true });
     if (error) {
-      console.error('Error uploading cover:', error);
-      throw new Error('cover-upload-failed');
+      throw new UploadError(await uploadErrorMessage(error, supabase, 'trek-images'));
     }
     return supabase.storage.from('trek-images').getPublicUrl(path).data.publicUrl;
   };
@@ -132,8 +132,8 @@ export default function TrekForm({ companyId, trek }: TrekFormProps) {
       router.push('/dashboard/treks');
     } catch (err) {
       const message =
-        err instanceof Error && err.message === 'cover-upload-failed'
-          ? 'The trek was saved, but the cover image failed to upload. Try re-uploading it.'
+        err instanceof UploadError
+          ? `The trek was saved, but the cover image did not upload. ${err.message}`
           : 'Something went wrong. Please try again.';
       toast.error(message);
     } finally {

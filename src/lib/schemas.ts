@@ -65,6 +65,14 @@ export const profileUpdateSchema = z.object({
     .regex(/^[\d\s+()-]*$/, 'Enter a valid phone number'),
 })
 
+// Company operators have no /profile/edit (that lives under the trekker route
+// group), so /dashboard/account edits just the one field that means anything for
+// them. Same 100-char cap as profileUpdateSchema.fullName, but required — a
+// blank name would leave the team roster showing nothing.
+export const accountNameSchema = z.object({
+  fullName: z.string().trim().min(1, 'Name is required').max(100, 'Must be 100 characters or fewer'),
+})
+
 export const messageSchema = z
   .string()
   .trim()

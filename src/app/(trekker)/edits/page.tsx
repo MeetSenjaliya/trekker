@@ -7,6 +7,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
+import { compressImage } from '@/utils/imageCompression';
+import { uploadErrorMessage } from '@/lib/uploadErrors';
 
 export default function EditProfilePage() {
   const supabase = createClient();
@@ -81,17 +83,18 @@ export default function EditProfilePage() {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
+    const compressed = await compressImage(file);
+
     const fileExt = file.name.split('.').pop() ?? 'png';
     const fileName = `${user.id}.${fileExt}`; // Consistent filename
 
     // Upload file
     const { error: uploadError } = await supabase.storage
       .from('avatars') // Changed to avatars
-      .upload(fileName, file, { upsert: true });
+      .upload(fileName, compressed, { upsert: true });
 
     if (uploadError) {
-      console.error('Upload error:', uploadError);
-      toast.error('Upload failed: ' + uploadError.message);
+      toast.error(await uploadErrorMessage(uploadError, supabase, 'avatars'));
       return;
     }
 

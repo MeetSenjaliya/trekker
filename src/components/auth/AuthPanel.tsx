@@ -106,6 +106,55 @@ const eyeBtn: React.CSSProperties = {
   transition: 'color .2s ease',
 };
 
+type AccountType = 'trekker' | 'company';
+
+function AccountTypeToggle({
+  value,
+  onChange,
+  legend,
+  hint,
+}: {
+  value: AccountType;
+  onChange: (next: AccountType) => void;
+  legend: string;
+  hint: string;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={label}>{legend}</label>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {(['trekker', 'company'] as const).map((kind) => {
+          const active = value === kind;
+          return (
+            <button
+              key={kind}
+              type="button"
+              onClick={() => onChange(kind)}
+              style={{
+                flex: 1,
+                appearance: 'none',
+                cursor: 'pointer',
+                borderRadius: 11,
+                padding: '11px 12px',
+                fontFamily: 'var(--font-hanken), sans-serif',
+                fontSize: 13.5,
+                fontWeight: 600,
+                transition: 'all .2s ease',
+                background: active ? 'rgba(96,165,250,0.14)' : 'rgba(255,255,255,0.04)',
+                border: `1.5px solid ${active ? ACCENT : 'rgba(255,255,255,0.12)'}`,
+                color: active ? '#eef3fa' : '#7e90a8',
+              }}
+            >
+              {kind === 'trekker' ? 'A trekker' : 'A trek company'}
+            </button>
+          );
+        })}
+      </div>
+      <p style={{ margin: '8px 0 0', fontSize: 12, color: '#7e90a8', lineHeight: 1.5 }}>{hint}</p>
+    </div>
+  );
+}
+
 const covers: Record<Mode, { kicker: string; title: string; sub: string }> = {
   login: {
     kicker: 'into the wild',
@@ -126,8 +175,19 @@ const covers: Record<Mode, { kicker: string; title: string; sub: string }> = {
 
 export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mode }) {
   const [mode, setMode] = useState<Mode>(initialMode);
-  const [login, setLogin] = useState({ email: '', password: '', rememberMe: false });
-  const [signup, setSignup] = useState({ fullName: '', email: '', password: '', agree: false });
+  const [login, setLogin] = useState({
+    email: '',
+    password: '',
+    rememberMe: false,
+    accountType: 'trekker' as AccountType,
+  });
+  const [signup, setSignup] = useState({
+    fullName: '',
+    email: '',
+    password: '',
+    agree: false,
+    accountType: 'trekker' as AccountType,
+  });
   const [forgotEmail, setForgotEmail] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPw, setShowPw] = useState(false);
@@ -153,14 +213,31 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
     setErrors({});
     setSubmitting(true);
     try {
-      const { signIn } = await import('@/lib/auth');
-      const { user, error } = await signIn({ email: login.email, password: login.password });
-      if (error) {
+      const asCompany = login.accountType === 'company';
+      const { signInAs } = await import('@/lib/auth');
+      const { user, error, mismatch } = await signInAs({
+        email: login.email,
+        password: login.password,
+        accountType: login.accountType,
+      });
+      if (mismatch) {
+        // Says only that no account of the picked kind exists — confirming
+        // "that's a company account" would let anyone holding the credentials
+        // probe which kind an email is registered as.
+        toast.error(
+          asCompany
+            ? 'No company account found with that email.'
+            : 'No trekker account found with that email.'
+        );
+      } else if (error) {
         toast.error(`Login failed: ${error.message}`);
       } else if (user) {
         toast.success('Login successful!');
+        // Company accounts have no trekker home to land on — send them to the
+        // dashboard, which routes them onward to /company/apply if they haven't
+        // registered a company yet.
         // Delay the hard redirect so the toast is visible before navigation wipes it.
-        setTimeout(() => { window.location.href = '/'; }, 800);
+        setTimeout(() => { window.location.href = asCompany ? '/dashboard' : '/'; }, 800);
         return;
       }
     } catch (err) {
@@ -197,12 +274,17 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
         email: signup.email,
         password: signup.password,
         fullName: signup.fullName,
+        accountType: signup.accountType,
       });
       if (error) {
         toast.error(`Signup failed: ${error.message}`);
       } else if (user) {
-        toast.success('Account created! Check your email to verify your account.');
-        setSignup({ fullName: '', email: '', password: '', agree: false });
+        toast.success(
+          signup.accountType === 'company'
+            ? 'Account created! Verify your email, then sign in to register your company.'
+            : 'Account created! Check your email to verify your account.'
+        );
+        setSignup({ fullName: '', email: '', password: '', agree: false, accountType: signup.accountType });
         setTimeout(() => go('login'), 1200);
       }
     } catch (err) {
@@ -239,6 +321,8 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
 
   const coverRight = mode === 'signup';
   const cover = covers[mode];
+  const isCompanySignup = signup.accountType === 'company';
+  const isCompanyLogin = login.accountType === 'company';
   const prompt = coverRight
     ? { q: 'Already roped in?', cta: 'Sign in', action: () => go('login') }
     : { q: 'New to the unknown?', cta: 'Create account', action: () => go('signup') };
@@ -450,7 +534,22 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
         >
           <div style={{ width: '100%', maxWidth: 344 }}>
             <div style={heading}>Welcome back</div>
-            <div style={subheading}>The trail&apos;s been waiting. Sign in to keep going.</div>
+            <div style={{ ...subheading, marginBottom: 20 }}>
+              {isCompanyLogin
+                ? 'Sign in to manage your company’s treks and departures.'
+                : 'The trail’s been waiting. Sign in to keep going.'}
+            </div>
+
+            <AccountTypeToggle
+              value={login.accountType}
+              onChange={(kind) => { setLogin({ ...login, accountType: kind }); setErrors({}); }}
+              legend="I’m signing in as"
+              hint={
+                isCompanyLogin
+                  ? 'Takes you to your company dashboard. Company accounts don’t book treks.'
+                  : 'Takes you to your trails, bookings and batch chats.'
+              }
+            />
 
             <div style={fieldWrap}>
               <label style={label}>Email</label>
@@ -570,15 +669,33 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
         >
           <div style={{ width: '100%', maxWidth: 344 }}>
             <div style={heading}>Start the climb</div>
-            <div style={{ ...subheading, marginBottom: 26 }}>Create an account and chase the unknown with us.</div>
+            <div style={{ ...subheading, marginBottom: 20 }}>
+              {isCompanySignup
+                ? 'Create a company account to list and manage your own treks.'
+                : 'Create an account and chase the unknown with us.'}
+            </div>
+
+            {/* Account kind is permanent — profiles.account_type is pinned by a DB
+                trigger once handle_new_user() stamps it, so there is no "switch
+                later" path and the choice has to be made honestly up front. */}
+            <AccountTypeToggle
+              value={signup.accountType}
+              onChange={(kind) => { setSignup({ ...signup, accountType: kind }); setErrors({}); }}
+              legend="I’m signing up as"
+              hint={
+                isCompanySignup
+                  ? 'You’ll register your company details after verifying your email. Company accounts don’t book treks.'
+                  : 'Book treks, join batch chats and track your trail history.'
+              }
+            />
 
             <div style={{ marginBottom: 15 }}>
-              <label style={label}>Full name</label>
+              <label style={label}>{isCompanySignup ? 'Your name' : 'Full name'}</label>
               <input
                 className="trk-in"
                 type="text"
                 autoComplete="name"
-                placeholder="Maya Rivers"
+                placeholder={isCompanySignup ? 'Maya Rivers (account owner)' : 'Maya Rivers'}
                 value={signup.fullName}
                 onChange={(e) => { setSignup({ ...signup, fullName: e.target.value }); clearErr('fullName'); }}
                 style={input}

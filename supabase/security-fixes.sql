@@ -635,3 +635,520 @@ using (
   and not public.batch_has_participants(trek_batches.id)
   and not public.batch_has_conversation(trek_batches.id)
 );
+
+
+-- ============================================================================
+-- RATE LIMITING — core write paths (2026-08-05)
+-- ----------------------------------------------------------------------------
+-- Three uncapped write paths, each with a real cost: chat flood (unbounded
+-- inserts into conversation_messages), join/leave email amplification (one
+-- cycle fires notify_trek_participation() twice — two emails to real people),
+-- and account enumeration via invite_company_member() (it answers whether an
+-- email has a Trekker account).
+--
+-- WHY POSTGRES AND NOT A ROUTE HANDLER: the publishable key ships in the client
+-- bundle, so a limit enforced in Next.js is bypassed by calling PostgREST
+-- directly. WHY TRIGGERS AND NOT RPC BODIES: these tables carry a direct client
+-- INSERT policy alongside their RPC ("Users can join treks"), so a guard placed
+-- only in join_trek_and_chat() is skipped by inserting into the table.
+--
+-- WHY A STATEMENT TRIGGER FOR CHAT: a per-row RLS WITH CHECK cannot see the
+-- other rows of its own statement, so PostgREST's array insert would pass 1000
+-- messages through a check that reads a count of 0 every time.
+--
+-- HOW LIMITS ARE COUNTED: from real rows where the evidence survives (chat —
+-- messages are soft-deleted, never removed), from the append-only rate_events
+-- log where it does not (a left trek deletes its row; a failed lookup writes
+-- nothing). rate_events has RLS on with zero policies and grants revoked, so a
+-- user can neither read their counter nor delete it to reset a limit.
+--
+-- CRITICAL — invite_company_member's "no account found" branch had to change
+-- from `raise` to `return jsonb`: a raised exception rolls back the rate_events
+-- row recording the attempt, so every failed probe erased its own evidence and
+-- the limit counted nothing. The distinct not_found answer is KEPT on purpose
+-- (it is how an admin learns they typed the address wrong); capped at 20/hour
+-- the bulk-enumeration value is gone.
+--
+-- Verified against live constraints that favorites / trek_reviews /
+-- company_members / trek_batches / companies are already bounded by unique
+-- indexes and need nothing.
+--
+-- Applied + verified live 2026-08-05 (rate_events RLS on / 0 policies / no
+-- select for anon+authenticated; both triggers present with the right timing;
+-- invite_company_member replaced; cron job 'prune-rate-events' jobid 2).
+-- Full SQL in supabase/phases/rate-limiting.sql; folded into
+-- supabase/schema.sql §13 (+ the §12 invite_company_member body).
+-- Storage-upload limits followed as Phase 2, below.
+-- ============================================================================
+
+
+-- ============================================================================
+-- RATE LIMITING PHASE 2 — STORAGE UPLOADS (2026-08-05)
+-- ============================================================================
+-- PROBLEM: every bucket had file_size_limit = null and allowed_mime_types =
+-- null, so the only ceiling on an upload was Supabase's global 50MB and any
+-- content type was accepted, with no per-user cap on how many. compressImage()
+-- runs in the browser and is skipped entirely by calling the Storage API
+-- directly with the publishable key. Unbounded ingest = unbounded spend.
+--
+-- TWO LAYERS, because they stop different things. Layer A alone still allows
+-- 10,000 x 3MB; Layer B alone still allows 6 x 50MB.
+--   A. Bucket config (3 MiB + jpeg/png/webp on avatars, trek-reviews,
+--      company-logos, trek-images) — caps ONE upload, at the storage-api edge,
+--      before the bytes are stored. 3 MiB rather than tighter because
+--      compressImage() returns the ORIGINAL file when compression fails.
+--   B. AFTER INSERT OR UPDATE FOR EACH ROW trigger on storage.objects —
+--      6 uploads/hour/user, 20 for trek-reviews.
+--
+-- INSERT OR UPDATE, not INSERT: avatars write to the fixed path {uid}.{ext}
+-- with upsert:true, so after the first upload every avatar write is an UPDATE.
+-- An INSERT-only guard would have left the single worst path (no compression,
+-- fixed path, unbounded repeat) completely unguarded. storage-api issues a new
+-- `version` per real upload, so the version check stops renames and
+-- metadata-only touches from consuming budget.
+--
+-- Counted in rate_events, not from storage.objects: avatars are one row forever
+-- and review photos are user-deletable, so the object table is not a truthful
+-- counter in exactly the two places that matter.
+--
+-- A trigger and not four RLS WITH CHECK predicates: a WITH CHECK cannot record
+-- an attempt (a side-effecting function in a policy is evaluated an unspecified
+-- number of times), the four INSERT policies do not cover the UPDATE path
+-- avatars actually uses, and a trigger raises a real message where a failed
+-- check gives the client an opaque 42501.
+--
+-- trek-reviews is carved out at 20/hour because the review form is `multiple`
+-- with no file count cap and uploads every photo in one Promise.all — at 6 a
+-- single legitimate 8-photo submission would fail partway through its own
+-- submit.
+--
+-- The function lives in public, not storage: `postgres` holds TRIGGER on
+-- storage.objects (so the trigger is creatable even though the table is owned
+-- by supabase_storage_admin) but NOT CREATE on the storage schema.
+--
+-- trek-profile deliberately left uncapped: 14 legacy objects, no policies, no
+-- client write path — nothing can upload to it.
+--
+-- Applied + verified live 2026-08-05 (4 buckets at 3145728 + 3 mime types with
+-- trek-profile null; trigger tgtype=21 = ROW+INSERT+UPDATE, AFTER, enabled;
+-- enforce_storage_rate_limit SECURITY DEFINER owned by postgres with
+-- search_path pinned; rate_events still 0 policies and unreadable by
+-- anon+authenticated).
+-- Full SQL in supabase/phases/rate-limiting-storage.sql; folded into
+-- supabase/schema.sql §13.4 + the bucket caps in §9 and §12.7.
+-- ============================================================================
+
+
+-- ============================================================================
+-- DRIFT FIX — missing avatars / trek-reviews SELECT policies (2026-08-05)
+-- ============================================================================
+-- NOT a new rule: schema.sql §9 has documented both of these policies since the
+-- storage section was written, but neither existed on the live database. Live
+-- pg_policies had SELECT policies for company-logos and trek-images only.
+--
+-- SYMPTOM: avatar upload failed with a 400 and
+--   ERROR: new row violates row-level security policy for table "objects"
+-- while the INSERT policy was present and its predicate evaluated true for the
+-- exact path being written.
+--
+-- MECHANISM: supabase-js .upload() makes storage-api run INSERT … RETURNING *,
+-- and under RLS a RETURNING clause evaluates SELECT policies against the new
+-- row. No SELECT policy for `authenticated` on that bucket => the write is
+-- rejected. It hid for a long time because both buckets are public = true, so
+-- *displaying* an avatar is served by the CDN without consulting RLS at all —
+-- only the write path was broken.
+--
+-- Found by correlating the storage log (POST 400) with the postgres log (the
+-- RLS ERROR) after the rate-limit caps were wrongly suspected. Neither the
+-- 3 MiB cap (413) nor the MIME allowlist (415) nor the rate trigger (fires
+-- after RLS, and rate_events was empty) could produce that error.
+--
+-- Applied + verified live 2026-08-05: pg_policies now shows four SELECT
+-- policies on storage.objects — avatars, trek-reviews, company-logos,
+-- trek-images — each authenticated-only and scoped to its bucket.
+-- Full SQL in supabase/phases/fix-missing-avatar-select-policies.sql.
+-- schema.sql needed no change: it was already correct; the database was not.
+-- ============================================================================
+
+
+-- ============================================================================
+-- FIX — storage rate limit was inert; identity now from new.owner (2026-08-05)
+-- ============================================================================
+-- The Phase 2 upload cap shipped and did nothing. A real avatar upload
+-- committed a 1.84 MB object to storage.objects and public.rate_events gained
+-- no row, so the limit stopped nothing while every structural check passed:
+-- trigger present, tgenabled='O', tgtype=21, function SECURITY DEFINER owned by
+-- postgres with search_path pinned.
+--
+-- ROOT CAUSE, found by instrumenting the trigger with an unconditional debug
+-- write placed ahead of the null guard (supabase/phases/
+-- diagnose-storage-rate-limit.sql). One upload produced:
+--   tg_op=INSERT  bucket=avatars  uid=NULL  session_replication_role=origin
+-- So the trigger fires normally — auth.uid() is simply NULL inside it on the
+-- storage-api path. RLS policies on the SAME INSERT do resolve auth.uid()
+-- (proved by the earlier "new row violates row-level security policy" error),
+-- so the claims GUC is present for policy evaluation but not in the trigger's
+-- execution context. Every upload therefore hit the "service-role write" null
+-- guard and returned early.
+--
+-- FIX: v_uid := coalesce(new.owner, auth.uid()). storage-api populates
+-- storage.objects.owner from the JWT sub on every upload — verified live:
+-- avatars 6/7 rows carry an owner (the 1 null is the seeded image.jpg),
+-- trek-reviews 11/11. The client cannot forge it; the Storage API sets it
+-- server-side and the storage schema is not exposed through PostgREST. The
+-- null guard stays so ownerless service-role and seeded writes are never
+-- blocked. auth.uid() is retained as a coalesce fallback.
+--
+-- Applied + verified live 2026-08-05 END TO END: a real avatar upload produced
+-- rate_events(action='upload', actor=662d9204-…) at 12:43:55. rate_debug
+-- dropped; function confirmed to contain the coalesce and remain SECURITY
+-- DEFINER with search_path pinned.
+--
+-- PROCESS LESSON: structural verification cannot distinguish a working trigger
+-- from an inert one. The first version passed every pg_trigger/pg_proc check
+-- and guarded nothing. Any guard on a path the app actually uses must be
+-- confirmed by a real write before it is recorded as done — and the two
+-- existing rate-limit triggers were not evidence for this one, because they
+-- fire on PostgREST writes where the claims GUC IS present.
+-- Full SQL in supabase/phases/fix-storage-rate-limit-owner.sql; folded into
+-- supabase/schema.sql §13.4.
+-- ============================================================================
+
+
+-- ============================================================================
+-- ACCOUNT TYPES — company accounts cannot act as trekkers (applied 2026-08-06)
+-- ============================================================================
+-- PROBLEM: there was one account model. Every auth user was a full trekker, and
+-- "being a company" was purely additive (a company_members row). A company
+-- owner could therefore join their own or a competitor's treks, favourite,
+-- enter batch chats and post reviews — with no separation between the operator
+-- side and the customer side of the platform.
+--
+-- FIX: profiles.account_type ('trekker' | 'company'), set at signup and pinned
+-- against self-edit, with every restriction routed through one predicate:
+--
+--   is_trekker()  :=  account_type = 'trekker'  OR  is_platform_admin()
+--
+--   * join_trek_and_chat() raises 'Company accounts cannot join treks'
+--   * trek_participants + favorites INSERT policies require is_trekker()
+--   * apply_for_company() requires account_type = 'company'
+--   * trg_protect_profile_account_type pins the column on UPDATE
+--
+-- Reviews needed no rule: "Users can review treks they joined" already requires
+-- participation. conversation_participants INSERT is service_role-only.
+--
+-- WHY THE PIN MATTERS: "Users can update own profile" is a plain own-row UPDATE
+-- policy. Without the trigger, every rule above is bypassed by one PATCH
+-- setting account_type='trekker' — the app would enforce nothing.
+--
+-- TRIGGER SUBTLETY (caught pre-apply): the first draft copied
+-- protect_company_admin_fields' `if not is_platform_admin()` shape. auth.uid()
+-- is NULL in the SQL Editor, so that check evaluates FALSE there and the pin
+-- would have silently reverted the manual corrections it exists to allow. The
+-- shipped version gates on `auth.uid() is not null` first; no client can reach
+-- that branch because the profiles UPDATE policy is `to authenticated`.
+--
+-- VERIFICATION STATUS — structural + data only, at time of writing:
+--   PASS  column NOT NULL default 'trekker'; trigger enabled; is_trekker() is
+--         SECURITY DEFINER with search_path pinned; execute revoked from anon,
+--         granted to authenticated; both policies show is_trekker() in WITH
+--         CHECK; all three function bodies contain their guard.
+--   PASS  backfill: 2 company / 2 trekker profiles, 0 company_members rows left
+--         as trekker.
+--   NOT VERIFIED  runtime behaviour. The read-only MCP role cannot execute
+--         is_trekker() (permission denied — itself evidence the revoke works)
+--         and cannot SET ROLE, so it cannot impersonate a company account. Per
+--         the storage rate-limit lesson below, structural checks cannot
+--         distinguish a working guard from an inert one. The impersonation
+--         block in supabase/phases/phase-f-account-types.sql must be run from
+--         the SQL Editor against a NON-ADMIN company account before this is
+--         treated as proven.
+--
+-- KNOWN INTERMEDIATE STATE: apply_for_company() now rejects every existing user,
+-- because nothing sets account_type='company' at signup until the AuthPanel
+-- toggle ships. Do not deploy to main between these steps.
+--
+-- Full SQL in supabase/phases/phase-f-account-types.sql; folded into
+-- supabase/schema.sql §14.
+-- ============================================================================
+
+
+-- ============================================================================
+-- FIX: company_members INSERT policy let an admin add ANY account to their team
+--      + invite → accept, so conversion needs consent (applied 2026-08-06)
+-- ============================================================================
+-- THE BYPASS. The INSERT policy on company_members was
+--     with check (public.is_company_admin(company_id) and role = 'staff')
+-- It constrained the company and the role but NOT user_id. The publishable key
+-- ships in the client bundle, so any owner/admin of any approved company could
+-- POST /rest/v1/company_members with an arbitrary user_id and add a stranger to
+-- their team, skipping invite_company_member() entirely — a one-liner in a
+-- browser console. On its own that is a nuisance: an unwanted membership, which
+-- the victim could not see (company_members SELECT is member-scoped) but which
+-- also cost them nothing.
+--
+-- WHY IT BECAME SERIOUS. The account-type split (§14) made account_type
+-- immutable, which left a trekker who wants to join a company team with no way
+-- across; the chosen design is that accepting an invite converts the account.
+-- Layer that on the policy above and the same one-liner silently turns a
+-- stranger's trekker account into a company account: no invite, no consent, no
+-- undo short of a platform admin. The consent step being built in the same
+-- phase would have been decorative while a write path existed that skips it.
+--
+-- FIX. Drop the policy and revoke the INSERT grant, leaving the two SECURITY
+-- DEFINER RPCs as the only way a membership is ever created:
+--   apply_for_company()      — the owner row, already definer-only
+--   accept_company_invite()  — the invited member, after they consent
+-- Verified before dropping that no app code inserts into company_members
+-- directly (getMyCompanies and the dashboard layout only read; updateMemberRole
+-- and removeMember use the UPDATE/DELETE policies, which are untouched — those
+-- are reversible acts on a membership the admin can already see, and they still
+-- carry role <> 'owner' and user_id <> auth.uid()).
+--
+--   drop policy if exists "company admins invite staff" on public.company_members;
+--   revoke insert on public.company_members from anon, authenticated;
+--
+-- THE CONSENT STEP. New company_invites table (company_id, lowercased email,
+-- invited_by, role, status pending|accepted|declined|revoked, expires_at +14d;
+-- partial unique index on (company_id, lower(email)) where pending).
+-- invite_company_member() now writes a pending invite — it keeps its
+-- is_company_admin() gate, its 20/hour rate_events cap and its RETURNED (not
+-- raised) not_found — and accept_company_invite() does the conversion.
+--
+-- NO TOKEN, NO EMAIL, on purpose: the invite already required the person to
+-- have a Trekker account (it resolves them in profiles by email), so the invite
+-- is shown to them at /invites when they sign in. A hashed token + a mail step
+-- is what inviting people WITHOUT accounts would need; the deployed edge
+-- functions are trek notifications, not transactional mail.
+--
+-- WHAT accept_company_invite() CHECKS, all derived server-side:
+--   * caller authenticated, and has an email on their profile;
+--   * the invite is pending, unexpired, and addressed to the caller's OWN
+--     profiles.email — so an invite id is not a bearer token;
+--   * branches on the RAW account_type, deliberately NOT is_trekker(): that
+--     returns true for platform admins whatever their column says, which would
+--     send an admin who is already a company account down the conversion
+--     branch. An account that is already 'company' just gains the membership,
+--     so dropping the INSERT policy does not silently remove the ability to add
+--     an existing company account to a second team;
+--   * for a trekker, refuses while they hold ANY participation on a batch dated
+--     today or later. WAITLISTED counts, not just confirmed — a converted
+--     account cannot open /messages, and promote_waitlist_on_leave() promotes
+--     FIFO without consulting account_type, so a waitlisted row is a booking
+--     that can activate itself after the conversion and strand them in a chat
+--     they can no longer reach.
+--
+-- THE PIN'S ESCAPE HATCH. §14's trg_protect_profile_account_type is extended,
+-- not worked around, exactly as that phase said it would have to be. The RPC
+-- sets a transaction-local GUC and the trigger honours it:
+--     if coalesce(current_setting('app.account_type_change', true), '') = 'allow'
+--       then return new; end if;
+-- This is safe only because PostgREST gives clients no way to call set_config —
+-- it lives in pg_catalog, not the exposed API schema, and the only GUCs a
+-- request can influence are the request.* ones PostgREST sets itself. The RPC
+-- sets it immediately before its UPDATE and clears it immediately after, and
+-- hard-codes 'company' inside the account_type='trekker' branch, so there is no
+-- expression anywhere that could move an account the other way. If a future
+-- change ever exposes an RPC taking a GUC name, the §14 pin is gone and with it
+-- every rule that depends on account_type.
+--
+-- VERIFICATION STATUS — structural, verified live via read-only MCP 2026-08-06:
+--   PASS  company_invites exists, RLS on, exactly ONE policy (SELECT); both
+--         partial indexes present with the right predicates.
+--   PASS  company_members now has 3 policies (r/w/d) and NO insert policy;
+--         has_table_privilege('authenticated','company_members','insert') = f.
+--   PASS  company_invites: insert = f and select = t for authenticated;
+--         select = f for anon.
+--   PASS  all six functions SECURITY DEFINER with search_path pinned; the four
+--         new ones are authenticated-only (anon execute = f); the pin trigger is
+--         present and its body contains the GUC branch.
+--
+-- VERIFICATION STATUS — behavioural, run from the SQL Editor 2026-08-06 against
+-- a NON-ADMIN company owner and a NON-ADMIN trekker (blocks A–F, all rolled
+-- back; both post-checks came back clean and the disabled triggers restored):
+--   PASS  A  invite returns an invite_id and creates NO company_members row.
+--   PASS  B  direct insert into company_members → 42501 permission denied. Note
+--            the code: it is a GRANT denial, not "violates row-level security",
+--            so the revoke is what stops it and re-adding a policy alone cannot
+--            reopen the path.
+--   PASS  C  accept ran to completion — status='accepted' is written by the LAST
+--            statement in the RPC, after the account_type flip and the
+--            membership insert, so both of those succeeded.
+--   PASS  D  a plain `update profiles set account_type='company'` by a trekker
+--            is still pinned back to 'trekker'. The GUC hatch did NOT leak — it
+--            is reachable only from inside the RPC, as designed. This also
+--            behaviourally proves §14's pin, which had been structural-only.
+--   PASS  E  a CONFIRMED booking on a batch dated >= today blocks conversion
+--            (raised at the upcoming-trek check, i.e. past the invite lookup —
+--            so the own-email match works in the accepting direction too).
+--   PASS  E2 a WAITLISTED booking blocks it identically. This is the deviation
+--            from the original plan ("confirmed" only) and it holds.
+--   PASS  F  a third party cannot accept — but weakly: F passed the invite id via
+--            a subquery over company_invites, which RLS hides from a non-member,
+--            so it may have passed NULL and raised for the right reason by
+--            accident. Both outcomes are safe; F2 below settles it.
+--   PASS  F2 the STRONG form of the claim. The invite id is captured while
+--            impersonating the admin and held in a plpgsql variable across the
+--            identity switch, so RLS never gets to filter it and the ownership
+--            check in accept_company_invite() is the only thing that can reject.
+--            It rejected. Invite ids are not bearer tokens: knowing one is not
+--            enough to claim it. (The DO block signals PASS by completing
+--            silently — every other path raises, including a deliberate
+--            'FAIL — third party accepted a KNOWN invite id' if the accept ever
+--            succeeds. "Success. No rows returned" IS the pass.)
+--
+-- PRE-EXISTING, NOT INTRODUCED HERE: invite_company_member still carries the
+-- default PUBLIC execute grant (create or replace preserves the original ACL,
+-- and the original never revoked it), so it shows under the anon_… advisor lint
+-- while the four new RPCs do not. Inert for anon — auth.uid() is NULL, so
+-- is_company_admin() is false and it raises before reading anything — but
+--   revoke execute on function public.invite_company_member(uuid, text)
+--     from public, anon;
+-- would close it, alongside the same optional hardening already tracked for
+-- apply_for_company / get_company_members / the is_* helpers.
+--
+-- Full SQL in supabase/phases/phase-g-invite-accept.sql; folded into
+-- supabase/schema.sql §15 (+ §14.3 updated in place for the hatch).
+-- ============================================================================
+
+
+-- ============================================================================
+-- FROZEN COMPANIES — rejected / suspended tenants are read-only
+-- Applied + verified live 2026-08-08
+-- ============================================================================
+-- THE HOLE. Company status gated READS and nothing else. is_trek_visible()
+-- hid an unapproved company's catalogue, so rejecting or suspending a company
+-- looked like it worked from the outside — the treks vanished from Explore. But
+-- every company-scoped WRITE policy asked only "is the caller a member?"
+-- (is_company_member / is_company_admin, no status test anywhere). A rejected or
+-- suspended company therefore kept full write access to its own tenant: invite
+-- staff, change roles, remove members, rewrite its public storefront copy,
+-- archive/restore treks, add and delete departures. Suspension was a read-side
+-- illusion.
+--
+-- Two of those matter beyond the tenant:
+--
+--   1. THE INVITE PATH. accept_company_invite() converts a trekker account to a
+--      company account, and only a platform admin can convert it back. Invites
+--      issued while a company was approved stay live rows after it is rejected,
+--      so a stale invite offered a trekker an IRREVERSIBLE account change in
+--      exchange for a seat on a tenant that could do nothing at all. Gating the
+--      invite RPC alone would not have closed this — the check had to go at
+--      ACCEPT time, which is where it now is.
+--
+--   2. THE PUBLIC BUCKETS. company-logos and trek-images are public. A frozen
+--      company could overwrite its logo and cover at the SAME storage paths the
+--      storefront already links to, so the CDN served new bytes at the old URL
+--      with no companies row ever changing. Table-level gates alone would have
+--      left that open.
+--
+-- Also closed here: /dashboard/treks/new hid the create form behind
+-- status = 'approved' and its comment claimed the treks INSERT policy enforced
+-- it. It did not — the policy was is_company_member(company_id). The publishable
+-- key ships in the client bundle, so a direct POST /rest/v1/treks from a pending
+-- or suspended company's admin succeeded. The UI gate had nothing behind it.
+--
+-- THE FIX. Two tiers, because "not approved yet" and "approval withdrawn" are
+-- different situations:
+--   is_company_writable()        pending + approved   settings, team, logos
+--   is_approved_company_member() approved only        treks, batches, trek images
+-- New helper is_company_writable(); is_approved_company_member() already existed
+-- (orphaned since the multi-tenant migration) and finally has callers. Bare
+-- is_company_member / is_company_admin in a WRITE policy is now a bug — it
+-- silently un-freezes a rejected tenant.
+--
+-- SELECT is deliberately NOT status-gated anywhere: is_trek_visible() already
+-- handles read visibility, and staff plus users who already hold bookings must
+-- keep reading a hidden trek. Nor are the is_platform_admin() arms — freezing
+-- must not lock out the role that un-freezes. Participant flows are untouched:
+-- join_trek_and_chat() and the waitlist/count triggers are SECURITY DEFINER, so
+-- no existing booking or chat on a suspended company's trek is affected.
+--
+-- Not gated, deliberately: revoke_company_invite() and decline_company_invite()
+-- are de-escalating. Revoking only retires an invite that the accept-time check
+-- has already made unacceptable, so blocking it buys nothing.
+--
+-- NON-DESTRUCTIVE: no data deleted or rewritten, only policies and two function
+-- bodies replaced. Re-approving a company restores every capability with no
+-- backfill.
+--
+-- ---- VERIFIED LIVE 2026-08-08 ----------------------------------------------
+-- Structural: is_company_writable exists, DEFINER, stable, search_path pinned;
+-- EXECUTE granted to authenticated on both helpers; the writable predicate
+-- matches status on every companies row; all 14 non-SELECT policies across
+-- companies / company_members / treks / trek_batches / storage.objects mention a
+-- status-aware helper, at the intended tier (treks + trek_batches + trek-images
+-- = approved-only; companies + company_members + company-logos = writable).
+--
+-- Behavioural — impersonating a real company OWNER who is NOT a platform admin
+-- (is_platform_admin() = false, confirmed in the same query, so no false PASS
+-- via the admin arm). That user happens to own both an approved and a rejected
+-- company, which gives a matched control pair on one identity:
+--   PASS  approved  → is_company_admin t, is_company_writable t,
+--                     is_approved_company_member t
+--   PASS  rejected  → is_company_admin t (membership is NOT what differs),
+--                     is_company_writable f, is_approved_company_member f
+--   PASS  invite_company_member(rejected_company) → {"error":"company_frozen"},
+--         returning before any write.
+--   PASS  invite_company_member(approved_company) → reached the rate_events
+--         INSERT (blocked only by the read-only connection: "cannot execute
+--         INSERT in a read-only transaction", line 25). This is the
+--         over-blocking control — it proves the new gate lets an approved
+--         company through rather than refusing everyone.
+--
+-- STILL UNRUN (needs a write-capable session; blocks B/D/F in the phase file):
+-- the RLS refusals as actual DML (UPDATE 0 on companies/treks, INSERT refused on
+-- trek_batches), the accept_company_invite() frozen branch end-to-end, the
+-- storage write policies, and "a platform admin is not frozen out". The
+-- predicates behind all of them are verified above and the policies are
+-- confirmed to reference those predicates, but that is one step short of a real
+-- write attempt.
+--
+-- Full SQL + verification blocks: supabase/phases/phase-h-frozen-companies.sql
+-- Folded into supabase/schema.sql §16 (DDL in place at §12.4/12.6/12.7, 15.3, 15.5).
+-- ============================================================================
+
+
+-- ============================================================================
+-- STORAGE RATE LIMIT — the guard worked, the user was told the wrong thing
+-- (2026-08-08, applied + verified live)
+-- ============================================================================
+-- Not a hole; a hardening step that was unusable in practice. The 6/hour upload
+-- cap (§13.4) rejected the 7th upload correctly — 6 rate_events rows, the raise
+-- verbatim in the Postgres log, POST /object/avatars/... -> 500 in the storage
+-- log — but the user saw "The image failed to upload. Please try again."
+--
+-- storage-api does not forward a database error message to the client. It
+-- answers 500 with a body of `{}`, so supabase-js builds its StorageApiError
+-- message from JSON.stringify(body) — literally "{}". The client-side mapping
+-- in src/lib/uploadErrors.ts matched on the raise text, which never arrives.
+--
+-- No errcode fixes this: storage-api maps 42501 to its own hardcoded RLS text
+-- and 23505/23503 to key/bucket errors, everything else to an opaque 500.
+--
+-- WHY THIS IS A SECURITY-ADJACENT ENTRY AND NOT A UX ONE: a rate limit the user
+-- cannot distinguish from a transient failure trains them to retry, which is
+-- the exact behaviour the cap exists to suppress, and it hides from the
+-- operator that the cap is being hit at all.
+--
+-- FIX — public.upload_rate_limited(p_bucket text), a read-only SECURITY DEFINER
+-- probe the client calls ONLY after an upload has already failed with an
+-- unrecognised error. It consumes no budget, so probing after a rejection
+-- cannot push the caller further into the limit.
+--
+-- DISCLOSURE BOUNDARY: it returns one boolean about the caller's own counter.
+-- rate_events keeps RLS on with zero policies and revoked grants, so no count,
+-- timestamp or other actor is reachable. EXECUTE granted to authenticated only;
+-- anon is revoked (and would get `false` anyway — auth.uid() is null).
+-- The bucket -> (action, limit) mapping moved into storage_rate_rule() so the
+-- enforcer and the probe cannot drift apart; that helper is revoked from every
+-- client role since both callers are DEFINER and owned by postgres.
+--
+-- VERIFIED LIVE 2026-08-08: upload_rate_limited prosecdef = t, provolatile = s,
+-- anon execute = f, authenticated execute = t; storage_rate_rule execute denied
+-- to anon + authenticated; end-to-end, a rate-limited avatar upload now shows
+-- "You have uploaded too many images in the last hour. Please try again later."
+--
+-- Full SQL + verification blocks: supabase/phases/fix-storage-rate-limit-message.sql
+-- Folded into supabase/schema.sql §13.4 (storage_rate_rule) + §13.5 (probe).
+-- ============================================================================

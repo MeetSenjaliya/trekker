@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Menu, X, Bell, Search, User, LogOut } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { useMyCompanies, usePlatformAdmin } from '@/lib/queries';
+import { useMyCompanies, usePlatformAdmin, useIsTrekker, useMyInvites } from '@/lib/queries';
 
 const Header = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -15,7 +15,15 @@ const Header = () => {
 
   const { data: memberships } = useMyCompanies(user?.id);
   const { data: isAdmin } = usePlatformAdmin(user?.id);
+  const { data: isTrekker } = useIsTrekker(user?.id);
+  const { data: invites } = useMyInvites(user?.id);
   const hasCompany = !!memberships && memberships.length > 0;
+  // Only shown when there's something to act on — /invites is otherwise a page
+  // nobody would think to visit, and an unaccepted invite is invisible.
+  const inviteCount = invites?.length ?? 0;
+  // Undefined while the check is in flight — treat that as "not yet a trekker"
+  // so the customer-side links never flash for a company account.
+  const showTrekkerNav = isTrekker === true;
 
   useEffect(() => {
     const handleScroll = () => {
@@ -70,9 +78,18 @@ const Header = () => {
 
             {user && (
               <>
-                <Link href="/favorites" className={linkStyles}>Favorites</Link>
-                <Link href="/profile" className={linkStyles}>Profile</Link>
-                <Link href="/messages" className={linkStyles}>Messages</Link>
+                {showTrekkerNav && (
+                  <>
+                    <Link href="/favorites" className={linkStyles}>Favorites</Link>
+                    <Link href="/profile" className={linkStyles}>Profile</Link>
+                    <Link href="/messages" className={linkStyles}>Messages</Link>
+                  </>
+                )}
+                {inviteCount > 0 && (
+                  <Link href="/invites" className={linkStyles}>
+                    Invitations ({inviteCount})
+                  </Link>
+                )}
                 {hasCompany && <Link href="/dashboard" className={linkStyles}>Dashboard</Link>}
                 {isAdmin && <Link href="/admin" className={linkStyles}>Admin</Link>}
               </>
@@ -103,7 +120,7 @@ const Header = () => {
             ) : user ? (
               <div className="flex items-center gap-3 border-l border-white/10 pl-4 ml-2">
                 <Link
-                  href="/profile"
+                  href={showTrekkerNav ? '/profile' : '/dashboard/settings'}
                   className="flex items-center gap-2 text-blue-100/80 hover:text-white text-sm font-medium transition-colors"
                 >
                   <div className="bg-gradient-to-tr from-blue-600 to-blue-400 p-0.5 rounded-full">
@@ -169,9 +186,14 @@ const Header = () => {
               {user ? (
                 <>
                   <div className="h-px bg-white/10 my-2"></div>
-                  <Link href="/favorites" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Favorites</Link>
-                  <Link href="/profile" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Profile</Link>
-                  <Link href="/messages" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Messages</Link>
+                  {showTrekkerNav && (
+                    <>
+                      <Link href="/favorites" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Favorites</Link>
+                      <Link href="/profile" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Profile</Link>
+                      <Link href="/messages" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Messages</Link>
+                    </>
+                  )}
+                  {inviteCount > 0 && <Link href="/invites" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Invitations ({inviteCount})</Link>}
                   {hasCompany && <Link href="/dashboard" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Dashboard</Link>}
                   {isAdmin && <Link href="/admin" onClick={() => setIsMenuOpen(false)} className="text-white/80 hover:bg-white/10 px-3 py-2 rounded-lg block">Admin</Link>}
                   <button

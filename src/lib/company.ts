@@ -3,6 +3,14 @@ import { createClient } from '@/utils/supabase/client';
 export type CompanyStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 export type CompanyRole = 'owner' | 'admin' | 'staff';
 
+// Mirrors is_company_writable() in the DB (phase-h-frozen-companies.sql): a
+// rejected or suspended company is read-only, so the dashboard hides its
+// management UI instead of offering actions RLS will refuse. Pending is NOT
+// frozen — applicants set the company up while they wait. Publishing treks is
+// gated separately and more strictly, on status === 'approved'.
+export const isCompanyFrozen = (status: CompanyStatus) =>
+    status === 'rejected' || status === 'suspended';
+
 export interface Company {
     id: string;
     name: string;
@@ -46,6 +54,7 @@ const KNOWN_APPLY_ERRORS = [
     'Slug must be lowercase letters, numbers and hyphens only',
     'Company name is required',
     'Not authenticated',
+    'Only company accounts can apply. Sign up as a trek company instead.',
 ];
 
 /**
@@ -584,11 +593,16 @@ export async function getCompanyMembers(companyId: string): Promise<CompanyMembe
     return (data ?? []) as CompanyMember[];
 }
 
-// invite_company_member() raises these exact messages for expected mistakes.
-const KNOWN_INVITE_ERRORS = [
-    'No Trekker account found with that email',
-    'Only company owners/admins can invite members',
-];
+// invite_company_member() now raises only for authorization. The expected
+// outcomes come back as an `error` code in the payload instead, so the call
+// commits and the rate-limit counter actually records the attempt.
+const INVITE_ERRORS: Record<string, string> = {
+    not_found: 'No Trekker account found with that email',
+    rate_limited: 'Too many invites in the last hour. Please try again later.',
+    already_invited: 'That person already has a pending invite.',
+    company_frozen: "Your company can't invite members right now.",
+};
+const NOT_ADMIN_ERROR = 'Only company owners/admins can invite members';
 
 export async function inviteMember(
     companyId: string,
@@ -603,16 +617,158 @@ export async function inviteMember(
 
     if (error) {
         console.error('Error inviting member:', error);
-        const message = KNOWN_INVITE_ERRORS.includes(error.message)
+        const message = error.message === NOT_ADMIN_ERROR
             ? error.message
             : 'Failed to send the invite. Please try again.';
         return { success: false, message };
     }
 
+    if (data?.error) {
+        return {
+            success: false,
+            message: INVITE_ERRORS[data.error] ?? 'Failed to send the invite. Please try again.',
+        };
+    }
+
     if (data?.already_member) {
         return { success: true, message: 'That person is already on your team.' };
     }
-    return { success: true, message: 'Teammate added.' };
+    return { success: true, message: 'Invite sent.' };
+}
+
+// ---- Invites ---------------------------------------------------------------
+// Accepting an invite converts a trekker account to a company account, so the
+// whole flow is RPC-mediated: company_invites has a SELECT policy for the
+// company and nothing else. The invitee can't read the table at all (they're
+// not a member yet) — getMyInvites goes through get_my_invites(), which also
+// resolves the company and inviter names RLS would hide from them.
+
+export interface CompanyInvite {
+    id: string;
+    email: string;
+    role: CompanyRole;
+    created_at: string;
+    expires_at: string;
+}
+
+/** Live (pending, unexpired) invites for a company. Any member can read them. */
+export async function listCompanyInvites(companyId: string): Promise<CompanyInvite[]> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase
+        .from('company_invites')
+        .select('id, email, role, created_at, expires_at')
+        .eq('company_id', companyId)
+        .eq('status', 'pending')
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error('Error loading company invites:', error);
+        throw new Error('Failed to load pending invites. Please try again.');
+    }
+    return (data ?? []) as CompanyInvite[];
+}
+
+// Messages the invite RPCs raise for expected user situations — written to be
+// shown as-is. Anything else falls back to a generic string, per the "don't
+// leak Supabase error detail" convention.
+const KNOWN_INVITE_ERRORS = [
+    'That invitation is no longer valid',
+    'That invitation is no longer pending',
+    'You have an upcoming trek booked. Leave it before joining a company team.',
+    'Only company owners/admins can revoke invites',
+    'Your account has no email address',
+    'Not authenticated',
+];
+
+// Only the unrecognised errors are logged: the known ones are ordinary outcomes
+// the user is about to be told about, and console.error turns each into a red
+// Console Error panel in dev. The message and code are logged rather than the
+// error object, which the Next dev overlay renders as `{}`.
+function inviteErrorMessage(
+    action: string,
+    error: { message: string; code?: string },
+    fallback: string
+): string {
+    if (KNOWN_INVITE_ERRORS.includes(error.message)) return error.message;
+    console.error(`Error ${action} invite:`, error.code, error.message);
+    return fallback;
+}
+
+export async function revokeInvite(
+    inviteId: string
+): Promise<{ success: boolean; message: string }> {
+    const supabase = createClient();
+
+    const { error } = await supabase.rpc('revoke_company_invite', { p_invite_id: inviteId });
+    if (error) {
+        return {
+            success: false,
+            message: inviteErrorMessage('revoking', error, 'Failed to revoke the invite. Please try again.'),
+        };
+    }
+    return { success: true, message: 'Invite revoked.' };
+}
+
+export interface MyInvite {
+    invite_id: string;
+    company_id: string;
+    company_name: string;
+    company_slug: string;
+    company_logo_url: string | null;
+    role: CompanyRole;
+    invited_by_name: string | null;
+    created_at: string;
+    expires_at: string;
+}
+
+/** Pending invites addressed to the signed-in user. Returns [] when signed out. */
+export async function getMyInvites(): Promise<MyInvite[]> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase.rpc('get_my_invites');
+    if (error) {
+        console.error('Error loading invitations:', error);
+        throw new Error('Failed to load your invitations. Please try again.');
+    }
+    return (data ?? []) as MyInvite[];
+}
+
+/**
+ * Accept an invite. For a trekker account this is destructive and irreversible
+ * from the app: account_type flips to 'company' and the trekker side of the
+ * platform closes. `converted` says whether that happened, so the caller knows
+ * whether to send them to the dashboard or just refresh the team.
+ */
+export async function acceptInvite(
+    inviteId: string
+): Promise<{ success: boolean; message: string; converted?: boolean }> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase.rpc('accept_company_invite', { p_invite_id: inviteId });
+    if (error) {
+        return {
+            success: false,
+            message: inviteErrorMessage('accepting', error, 'Failed to accept the invitation. Please try again.'),
+        };
+    }
+    return { success: true, message: 'Invitation accepted.', converted: data?.converted === true };
+}
+
+export async function declineInvite(
+    inviteId: string
+): Promise<{ success: boolean; message: string }> {
+    const supabase = createClient();
+
+    const { error } = await supabase.rpc('decline_company_invite', { p_invite_id: inviteId });
+    if (error) {
+        return {
+            success: false,
+            message: inviteErrorMessage('declining', error, 'Failed to decline the invitation. Please try again.'),
+        };
+    }
+    return { success: true, message: 'Invitation declined.' };
 }
 
 export async function updateMemberRole(
@@ -694,6 +850,52 @@ export async function isPlatformAdmin(): Promise<boolean> {
         return false;
     }
     return data === true;
+}
+
+/**
+ * Whether the signed-in user may act as a trekker (join/favourite treks, use the
+ * customer-side pages). Company accounts get false; platform admins get true
+ * regardless. Same predicate the RLS policies and join_trek_and_chat use, so the
+ * UI can't promise something the database will refuse.
+ */
+export async function isTrekker(): Promise<boolean> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase.rpc('is_trekker');
+    if (error) {
+        console.error('Error checking account type:', error);
+        return false;
+    }
+    return data === true;
+}
+
+export type AccountType = 'trekker' | 'company';
+
+/**
+ * The signed-in user's raw account kind. Deliberately NOT the same question as
+ * isTrekker(): that one answers "may act as a trekker" and is true for platform
+ * admins whatever their type, which is what the page guards and Join buttons
+ * want. This is the literal column, matching what apply_for_company() gates on —
+ * so an admin who owns a company reads 'company' here and can still apply.
+ * Returns null when signed out or unreadable.
+ */
+export async function getMyAccountType(): Promise<AccountType | null> {
+    const supabase = createClient();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return null;
+
+    const { data, error } = await supabase
+        .from('profiles')
+        .select('account_type')
+        .eq('id', user.id)
+        .maybeSingle();
+
+    if (error) {
+        console.error('Error loading account type:', error);
+        return null;
+    }
+    return (data?.account_type as AccountType | undefined) ?? null;
 }
 
 export interface AdminOverview {

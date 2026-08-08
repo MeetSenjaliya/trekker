@@ -66,7 +66,7 @@ App Router under `src/app/` (`page`, `explore`, `about`, `trek/[id]`, `auth`, `p
 - `src/lib/database.ts` — ⚠️ **DEAD**: wrong tables/columns, nothing imports it. Don't read or use it.
 - `src/app/test/` — ⚠️ Dev/RLS test pages, public in prod, should be removed.
 - `src/lib/joinTrek.ts` — `joinTrekBatchAndChat()` / `leaveTrek()`, the **only** correct join path (→ RPC `join_trek_and_chat`).
-- `src/lib/auth.ts` — `signUp/signIn/signOut/resetPassword/updatePassword/getCurrentUser`.
+- `src/lib/auth.ts` — `signUp/signInAs/signOut/resetPassword/updatePassword/getCurrentUser`. `signInAs()` takes the account kind and only persists a session if it matches.
 - `src/contexts/AuthContext.tsx` — `useAuth(): { user, session, loading, signOut }`.
 - `src/utils/imageCompression.ts` — `compressImage()`, `sanitizeFileName()`.
 - `src/proxy.ts` → `src/utils/supabase/middleware.ts` `updateSession()` — session refresh + route guard.

@@ -2,21 +2,30 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, UserPlus, Trash2, User as UserIcon } from 'lucide-react';
+import { Loader2, UserPlus, Trash2, User as UserIcon, MailX, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { useDashboardCompany } from '@/components/admin/DashboardShell';
-import { useCompanyMembers, queryKeys } from '@/lib/queries';
+import { useCompanyMembers, useCompanyInvites, queryKeys } from '@/lib/queries';
 import { inviteMemberSchema, fieldErrors } from '@/lib/schemas';
-import { inviteMember, updateMemberRole, removeMember } from '@/lib/company';
+import {
+  inviteMember,
+  updateMemberRole,
+  removeMember,
+  revokeInvite,
+  isCompanyFrozen,
+} from '@/lib/company';
 
 export default function TeamPage() {
   const { user } = useAuth();
   const { company, role } = useDashboardCompany();
   const queryClient = useQueryClient();
-  const canManage = role === 'owner' || role === 'admin';
+  const isAdmin = role === 'owner' || role === 'admin';
+  const frozen = !!company && isCompanyFrozen(company.status);
+  const canManage = isAdmin && !frozen;
 
   const { data: members, isLoading, isError } = useCompanyMembers(company?.id);
+  const { data: invites } = useCompanyInvites(canManage ? company?.id : undefined);
 
   const [email, setEmail] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -25,7 +34,10 @@ export default function TeamPage() {
 
   if (!company) return null;
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: queryKeys.companyMembers(company.id) });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.companyMembers(company.id) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companyInvites(company.id) });
+  };
 
   const invite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +71,18 @@ export default function TeamPage() {
     refresh();
   };
 
+  const revoke = async (inviteId: string) => {
+    setBusyId(inviteId);
+    const res = await revokeInvite(inviteId);
+    setBusyId(null);
+    if (!res.success) {
+      toast.error(res.message);
+      return;
+    }
+    toast.success(res.message);
+    refresh();
+  };
+
   const remove = async (memberId: string) => {
     setBusyId(memberId);
     const res = await removeMember(memberId);
@@ -74,6 +98,13 @@ export default function TeamPage() {
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="text-2xl font-bold text-gray-900">Team</h1>
+
+      {isAdmin && frozen && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Team management is unavailable while {company.name} is {company.status} — you
+          can&apos;t invite, promote or remove members. The roster below is unchanged.
+        </p>
+      )}
 
       {canManage && (
         <form onSubmit={invite} className="rounded-2xl border border-gray-200 bg-white p-5" noValidate>
@@ -107,9 +138,48 @@ export default function TeamPage() {
             </button>
           </div>
           <p className="mt-2 text-xs text-gray-500">
-            They must already have a Trekker account. New members join as staff.
+            They must already have a Trekker account. We&apos;ll send them an
+            invitation to accept — joining a company team changes their account,
+            so it&apos;s their call. New members join as staff.
           </p>
         </form>
+      )}
+
+      {canManage && invites && invites.length > 0 && (
+        <div className="rounded-2xl border border-gray-200 bg-white">
+          <div className="flex items-center gap-2 border-b border-gray-100 px-4 py-3">
+            <Clock className="h-4 w-4 text-amber-500" />
+            <h2 className="text-sm font-semibold text-gray-900">
+              Pending invitations ({invites.length})
+            </h2>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {invites.map((invite) => (
+              <li key={invite.id} className="flex flex-wrap items-center gap-4 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-gray-900">{invite.email}</p>
+                  <p className="text-xs text-gray-500">
+                    Invited as {invite.role} · expires{' '}
+                    {new Date(invite.expires_at).toLocaleDateString()}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => revoke(invite.id)}
+                  disabled={busyId === invite.id}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-60"
+                >
+                  {busyId === invite.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <MailX className="h-4 w-4" />
+                  )}
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {isError ? (

@@ -9,6 +9,7 @@ import { joinTrekBatchAndChat } from '@/lib/joinTrek';
 import { toast } from 'sonner';
 import ConfirmationModal from './ConfirmationModal';
 import { getDisplayParticipantCount } from '@/lib/utils';
+import { useIsTrekker } from '@/lib/queries';
 
 interface TrekCardProps {
   id: string;
@@ -81,6 +82,12 @@ const TrekCard: React.FC<TrekCardProps> = ({
   };
 
   const isFull = participants.current >= participants.max;
+
+  // Company accounts browse the catalogue but can't book — join_trek_and_chat
+  // refuses them, so don't offer a button that is guaranteed to error. Signed-out
+  // visitors keep the button; it prompts them to log in.
+  const { data: isTrekker } = useIsTrekker(userId ?? undefined);
+  const canJoin = !userId || isTrekker === true;
 
   const handleJoinTrek = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -227,18 +234,20 @@ const TrekCard: React.FC<TrekCardProps> = ({
         </p>
 
         {/* Action Buttons */}
-        <div className="mt-auto grid grid-cols-2 gap-3">
-          <button
-            onClick={handleJoinTrek}
-            disabled={isFull || joining}
-            className={`py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200 
+        <div className={`mt-auto grid gap-3 ${canJoin ? 'grid-cols-2' : 'grid-cols-1'}`}>
+          {canJoin && (
+            <button
+              onClick={handleJoinTrek}
+              disabled={isFull || joining}
+              className={`py-2.5 px-4 rounded-lg text-sm font-semibold transition-all duration-200
               ${isFull || joining
-              ? 'bg-gray-700 text-gray-400 cursor-not-allowed border border-gray-600'
-              : 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_20px_rgba(37,99,235,0.6)] border border-transparent'
-              }`}
-          >
-            {joining ? 'Joining...' : isFull ? 'Full' : 'Join Now'}
-          </button>
+                ? 'bg-gray-700 text-gray-400 cursor-not-allowed border border-gray-600'
+                : 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] hover:shadow-[0_0_20px_rgba(37,99,235,0.6)] border border-transparent'
+                }`}
+            >
+              {joining ? 'Joining...' : isFull ? 'Full' : 'Join Now'}
+            </button>
+          )}
 
           {/* View Details: Transparent Glass Button */}
           <Link

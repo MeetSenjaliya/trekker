@@ -14,7 +14,7 @@ export default function EditTrekPage() {
 
   // Edit is scoped to the trek's owner, not the sidebar's active company, so a
   // member of multiple companies can edit any of their treks by direct link.
-  const owns = !!trek && companies.some((m) => m.company.id === trek.company_id);
+  const owner = trek ? companies.find((m) => m.company.id === trek.company_id) : undefined;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -37,9 +37,14 @@ export default function EditTrekPage() {
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           This trek couldn&apos;t be found.
         </p>
-      ) : !owns ? (
+      ) : !owner ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           You don&apos;t have access to edit this trek.
+        </p>
+      ) : owner.company.status !== 'approved' ? (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          This trek can&apos;t be edited while {owner.company.name} is{' '}
+          {owner.company.status}.
         </p>
       ) : (
         <TrekForm companyId={trek.company_id} trek={trek} />

@@ -8,6 +8,7 @@ import {
   Mountain,
   Users,
   Settings,
+  UserCircle,
   Building2,
   Loader2,
   Clock,
@@ -128,6 +129,9 @@ const navItems = [
   { href: '/dashboard/treks', label: 'Treks', icon: Mountain, exact: false },
   { href: '/dashboard/team', label: 'Team', icon: Users, exact: false },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
+  // Company settings are owner/admin only; this is the personal-account page
+  // every member needs, since company accounts have no /profile/edit.
+  { href: '/dashboard/account', label: 'My account', icon: UserCircle, exact: false },
 ];
 
 export default function DashboardShell({ children }: { children: React.ReactNode }) {

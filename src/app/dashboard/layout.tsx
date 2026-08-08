@@ -43,7 +43,18 @@ export default async function DashboardLayout({
       ).map((c) => c.status)
   );
 
-  if (statuses.length === 0) redirect('/company/apply');
+  // No membership: only a company account can do anything about that, since
+  // apply_for_company() now rejects trekkers. Sending a trekker to /company/apply
+  // would be a dead end, so they go home instead.
+  if (statuses.length === 0) {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('account_type')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    redirect(profile?.account_type === 'company' ? '/company/apply' : '/');
+  }
 
   // Status messaging (pending/rejected/suspended banner) lives in
   // DashboardShell, which knows the active company and its rejection reason.

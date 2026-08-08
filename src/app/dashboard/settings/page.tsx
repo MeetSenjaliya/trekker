@@ -9,7 +9,8 @@ import { useRequireCompanyRole } from '@/hooks/useRequireCompanyRole';
 import { createClient } from '@/utils/supabase/client';
 import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
 import { companyProfileSchema, fieldErrors } from '@/lib/schemas';
-import { updateCompany } from '@/lib/company';
+import { updateCompany, isCompanyFrozen } from '@/lib/company';
+import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
 
 const inputClass = (hasError: boolean) =>
   `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-none sm:text-sm transition-colors ${
@@ -52,6 +53,10 @@ export default function CompanySettingsPage() {
 
   if (!company || !permitted) return null;
 
+  // A rejected/suspended company is read-only (RLS refuses the update and the
+  // logo/cover upload), so the whole form is disabled rather than left to fail.
+  const frozen = isCompanyFrozen(company.status);
+
   const change = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setForm((prev) => ({ ...prev, [name]: value }));
@@ -87,8 +92,7 @@ export default function CompanySettingsPage() {
     const path = `${company.id}/${prefix}${Date.now()}-${sanitizeFileName(file.name)}`;
     const { error } = await supabase.storage.from('company-logos').upload(path, file, { upsert: true });
     if (error) {
-      console.error('Error uploading image:', error);
-      throw new Error('image-upload-failed');
+      throw new UploadError(await uploadErrorMessage(error, supabase, 'company-logos'));
     }
     return supabase.storage.from('company-logos').getPublicUrl(path).data.publicUrl;
   };
@@ -118,9 +122,7 @@ export default function CompanySettingsPage() {
       queryClient.invalidateQueries({ queryKey: ['companies', 'mine'] });
     } catch (err) {
       const message =
-        err instanceof Error && err.message === 'image-upload-failed'
-          ? 'The image failed to upload. Try again.'
-          : 'Something went wrong. Please try again.';
+        err instanceof UploadError ? err.message : 'Something went wrong. Please try again.';
       toast.error(message);
     } finally {
       setSaving(false);
@@ -131,6 +133,15 @@ export default function CompanySettingsPage() {
     <div className="max-w-2xl space-y-6">
       <h1 className="text-2xl font-bold text-gray-900">Company settings</h1>
 
+      {frozen && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          These settings are read-only while {company.name} is {company.status}.
+        </p>
+      )}
+
+      {/* Wrapping the form rather than its contents disables every control
+          inside (including the file pickers and Save) without reshaping it. */}
+      <fieldset disabled={frozen} className="disabled:opacity-60">
       <form onSubmit={handleSubmit} className="space-y-6" noValidate>
         {/* Brand header — cover banner with the logo overlapping, previewing
             how the public storefront hero will look. */}
@@ -306,6 +317,7 @@ export default function CompanySettingsPage() {
           </button>
         </div>
       </form>
+      </fieldset>
     </div>
   );
 }

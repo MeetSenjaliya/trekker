@@ -8,6 +8,8 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
+import { compressImage } from '@/utils/imageCompression';
+import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
 
 export default function EditProfilePage() {
   const [supabase] = useState(() => createClient());
@@ -140,14 +142,17 @@ export default function EditProfilePage() {
       // Upload Avatar Logic
       if (avatarFile) {
         setUploading(true);
+        const compressed = await compressImage(avatarFile);
         const fileExt = avatarFile.name.split('.').pop();
         const fileName = `${user.id}/${Date.now()}.${fileExt}`;
 
         const { error: uploadError } = await supabase.storage
           .from('avatars')
-          .upload(fileName, avatarFile, { upsert: true });
+          .upload(fileName, compressed, { upsert: true });
 
-        if (uploadError) throw uploadError;
+        if (uploadError) {
+          throw new UploadError(await uploadErrorMessage(uploadError, supabase, 'avatars'));
+        }
 
         const { data: { publicUrl } } = supabase.storage
           .from('avatars')
@@ -178,10 +183,25 @@ export default function EditProfilePage() {
       router.push('/profile');
       router.refresh();
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
+      // An upload rejection already carries text written for the user, and
+      // uploadErrorMessage() has logged it if it was worth logging.
+      if (error instanceof UploadError) {
+        toast.error(error.message);
+        return;
+      }
+      console.error('Profile save error:', error);
+      // Supabase errors are plain objects, not Error instances — String() on one
+      // yields "[object Object]" and hides the actual reason.
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === 'object' && error !== null && 'message' in error
+            ? String((error as { message: unknown }).message)
+            : 'Something went wrong. Please try again.';
       toast.error(`Error updating profile: ${message}`);
     } finally {
       setSaving(false);
+      setUploading(false);
     }
   };
 

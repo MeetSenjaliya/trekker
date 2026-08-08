@@ -340,7 +340,13 @@ function MessagesPageContent() {
     setMessages(prev => [...prev, optimisticMsg]);
     setReplyTo(null);
     const { error } = await supabase.from('conversation_messages').insert({ conversation_id: selectedConversation.id, user_id: user.id, message: content, reply_to: optimisticMsg.reply_to });
-    if (error) toast.error('Error sending message');
+    if (error) {
+      // The rate-limit trigger rejects the insert outright, so drop the optimistic
+      // bubble (it was never sent) and hand the text back to the composer.
+      setMessages(prev => prev.filter(m => m.id !== optimisticMsg.id));
+      setNewMessage(content);
+      toast.error(error.code === 'P0001' ? error.message : 'Error sending message');
+    }
   };
 
   const deleteMessage = async (id: string) => {
