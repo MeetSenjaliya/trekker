@@ -2,9 +2,23 @@
 -- This is the block referenced at the bottom of phase-f-account-types.sql, with the
 -- placeholders resolved and paired positive controls added.
 --
--- RUN EACH BLOCK ON ITS OWN. The first error aborts the transaction, so a later
--- statement in the same block would report a misleading failure.
+-- RUN EACH BLOCK ON ITS OWN — select the block, run, record the result, move on.
+-- Do NOT paste the whole file. Blocks B and C are *expected* to end in an error, and
+-- an error aborts everything after it: that is how the 2026-08-08 attempt returned
+-- block B's error and never reached B2/C/C2.
 -- Every block ends in ROLLBACK: nothing here is committed.
+--
+-- ✅ RUN AND PASSED 2026-08-08 — every block, results as expected, all rolled back.
+--    A   is_trekker() = f for the company account, t for the trekker
+--    B   favorites INSERT refused the company account (42501)
+--    B2  the identical insert as a trekker SUCCEEDED — this is what makes B evidence
+--    C   join_trek_and_chat() raised "Company accounts cannot join treks"
+--    C2  the same call as a trekker returned a normal jsonb payload
+--    POST-CHECK  clean: no favourite, no batch, no disabled trigger, both
+--                account_type values unchanged
+--    Recorded in FEATURES.md §2 "Account types → 1 — database enforcement".
+--    Re-run this file whenever is_trekker() or the favorites/trek_participants
+--    INSERT policies change.
 --
 -- company = 4ac9720d-79cb-4ccc-bea4-518db5b651ee  mandarmahadikhpht@gmail.com
 --             account_type='company', owner of Mandar Trekkers, NOT a platform admin

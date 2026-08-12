@@ -47,11 +47,12 @@ Highest-leverage item in this document. Five minutes.
 
 ---
 
-### 1.2 🔴 `/test/*` is publicly routable in production
+### 1.2 ✅ RESOLVED 2026-08-08 — `/test/*` is publicly routable in production
 
-- [ ] `rm -rf src/app/test`
-- [ ] Remove `'/test'` from `publicRoutes` in `src/utils/supabase/middleware.ts:42`
-- [ ] Re-run `npm run build` and confirm the 7 `/test` routes are gone
+- [x] `rm -rf src/app/test` — all 16 files, including the 6 non-routable `.html` scratch files
+- [x] Remove `'/test'` from `publicRoutes` in `src/utils/supabase/middleware.ts:42`
+- [x] Re-run `npm run build` and confirm the 8 `/test` routes are gone
+- [x] Also removed `'/test'` from the `src/app/robots.ts` disallow list
 
 **Evidence:** build output lists `/test`, `/test/batch`, `/test/fav`, `/test/profile`,
 `/test/profilet`, `/test/review`, `/test/storage-check`, `/test/trek/[id]`.
@@ -330,7 +331,7 @@ Roughly 500 lines of pure noise that misleads every future reader.
 | # | Work | Effort | Removes |
 |---|---|---|---|
 | 1 | §1.1 commit + push | 5 min | Total-loss risk; ships multi-tenant to prod |
-| 2 | §1.2 delete `/test` | 10 min | Public recon surface |
+| ~~2~~ | ~~§1.2 delete `/test`~~ — done 2026-08-08 | — | — |
 | ~~3~~ | ~~§1.3 apply pending SQL~~ — already applied, no work | — | — |
 | 4 | §3.1 indexes | 15 min | Chat scaling cliff |
 | 5 | §4.1 security headers | 20 min | Clickjacking / XSS depth |

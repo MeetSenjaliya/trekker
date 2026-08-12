@@ -14,6 +14,7 @@ import {
   getTrek,
   getTrekBatches,
   getBatchParticipants,
+  getBatchAnnouncements,
   getCompanyMembers,
   listCompanyInvites,
   getMyInvites,
@@ -46,6 +47,7 @@ export const queryKeys = {
   trek: (trekId: string) => ['treks', 'detail', trekId] as const,
   trekBatches: (trekId: string) => ['treks', trekId, 'batches'] as const,
   batchParticipants: (batchId: string) => ['batches', batchId, 'participants'] as const,
+  batchAnnouncements: (batchId: string) => ['batches', batchId, 'announcements'] as const,
   companyMembers: (companyId: string) => ['companies', companyId, 'members'] as const,
   companyInvites: (companyId: string) => ['companies', companyId, 'invites'] as const,
   myInvites: (userId: string) => ['invites', 'mine', userId] as const,
@@ -343,6 +345,15 @@ export function useBatchParticipants(batchId: string | undefined) {
     queryKey: queryKeys.batchParticipants(batchId ?? ''),
     enabled: !!batchId,
     queryFn: () => getBatchParticipants(batchId!),
+  });
+}
+
+/** Announcements already sent to one departure (SECURITY DEFINER RPC). */
+export function useBatchAnnouncements(batchId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.batchAnnouncements(batchId ?? ''),
+    enabled: !!batchId,
+    queryFn: () => getBatchAnnouncements(batchId!),
   });
 }
 

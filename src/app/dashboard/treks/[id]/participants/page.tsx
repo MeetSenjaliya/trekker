@@ -3,14 +3,25 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Loader2, Users, ShieldAlert } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { ArrowLeft, Loader2, Users, ShieldAlert, Megaphone, Send } from 'lucide-react';
+import { toast } from 'sonner';
 import { useDashboardCompany } from '@/components/admin/DashboardShell';
-import { useTrek, useTrekBatches, useBatchParticipants } from '@/lib/queries';
+import {
+  useTrek,
+  useTrekBatches,
+  useBatchParticipants,
+  useBatchAnnouncements,
+  queryKeys,
+} from '@/lib/queries';
+import { announcementSchema } from '@/lib/schemas';
+import { postBatchAnnouncement } from '@/lib/company';
 
 export default function TrekParticipantsPage() {
   const params = useParams<{ id: string }>();
   const trekId = params.id;
   const { companies } = useDashboardCompany();
+  const queryClient = useQueryClient();
 
   const { data: trek, isLoading: trekLoading } = useTrek(trekId);
   const { data: batches, isLoading: batchesLoading } = useTrekBatches(trekId);
@@ -21,8 +32,36 @@ export default function TrekParticipantsPage() {
   }, [batches, batchId]);
 
   const { data: participants, isLoading, isError } = useBatchParticipants(batchId || undefined);
+  const { data: announcements, isLoading: annLoading } = useBatchAnnouncements(batchId || undefined);
 
-  const owns = !!trek && companies.some((m) => m.company.id === trek.company_id);
+  const owner = trek ? companies.find((m) => m.company.id === trek.company_id) : undefined;
+  // Reading the roster stays open to any member; sending needs the company approved,
+  // matching post_batch_announcement() and the departures page.
+  const canAnnounce = owner?.company.status === 'approved';
+
+  const [text, setText] = useState('');
+  const [textError, setTextError] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const send = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = announcementSchema.safeParse(text);
+    if (!parsed.success) {
+      setTextError(parsed.error.issues[0]?.message ?? 'Invalid announcement');
+      return;
+    }
+    setTextError('');
+    setSending(true);
+    const res = await postBatchAnnouncement(batchId, parsed.data);
+    setSending(false);
+    if (!res.success) {
+      toast.error(res.message);
+      return;
+    }
+    toast.success(res.message);
+    setText('');
+    queryClient.invalidateQueries({ queryKey: queryKeys.batchAnnouncements(batchId) });
+  };
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -46,7 +85,7 @@ export default function TrekParticipantsPage() {
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           This trek couldn&apos;t be found.
         </p>
-      ) : !owns ? (
+      ) : !owner ? (
         <p className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           You don&apos;t have access to this trek&apos;s roster.
         </p>
@@ -150,6 +189,80 @@ export default function TrekParticipantsPage() {
               </table>
             </div>
           )}
+
+          <section className="rounded-2xl border border-gray-200 bg-white p-5">
+            <div className="flex items-center gap-2">
+              <Megaphone className="h-4 w-4 text-blue-600" />
+              <h2 className="text-sm font-bold text-gray-900">Announcements</h2>
+            </div>
+            <p className="mt-1 text-sm text-gray-500">
+              Posted into this departure&apos;s group chat, where everyone with a confirmed
+              booking will see it. Trekkers can&apos;t reply to you here.
+            </p>
+
+            {!canAnnounce ? (
+              <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Announcements can&apos;t be sent while {owner.company.name} is{' '}
+                {owner.company.status}.
+              </p>
+            ) : (
+              <form onSubmit={send} className="mt-4" noValidate>
+                <label htmlFor="announcement" className="sr-only">
+                  Announcement
+                </label>
+                <textarea
+                  id="announcement"
+                  rows={3}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder="e.g. Pickup moved to the north gate, 6am sharp."
+                  className="block w-full resize-y rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                />
+                {textError && <p className="mt-1.5 text-sm text-red-600">{textError}</p>}
+                <div className="mt-2 flex items-center justify-between gap-4">
+                  <span className="text-xs text-gray-400">{text.trim().length}/2000</span>
+                  {/* No client-side "has bookings" gate: the chat only exists once
+                      someone is CONFIRMED, so a waitlist-only departure has a
+                      non-empty roster and still nowhere to post. The RPC owns that
+                      rule and says so. */}
+                  <button
+                    type="submit"
+                    disabled={sending || !text.trim()}
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {sending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                    Send
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {annLoading ? (
+              <div className="flex items-center justify-center py-6 text-gray-400">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            ) : announcements && announcements.length > 0 ? (
+              <ul className="mt-5 space-y-3 border-t border-gray-100 pt-5">
+                {announcements.map((a) => (
+                  <li key={a.id} className="rounded-xl bg-gray-50 px-4 py-3">
+                    <p className="whitespace-pre-wrap text-sm text-gray-800">{a.message}</p>
+                    <p className="mt-1.5 text-xs text-gray-400">
+                      {a.author_name || 'Team member'} ·{' '}
+                      {new Date(a.created_at).toLocaleString()}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-5 border-t border-gray-100 pt-5 text-sm text-gray-500">
+                Nothing sent to this departure yet.
+              </p>
+            )}
+          </section>
         </>
       )}
     </div>

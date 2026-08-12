@@ -113,7 +113,6 @@ The five rows above all live in the `src/app/(trekker)/` **route group** and sha
 | `/dashboard/account` | **company members** | Operator's own account: display name + password change, email read-only. Separate route rather than a `/dashboard/settings` tab because that page is `useRequireCompanyRole(['owner','admin'])`-gated and bounces staff, who need a password form too. ⚠️ Not reachable before the company exists — see §10 |
 | `/admin/*` | **protected + platform admins only** | Platform panel (Phase D): company approve/reject/suspend. Guard = `is_platform_admin()` RPC else `/` |
 | `/invites` | **protected** | Team invitations addressed to the signed-in user (`get_my_invites`), accept/decline. **Deliberately NOT in the `(trekker)` route group** — the invitee is a trekker before accepting and a company account after, so that group's `is_trekker()` guard would bounce them mid-flow. Reached from the Header's "Invitations (n)" entry, shown only when there is one |
-| `/test/*` | public (⚠️) | Dev/RLS test pages — should be removed or guarded before prod |
 
 Route protection is enforced server-side (see Auth below).
 
@@ -128,7 +127,7 @@ Route protection is enforced server-side (see Auth below).
 - **Profile creation is server-side.** The `profiles` row is created by the `handle_new_user()` trigger on `auth.users` (SECURITY DEFINER), **not** the browser — this works even with email confirmation on (no session yet). The old client-side insert was removed (NEW-2).
 - **Email confirmation:** the link hits `src/auth/confirm/route.ts` → `supabase.auth.verifyOtp({ token_hash, type })` → redirect.
 - **Session state (client):** `src/contexts/AuthContext.tsx` calls `getSession()` on mount and subscribes to `onAuthStateChange`; exposes `useAuth()`.
-- **Session refresh + route guard (server):** `src/proxy.ts` (Next 16's `proxy` convention, replacing `middleware.ts`) delegates to `updateSession()` in `src/utils/supabase/middleware.ts`. It calls `supabase.auth.getUser()`, then **redirects unauthenticated users to `/auth/login`** for any path that isn't public. Public prefixes: `['/', '/explore', '/about', '/auth', '/trek', '/test', '/company']`. The redirect guard is **active** (this resolves the previously-disabled M2 item — but note `/test` is still public).
+- **Session refresh + route guard (server):** `src/proxy.ts` (Next 16's `proxy` convention, replacing `middleware.ts`) delegates to `updateSession()` in `src/utils/supabase/middleware.ts`. It calls `supabase.auth.getUser()`, then **redirects unauthenticated users to `/auth/login`** for any path that isn't public. Public prefixes: `['/', '/explore', '/about', '/auth', '/trek', '/company']`. The redirect guard is **active** (this resolves the previously-disabled M2 item; `/test` was dropped from the list when the pages were deleted, 2026-08-08).
 
 ---
 
@@ -181,6 +180,7 @@ The consent step is the point. Accepting is **destructive and irreversible from 
 - Tables: `conversations` (one per batch), `conversation_participants`, `conversation_messages`.
 - `/messages` lists the user's conversations and renders a thread. Messages are fetched in pages (newest first) and reversed for display; author names/avatars come from the `public_profiles` view.
 - **Message features:** soft-delete (`is_deleted`), edit (`updated_at`), reply (`reply_to`), emoji reactions (`reactions` jsonb), with optimistic UI updates.
+- **Batch announcements (2026-08-08):** the operator's only channel to its bookers, since company accounts can't join a trek and `/messages` is trekker-only. An announcement is a `conversation_messages` row with `is_announcement = true` in the batch's **existing** conversation — not a separate table — so it reuses realtime delivery, unread counts and the read receipt untouched, and renders as an amber `Megaphone` notice with no reply/react affordances. The company user is never a `conversation_participant`, so both directions go through SECURITY DEFINER RPCs (`post_batch_announcement` / `get_batch_announcements`): it cannot read trekker replies, appear in presence, or see the member list. **Both write policies pin `is_announcement = false`** — without that a trekker could POST the flag directly and forge an operator notice. See `schema.sql` §17.
 - **Realtime:** chat currently relies on fetch/optimistic updates — there is **no `supabase.channel(...)` subscription** for live inserts. (AuthContext does use realtime auth-state events.) Adding a per-conversation channel would make messages stream live.
 
 ---
@@ -212,7 +212,6 @@ All buckets are public-read; writes are owner-scoped (M1 fix) or company-scoped 
 
 App-level:
 - `src/lib/database.ts` is **dead/broken** (targets a non-existent `reviews` table, `trek_participants.trek_id`/`status`, and the missing `increment_participants` RPC). Safe to delete; nothing live imports it.
-- `src/app/test/*` pages ship to production and are in the public route list — remove or guard. **Reviewed at closeout 2026-08-06 and left in place deliberately.** Note `/test/trek/[id]` still renders a Join button and was not updated by the account-type work, so it's the one place a company account is offered a booking control; the DB still refuses it, so this is a broken-looking UI rather than a bypass.
 - **`/dashboard/account` is unreachable for a company account that hasn't applied yet** — the `/dashboard` guard sends member-less company accounts to `/company/apply` first. Known, accepted, documented (decision 2026-08-06); not a lockout, since `/auth/forgot-password` still works and the gap closes once they apply. Fixing it means lifting the page to a top-level `/account` route rather than special-casing the guard.
 - `src/components/ui/Chat.tsx` is a stub; `favcard2.tsx` looks like an unused variant.
 - No app-level rate limiting / security headers; verbose `console.error(JSON.stringify(error))` can leak DB detail.
@@ -225,7 +224,7 @@ Database-level (see DATABASE.md §11 for detail): ~~broken `trg_initial_trek_mes
 |---|---|---|
 | `security_definer_view` — `public_profiles` | 1 ERROR | Known, intentional (the view exists to expose a safe subset) |
 | `authenticated_security_definer_function_executable` | 29 WARN | Inherent to the design — these RPCs are *meant* to be called by signed-in users and each re-derives the caller from `auth.uid()`. Not actionable |
-| `anon_security_definer_function_executable` | 20 WARN | **All pre-existing.** `create or replace` preserves the original ACL, so the older RPCs kept their default PUBLIC execute grant. All inert for `anon` (each checks `auth.uid()`/`is_company_*`/`is_platform_admin()` before reading anything); a `revoke execute … from public, anon` on each would silence them. Tracked as optional hardening in FEATURES.md §1 |
+| `anon_security_definer_function_executable` | 20 WARN → **3, closed 2026-08-08** | `create or replace` preserves the original ACL, so the older RPCs kept their default PUBLIC execute grant. `supabase/phases/fix-anon-execute-definer-rpcs.sql` revoked `public, anon` on 18 of the 21 (the count was 21, not 20 — `is_company_writable` joined with phase H), each paired with `grant execute … to authenticated`. ⚠️ The remaining **3 stay open by design**: `is_trek_visible`, `is_company_member` and `is_platform_admin` are called from PUBLIC-role SELECT policies, so revoking them takes the public site down — see FEATURES.md Known Gotchas |
 | `rls_enabled_no_policy` — `platform_admins`, `rate_events` | 2 INFO | **Intentional.** Both are RLS-on-with-zero-policies *plus* revoked grants, i.e. deliberately unreachable from any client. Don't "fix" by adding a policy |
 | `auth_leaked_password_protection` disabled | 1 WARN | Dashboard toggle (HaveIBeenPwned check), not applied |
 | `vulnerable_postgres_version` (`supabase-postgres-17.4.1.069`) | 1 WARN | Patch upgrade pending |

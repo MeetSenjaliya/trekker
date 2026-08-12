@@ -177,6 +177,8 @@ create table if not exists public.conversation_participants (
 
 -- conversation_messages — chat messages. Composite PK (created_at, id).
 -- Supports soft-delete, reply threading, and emoji reactions (jsonb).
+-- is_announcement (§17) marks an operator notice; only post_batch_announcement()
+-- may set it — both write policies pin it to false for PostgREST clients.
 create table if not exists public.conversation_messages (
   conversation_id uuid not null references public.conversations(id) on delete cascade,
   user_id         uuid not null references public.profiles(id) on delete cascade,
@@ -187,6 +189,7 @@ create table if not exists public.conversation_messages (
   is_deleted      boolean default false,
   reply_to        uuid,
   reactions       jsonb default '{}'::jsonb,
+  is_announcement boolean not null default false,
   primary key (created_at, id)
 );
 
@@ -853,27 +856,11 @@ begin
 end;
 $$;
 
--- increment_participants — backing for the legacy src/lib/database.ts join path
--- (NEW-5). Despite the name it RECOMPUTES the exact count (idempotent) instead
--- of blindly +1, so it stays consistent with the trigger below no matter how it
--- is called. Resolves the count via the batch -> trek join (trek_participants is
--- keyed by batch_id). SECURITY DEFINER so the write to treks is not blocked by
--- RLS (treks has no UPDATE policy for regular users).
-create or replace function public.increment_participants(trek_id uuid)
-returns void
-language sql
-security definer
-set search_path = public, pg_temp
-as $$
-  update public.treks t
-  set participants_joined = (
-    select count(*)
-    from public.trek_participants tp
-    join public.trek_batches tb on tb.id = tp.batch_id
-    where tb.trek_id = increment_participants.trek_id
-  )
-  where t.id = increment_participants.trek_id;
-$$;
+-- increment_participants was DROPPED 2026-08-08 (NEW-5,
+-- supabase/phases/fix-drop-dead-increment-participants.sql). It backed the legacy
+-- src/lib/database.ts join path, which is itself dead. No trigger referenced it and
+-- its EXECUTE was already fully revoked. Do NOT confuse it with
+-- update_participants_count() below, which is live and load-bearing.
 
 -- update_participants_count — recomputes treks.participants_joined for the trek
 -- behind the affected participation row. Resolves trek_id via the batch (the
@@ -1156,13 +1143,11 @@ create trigger trek_participants_waitlist_promote
 -- must NOT be callable via /rest/v1/rpc. Revoke from PUBLIC (anon/authenticated
 -- inherit EXECUTE through it; revoking only those two is a no-op). Triggers
 -- still fire; the owner keeps EXECUTE. join_trek_and_chat / is_chat_participant
--- stay callable (app RPC + RLS policies use them). increment_participants is
--- revoked too — the trek_participants_count_trigger makes it redundant.
+-- stay callable (app RPC + RLS policies use them).
 revoke execute on function public.handle_new_user()           from public, anon, authenticated;
 revoke execute on function public.notify_trek_participation() from public, anon, authenticated;
 revoke execute on function public.update_participants_count() from public, anon, authenticated;
 revoke execute on function public.promote_waitlist_on_leave()  from public, anon, authenticated;
-revoke execute on function public.increment_participants(uuid) from public, anon, authenticated;
 revoke execute on function public.recompute_user_stats(uuid)  from public, anon, authenticated;
 revoke execute on function public.trg_recompute_user_stats()  from public, anon, authenticated;
 revoke execute on function public.award_user_achievements(uuid) from public, anon, authenticated;
@@ -1265,10 +1250,12 @@ create policy "Users can leave conversation" on public.conversation_participants
 -- ---- conversation_messages --------------------------------------------------
 drop policy if exists "Read messages of joined conversations" on public.conversation_messages;
 create policy "Read messages of joined conversations" on public.conversation_messages for select to public using (public.is_chat_participant(conversation_id));
+-- §17 added `and is_announcement = false` to both with_check clauses: without it
+-- any trekker could POST an is_announcement:true row and forge an operator notice.
 drop policy if exists "Send messages" on public.conversation_messages;
-create policy "Send messages" on public.conversation_messages for insert to public with check (user_id = auth.uid() and public.is_chat_participant(conversation_id));
+create policy "Send messages" on public.conversation_messages for insert to public with check (user_id = auth.uid() and public.is_chat_participant(conversation_id) and is_announcement = false);
 drop policy if exists "Edit own messages" on public.conversation_messages;
-create policy "Edit own messages" on public.conversation_messages for update to public using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "Edit own messages" on public.conversation_messages for update to public using (user_id = auth.uid()) with check (user_id = auth.uid() and is_announcement = false);
 drop policy if exists "Delete own messages" on public.conversation_messages;
 create policy "Delete own messages" on public.conversation_messages for delete to public using (user_id = auth.uid());
 
@@ -3013,3 +3000,165 @@ revoke insert on public.company_members from anon, authenticated;
 --
 -- Full rationale + verification blocks:
 --   supabase/phases/phase-h-frozen-companies.sql
+
+
+-- ============================================================================
+-- 17. BATCH ANNOUNCEMENTS — company → the people who booked its departure
+--     (applied 2026-08-08; behaviourally verified + tightened 2026-08-12)
+-- ============================================================================
+-- /messages lives under the (trekker) route group and join_trek_and_chat()
+-- refuses company accounts outright, so an operator had no channel at all to its
+-- own bookers. An announcement is a flagged row in the batch's EXISTING
+-- conversation, not a new table — that reuses realtime delivery,
+-- get_unread_counts() and mark_conversation_read() unchanged, and it lands where
+-- trekkers already look.
+--
+-- The company user is never a conversation_participant, so both the write and the
+-- read-back go through SECURITY DEFINER RPCs; the author literally cannot SELECT
+-- the row it just wrote. They stay outside the chat: no trekker replies, no
+-- presence, no member list.
+--
+-- DDL folded in place rather than repeated here:
+--   §2   conversation_messages.is_announcement boolean not null default false
+--   §8   "Send messages" / "Edit own messages" with_check + is_announcement=false
+--        — the forgery gate. post_batch_announcement() is owned by postgres,
+--        which owns the table and has NOT set FORCE ROW LEVEL SECURITY, so it
+--        bypasses both policies; the pin binds PostgREST clients only.
+--        Side effect, accepted: an announcement is immutable through the table
+--        API, soft-delete included.
+--
+-- Verified as real writes 2026-08-12 (not just structurally): as a signed-in
+-- trekker, POST /rest/v1/conversation_messages with is_announcement:true → 403 /
+-- 42501, and the same insert without the flag → 201. Both refusal branches below
+-- and all four permission controls fire as written.
+
+create or replace function public.post_batch_announcement(p_batch_id uuid, p_message text)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public', 'pg_temp'
+as $$
+declare
+  v_uid        uuid := auth.uid();
+  v_company_id uuid;
+  v_convo_id   uuid;
+  v_message    text := btrim(coalesce(p_message, ''));
+  v_id         uuid;
+  v_created_at timestamptz;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  -- Same cap as messageSchema in src/lib/schemas.ts, restated here because the
+  -- client bound is advisory only.
+  if v_message = '' then
+    raise exception 'Announcement cannot be empty';
+  end if;
+  if length(v_message) > 2000 then
+    raise exception 'Announcement is too long (2000 characters max)';
+  end if;
+
+  select t.company_id into v_company_id
+  from public.trek_batches tb
+  join public.treks t on t.id = tb.trek_id
+  where tb.id = p_batch_id;
+
+  if v_company_id is null then
+    raise exception 'Departure not found';
+  end if;
+
+  -- Approved-only (§16 tier): an announcement is an operational message to paying
+  -- customers, so it sits at the manage-departures bar, not the looser any-member
+  -- bar used for reading the roster.
+  if not public.is_approved_company_member(v_company_id) then
+    raise exception 'You do not have permission to post announcements for this departure';
+  end if;
+
+  select id into v_convo_id from public.conversations where batch_id = p_batch_id;
+  if v_convo_id is null then
+    -- join_trek_and_chat() creates the conversation on the first confirmed
+    -- booking. No conversation means nobody has ever joined.
+    raise exception 'No one has booked this departure yet';
+  end if;
+
+  -- Added 2026-08-12 (fix-announcement-requires-listeners.sql). The conversation
+  -- outlives its members — leaveTrek() clears conversation_participants and never
+  -- the conversations row — so existence is not readership, and without this a
+  -- vacated departure accepted an announcement no one would ever read and
+  -- reported success. Separate message from the branch above because they are
+  -- different facts and the client shows P0001 text verbatim.
+  if not exists (
+    select 1 from public.conversation_participants cp
+    where cp.conversation_id = v_convo_id
+  ) then
+    raise exception 'Everyone has left this departure — there is no one to announce to';
+  end if;
+
+  -- conversation_messages_rate_limit (§13, AFTER STATEMENT) reads auth.uid(),
+  -- which inside a definer function is still the caller — so announcements hit
+  -- the same 30/min cap as chat with no extra code.
+  insert into public.conversation_messages (conversation_id, user_id, message, is_announcement)
+  values (v_convo_id, v_uid, v_message, true)
+  returning id, created_at into v_id, v_created_at;
+
+  return jsonb_build_object(
+    'id', v_id,
+    'conversation_id', v_convo_id,
+    'created_at', v_created_at
+  );
+end;
+$$;
+
+-- Dashboard read-back. Reading matches the roster bar (any member — a frozen
+-- company can still review what it sent); posting is stricter. Silent empty on no
+-- access, mirroring get_company_batch_participants().
+create or replace function public.get_batch_announcements(p_batch_id uuid)
+returns table (
+  id uuid,
+  message text,
+  created_at timestamptz,
+  author_id uuid,
+  author_name text
+)
+language plpgsql
+stable security definer
+set search_path to 'public', 'pg_temp'
+as $$
+declare
+  v_company_id uuid;
+begin
+  select t.company_id into v_company_id
+  from public.trek_batches tb
+  join public.treks t on t.id = tb.trek_id
+  where tb.id = p_batch_id;
+
+  if v_company_id is null or not public.is_company_member(v_company_id) then
+    return;
+  end if;
+
+  return query
+  select m.id, m.message, m.created_at, m.user_id, p.full_name
+  from public.conversation_messages m
+  join public.conversations c on c.id = m.conversation_id
+  left join public.profiles p on p.id = m.user_id
+  where c.batch_id = p_batch_id
+    and m.is_announcement
+    and coalesce(m.is_deleted, false) = false
+  order by m.created_at desc;
+end;
+$$;
+
+-- Both are new functions, so without this pair they would land with the default
+-- PUBLIC execute grant and re-open the anon_security_definer_function_executable
+-- lint that fix-anon-execute-definer-rpcs.sql closed (21 → 3). See Known Gotchas:
+-- `revoke … from public` also removes `authenticated`, which inherits through it.
+revoke execute on function public.post_batch_announcement(uuid, text) from public, anon;
+grant  execute on function public.post_batch_announcement(uuid, text) to authenticated;
+
+revoke execute on function public.get_batch_announcements(uuid) from public, anon;
+grant  execute on function public.get_batch_announcements(uuid) to authenticated;
+
+-- Full rationale + verification blocks:
+--   supabase/phases/phase-i-batch-announcements.sql
+--   supabase/phases/fix-announcement-requires-listeners.sql

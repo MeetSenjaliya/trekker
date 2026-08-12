@@ -93,6 +93,6 @@ Combined with the `public_profiles` view, anyone (incl. logged-out) can enumerat
 ## Low / cleanup
 - **L2** — verbose error logging (`JSON.stringify(error)`) leaks DB detail to console; strip in prod.
 - **L3** — no app-level rate limiting / security headers.
-- **L4** — test pages shipped in App Router (`src/app/test/*`) are routable in production; remove or guard.
+- ~~**L4** — test pages shipped in App Router (`src/app/test/*`) are routable in production; remove or guard.~~ **RESOLVED 2026-08-08** — all 16 files deleted, `/test` dropped from `publicRoutes` and from `robots.ts`; absent from the build route table.
 - **L5** — run `npm audit` for dependency CVEs.
 - **M5** — consolidate overlapping SQL policy files into a single source of truth (`supabase/security-fixes.sql` started this).

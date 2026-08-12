@@ -507,6 +507,16 @@ using (
 --   -- expect 0 rows (6 write policies, 3 per bucket)
 
 -- ---- Behavioural (impersonate real users; every block rolls back) -----------
+-- ⚠️ DO NOT RUN THE BLOCKS BELOW. They are kept for context only. The runnable,
+-- ✅ RUN-AND-PASSED (2026-08-08) version is supabase/phases/verify-phase-h.sql —
+-- placeholders resolved, plus two fixes this template needs. (1) The
+-- `update companies set status=...` below is INERT when run as postgres:
+-- trg_protect_company_admin_fields pins status back unless is_platform_admin(),
+-- and auth.uid() is null in the SQL Editor — so every "expect UPDATE 0" here
+-- would instead SUCCEED and a working guard would read as broken. (2) <trek_id>
+-- has nothing to resolve to — the non-admin owner's company has no treks, so the
+-- companion creates one in-transaction.
+--
 -- Use a company OWNER who is NOT a platform admin — a platform admin passes the
 -- is_platform_admin() arm of §2/§6 and gives a false PASS. :company_id is their
 -- company; :trek_id one of its treks. The company must be approved at the start

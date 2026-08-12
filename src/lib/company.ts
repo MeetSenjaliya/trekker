@@ -519,6 +519,61 @@ export async function getBatchParticipants(batchId: string): Promise<BatchPartic
     return (data ?? []) as BatchParticipant[];
 }
 
+// ---- Batch announcements ---------------------------------------------------
+// Company accounts have no /messages and can't join their own treks, so this is
+// the only channel to their bookers. An announcement is a flagged row in the
+// batch's existing chat (phase-i-batch-announcements.sql); both directions go
+// through RPCs because the author is never a conversation participant.
+
+export interface BatchAnnouncement {
+    id: string;
+    message: string;
+    created_at: string;
+    author_id: string;
+    author_name: string | null;
+}
+
+/** Announcements already sent to a departure. Readable by any company member. */
+export async function getBatchAnnouncements(batchId: string): Promise<BatchAnnouncement[]> {
+    const supabase = createClient();
+
+    const { data, error } = await supabase.rpc('get_batch_announcements', { p_batch_id: batchId });
+    if (error) {
+        console.error('Error loading announcements:', error);
+        throw new Error('Failed to load announcements. Please try again.');
+    }
+    return (data ?? []) as BatchAnnouncement[];
+}
+
+/**
+ * Send an announcement to everyone booked on a departure. Requires an approved
+ * company. Every expected refusal (no bookings yet, not permitted, too long, and
+ * the shared chat rate limit) arrives as a P0001 raise written to be shown as-is
+ * — same handling as the chat composer in /messages.
+ */
+export async function postBatchAnnouncement(
+    batchId: string,
+    message: string
+): Promise<{ success: boolean; message: string }> {
+    const supabase = createClient();
+
+    const { error } = await supabase.rpc('post_batch_announcement', {
+        p_batch_id: batchId,
+        p_message: message,
+    });
+
+    if (error) {
+        console.error('Error posting announcement:', error);
+        return {
+            success: false,
+            message: error.code === 'P0001'
+                ? error.message
+                : 'Failed to post the announcement. Please try again.',
+        };
+    }
+    return { success: true, message: 'Announcement sent.' };
+}
+
 // ---- Company settings ------------------------------------------------------
 
 export interface CompanyProfileInput {

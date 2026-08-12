@@ -79,6 +79,15 @@ export const messageSchema = z
   .min(1, 'Message cannot be empty')
   .max(2000, 'Message is too long (2000 characters max)')
 
+// Company announcement to a departure's bookers. Same 2000-char cap as a chat
+// message (both land in conversation_messages, and post_batch_announcement()
+// restates the cap server-side), with its own copy.
+export const announcementSchema = z
+  .string()
+  .trim()
+  .min(1, 'Announcement cannot be empty')
+  .max(2000, 'Announcement is too long (2000 characters max)')
+
 // Company application (multi-tenant Phase B). Slug rule and 60-char cap match
 // the CHECK constraints on public.companies / the apply_for_company() RPC, so
 // anything that passes here won't bounce off the database.

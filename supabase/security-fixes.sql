@@ -1096,15 +1096,35 @@ using (
 --         over-blocking control — it proves the new gate lets an approved
 --         company through rather than refusing everyone.
 --
--- STILL UNRUN (needs a write-capable session; blocks B/D/F in the phase file):
--- the RLS refusals as actual DML (UPDATE 0 on companies/treks, INSERT refused on
--- trek_batches), the accept_company_invite() frozen branch end-to-end, the
--- storage write policies, and "a platform admin is not frozen out". The
--- predicates behind all of them are verified above and the policies are
--- confirmed to reference those predicates, but that is one step short of a real
--- write attempt.
+-- BEHAVIOURAL VERIFICATION — ✅ RUN AND PASSED 2026-08-08.
+-- The above was one step short of a real write attempt. That step is now taken:
+-- supabase/phases/verify-phase-h.sql, run block by block from a write-capable
+-- SQL Editor session, every block rolled back, all results as expected —
+--   PASS  approved control: is_company_writable t, companies UPDATE 1, treks
+--         INSERT 1. Without this the refusals below prove nothing.
+--   PASS  rejected: companies UPDATE 0, treks UPDATE 0 (silent — a row failing
+--         USING simply does not match), trek_batches INSERT raised 42501
+--         (INSERT fails WITH CHECK, so it errors where UPDATE does not).
+--   PASS  suspended behaves identically to rejected.
+--   PASS  accept_company_invite() on a frozen company raised "That company is no
+--         longer active on Trekker"; the same invite with no freeze accepted
+--         cleanly (account_type → company, membership row created).
+--   PASS  platform admin still wrote to a suspended tenant's trek and company row
+--         (UPDATE 1 each) and unfroze it with approve_company().
+--   PASS  storage: company-logos + trek-images accepted the owner's write while
+--         approved, refused it while frozen. The half table gates would miss —
+--         both buckets are public, so an overwrite at the same CDN path changes
+--         what visitors see without any companies row changing.
+--   PASS  post-check: nothing leaked past a ROLLBACK.
+--
+-- ⚠️ The VERIFY template inside phase-h-frozen-companies.sql could NOT have been
+-- run as written, and still reads plausibly — see the header of verify-phase-h.sql.
+-- Its freeze step is inert (trg_protect_company_admin_fields reverts a direct
+-- status UPDATE whenever is_platform_admin() is false, which it always is in the
+-- SQL Editor, where auth.uid() is null) and its <trek_id> was unresolvable.
 --
 -- Full SQL + verification blocks: supabase/phases/phase-h-frozen-companies.sql
+-- Behavioural run: supabase/phases/verify-phase-h.sql
 -- Folded into supabase/schema.sql §16 (DDL in place at §12.4/12.6/12.7, 15.3, 15.5).
 -- ============================================================================
 
@@ -1151,4 +1171,94 @@ using (
 --
 -- Full SQL + verification blocks: supabase/phases/fix-storage-rate-limit-message.sql
 -- Folded into supabase/schema.sql §13.4 (storage_rate_rule) + §13.5 (probe).
+-- ============================================================================
+
+
+-- ============================================================================
+-- FORGED OPERATOR ANNOUNCEMENTS — a new column the write policies didn't know
+-- about (2026-08-08 applied; behaviourally verified 2026-08-12)
+-- ============================================================================
+-- Batch announcements (schema.sql §17) add
+-- conversation_messages.is_announcement, which the trekker UI renders as an
+-- amber operator notice with a Megaphone badge — a trust signal in a chat full
+-- of strangers.
+--
+-- PROBLEM: the INSERT policy was `user_id = auth.uid() AND
+-- is_chat_participant(conversation_id)` and said nothing about the new column.
+-- The publishable key ships in the client bundle, so any trekker already in a
+-- batch chat could
+--   POST /rest/v1/conversation_messages {is_announcement: true, …}
+-- and render a message their fellow bookers would read as coming from the
+-- operator — "meeting point moved", "bring cash". The UPDATE policy left the
+-- same forgery reachable by editing an ordinary message afterwards. Adding a
+-- column to a table whose policies enumerate columns is a silent widening: the
+-- policy keeps passing, it just no longer covers everything it should.
+--
+-- FIX — `and is_announcement = false` in the with_check of BOTH "Send messages"
+-- and "Edit own messages". post_batch_announcement() is unaffected: it is
+-- SECURITY DEFINER owned by postgres, which owns the table and has NOT set
+-- FORCE ROW LEVEL SECURITY, so it bypasses both policies. The pin therefore
+-- binds PostgREST clients only, and the RPC is the sole writer able to set the
+-- flag.
+--
+-- ACCEPTED SIDE EFFECT: an announcement is immutable through the table API,
+-- soft-delete included. The author is not a chat participant, so the messages
+-- page never offers them edit/delete anyway; a wrong announcement is corrected
+-- by posting again.
+--
+-- VERIFIED LIVE 2026-08-12, as a real write through PostgREST rather than
+-- structurally. Signed in as a non-admin trekker who IS a participant of the
+-- target conversation:
+--   is_announcement:true          -> 403 / 42501 new row violates RLS policy
+--   same insert, flag omitted     -> 201, row returned with is_announcement=false
+-- The pair is the evidence. A refusal on its own is equally consistent with a
+-- missing grant, a bad conversation id or an unrelated policy; only the control
+-- half pins the refusal to this conjunct.
+--
+-- ⚠️ SETUP TRAP, same family as the phase-H one: the SQL Editor connects as
+-- `postgres`, which owns the table and is not FORCE'd, so BOTH halves succeed
+-- there unless the block does `set local role authenticated` — a working guard
+-- reads as broken-open. The run above avoided it entirely by going through the
+-- client's own key and access token.
+--
+-- Full SQL + verification blocks: supabase/phases/phase-i-batch-announcements.sql
+-- Folded into supabase/schema.sql §17 (DDL in place at §2 column + §8 policies).
+-- ============================================================================
+
+
+-- ============================================================================
+-- ANNOUNCEMENTS TO AN EMPTY ROOM — "a conversation exists" is not "someone is
+-- listening" (2026-08-12, applied + verified live)
+-- ============================================================================
+-- Not a hole; a guard that reported success for a message with no readers.
+-- post_batch_announcement() refused only when the batch had NO conversations
+-- row. But join_trek_and_chat() creates that row on the first confirmed booking
+-- and leaveTrek() clears only conversation_participants — the conversation
+-- outlives every member, which is the same fact behind "a departure can't be
+-- deleted once anyone has ever joined". So a departure everyone had left still
+-- accepted an announcement, wrote it into a chat with zero participants, and
+-- returned {id, conversation_id, created_at} to the operator. 10 of 17 batches
+-- were in that state when this was found.
+--
+-- FIX — a second refusal branch: `not exists (select 1 from
+-- conversation_participants where conversation_id = v_convo_id)`. Kept separate
+-- from the no-conversation branch, with its own message, because they are
+-- different facts about the departure and postBatchAnnouncement() surfaces
+-- P0001 text verbatim — "No one has booked this departure yet" is untrue of a
+-- departure five people booked and then left.
+--
+-- NO CLIENT-SIDE GATE, still deliberate: the participants page roster includes
+-- waitlisted trekkers, who get no conversation_participants row, so a
+-- `participants.length` check would refuse a departure that can be announced to
+-- and allow one that cannot. The RPC owns the rule.
+--
+-- VERIFIED LIVE 2026-08-12: the new branch and the original both present in the
+-- live definition, prosecdef = t, search_path pinned, anon execute = f,
+-- authenticated execute = t (CREATE OR REPLACE preserved the ACL, so the
+-- revoke/grant pair from §17 carried over), and the anon-executable definer
+-- count stayed at the load-bearing 3.
+--
+-- Full SQL + verification blocks:
+--   supabase/phases/fix-announcement-requires-listeners.sql
+-- Folded into supabase/schema.sql §17.
 -- ============================================================================

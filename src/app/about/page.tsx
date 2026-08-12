@@ -1,6 +1,23 @@
 import React from 'react';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Plus, MessageCircle, CheckCircle } from 'lucide-react';
+
+const description =
+  'Trek Buddies connects trekkers with verified organizers across India — find a trek, join a batch, and chat with your group before you go.';
+
+export const metadata: Metadata = {
+  title: 'About',
+  description,
+  alternates: { canonical: '/about' },
+  openGraph: {
+    title: 'About Trek Buddies',
+    description,
+    url: '/about',
+    type: 'website',
+  },
+  twitter: { card: 'summary_large_image', title: 'About Trek Buddies', description },
+};
 
 export default function AboutPage() {
   return (

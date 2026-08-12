@@ -39,7 +39,7 @@ export async function updateSession(request: NextRequest) {
 
   // Routes that don't require authentication. A path is public if it matches
   // one of these exactly or starts with it followed by a "/".
-  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/test', '/company']
+  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/company']
 
   const { pathname } = request.nextUrl
 

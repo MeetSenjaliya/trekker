@@ -12,7 +12,6 @@ const DISALLOW = [
   '/edits',
   '/review',
   '/auth',
-  '/test',
 ];
 
 export default function robots(): MetadataRoute.Robots {

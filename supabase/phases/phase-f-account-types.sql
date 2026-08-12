@@ -386,6 +386,9 @@ grant execute on function public.apply_for_company(text, text, text, text, text,
 -- >> The behavioural block below is filled in and ready to run, with real
 -- >> non-admin UIDs and a positive control beside each negative, in
 -- >> supabase/phases/verify-phase-f.sql — prefer that file. Run it there.
+-- >> ✅ RUN AND PASSED 2026-08-08: is_trekker() f/t, favorites INSERT refused for
+-- >> the company account and accepted for the trekker, join_trek_and_chat()
+-- >> raised for one and returned a payload for the other, post-check clean.
 
 -- ---- Structural -------------------------------------------------------------
 -- select column_name, data_type, column_default, is_nullable

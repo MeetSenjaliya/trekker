@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import {
   Send, MessageCircle, MoreVertical, Phone,
-  Video, Users, Trash2, ArrowLeft, SmilePlus, Reply, Edit3
+  Video, Users, Trash2, ArrowLeft, SmilePlus, Reply, Edit3, Megaphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { leaveTrek } from '@/lib/joinTrek';
@@ -28,6 +28,8 @@ type Msg = {
   full_name?: string | null;
   avatar_url?: string | null;
   isOptimistic?: boolean;
+  // Set only by post_batch_announcement(); RLS forbids a member setting it.
+  is_announcement?: boolean;
 };
 
 type Participant = {
@@ -58,6 +60,7 @@ type MessageRow = {
   is_deleted?: boolean;
   reply_to?: string | null;
   reactions?: Record<string, string[]>;
+  is_announcement?: boolean;
 };
 // Realtime payload row — same as MessageRow but always carries conversation_id.
 type MessageRowRT = MessageRow & { conversation_id: string };
@@ -169,7 +172,7 @@ function MessagesPageContent() {
     const rows = (data || []).reverse();
     const pIds = Array.from(new Set(rows.map((r: MessageRow) => r.user_id)));
     const pMap = await fetchProfilesMap(pIds);
-    return { rows: rows.map((r: MessageRow) => ({ id: r.id, content: r.message, sender_id: r.user_id, created_at: r.created_at, updated_at: r.updated_at, is_deleted: r.is_deleted, reply_to: r.reply_to, reactions: r.reactions || {}, full_name: pMap.get(r.user_id)?.full_name, avatar_url: pMap.get(r.user_id)?.avatar_url })), hasMore: (data || []).length === 30 };
+    return { rows: rows.map((r: MessageRow) => ({ id: r.id, content: r.message, sender_id: r.user_id, created_at: r.created_at, updated_at: r.updated_at, is_deleted: r.is_deleted, reply_to: r.reply_to, reactions: r.reactions || {}, is_announcement: r.is_announcement, full_name: pMap.get(r.user_id)?.full_name, avatar_url: pMap.get(r.user_id)?.avatar_url })), hasMore: (data || []).length === 30 };
   };
 
   useEffect(() => {
@@ -236,7 +239,8 @@ function MessagesPageContent() {
       const incoming: Msg = {
         id: row.id, content: row.message, sender_id: row.user_id, created_at: row.created_at,
         updated_at: row.updated_at, is_deleted: row.is_deleted, reply_to: row.reply_to,
-        reactions: row.reactions || {}, full_name: profile?.full_name, avatar_url: profile?.avatar_url,
+        reactions: row.reactions || {}, is_announcement: row.is_announcement,
+        full_name: profile?.full_name, avatar_url: profile?.avatar_url,
       };
       setMessages(prev => {
         if (prev.some(m => m.id === row.id)) return prev;
@@ -475,6 +479,39 @@ function MessagesPageContent() {
             >
               <AnimatePresence initial={false}>
                 {messages.map((msg) => {
+                  // The organiser posts through post_batch_announcement() and is not
+                  // a chat member, so this renders as a notice rather than a peer
+                  // bubble — no reply/react/edit affordances pointing at someone who
+                  // can't read the thread.
+                  if (msg.is_announcement) {
+                    return (
+                      <motion.div
+                        key={msg.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="flex justify-center"
+                      >
+                        <div className="w-full max-w-2xl rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+                          <div className="flex items-center gap-2 mb-1.5">
+                            <Megaphone className="w-3.5 h-3.5 text-amber-400" />
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+                              Announcement from the organiser
+                            </span>
+                          </div>
+                          <p className="text-sm md:text-base leading-relaxed whitespace-pre-wrap text-slate-100">
+                            {msg.content}
+                          </p>
+                          <p className="mt-2 text-[10px] text-slate-400">
+                            {msg.full_name || 'Organiser'} ·{' '}
+                            {new Date(msg.created_at).toLocaleString([], {
+                              day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+                            })}
+                          </p>
+                        </div>
+                      </motion.div>
+                    );
+                  }
+
                   const isMe = msg.sender_id === user.id;
                   const replied = msg.reply_to ? messages.find(m => m.id === msg.reply_to) : null;
 

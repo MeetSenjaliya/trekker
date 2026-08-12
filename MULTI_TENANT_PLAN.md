@@ -180,8 +180,7 @@ dashboard-only layout chrome (sidebar/nav) — kept separate from the public
   one-pending-application guard.
 - Ownership transfer flow for `company_members.role='owner'` (currently permanent
   once set — by design, but you may eventually want a "transfer ownership" RPC).
-- Delete `src/app/test/*` (pre-existing backlog item, unrelated to this work, still
-  outstanding).
+- ~~Delete `src/app/test/*`~~ — done 2026-08-08 (Phase 0 L4).
 
 ---
 

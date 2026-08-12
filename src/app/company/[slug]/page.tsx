@@ -4,7 +4,8 @@ import { notFound } from 'next/navigation';
 import { BadgeCheck, Globe, MapPin } from 'lucide-react';
 import TrekCard from '@/components/ui/TrekCard';
 import { getCompanyBySlug, getStorefrontTreks } from '@/lib/server-queries';
-import { DEFAULT_TREK_IMAGE, truncate } from '@/lib/site';
+import { DEFAULT_TREK_IMAGE, siteUrl, truncate } from '@/lib/site';
+import JsonLd from '@/components/ui/JsonLd';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -59,6 +60,25 @@ export default async function CompanyStorefrontPage({ params }: PageProps) {
 
   return (
     <div className="min-h-screen bg-[#090a0f] text-slate-200 overflow-x-hidden">
+      {/* Structured data only for verified storefronts — the unapproved ones are
+          noindex, so describing them to a crawler works against that. */}
+      {isVerified && (
+        <JsonLd
+          data={{
+            '@context': 'https://schema.org',
+            '@type': 'Organization',
+            name: company.name,
+            url: `${siteUrl}/company/${company.slug}`,
+            ...(company.logo_url && { logo: company.logo_url }),
+            ...(company.cover_image_url && { image: company.cover_image_url }),
+            ...(company.description?.trim() && {
+              description: truncate(company.description.trim(), 300),
+            }),
+            ...(company.website && { sameAs: [company.website] }),
+          }}
+        />
+      )}
+
       {/* Cover */}
       <section className="relative h-[45vh] w-full overflow-hidden">
         <Image
