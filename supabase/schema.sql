@@ -47,11 +47,8 @@ do $$ begin
   create type public.gender as enum ('Male', 'Female');
 exception when duplicate_object then null; end $$;
 
--- NOTE: the `mood` enum exists in the live DB ('Biginer','intermediate','expert')
--- but is not used by any column. Kept for parity; safe to drop.
-do $$ begin
-  create type public.mood as enum ('Biginer', 'intermediate', 'expert');
-exception when duplicate_object then null; end $$;
+-- The `mood` enum ('Biginer','intermediate','expert') was dropped 2026-08-12:
+-- unused by any column, and a typo'd near-duplicate of `experience_level`.
 
 
 -- ============================================================================

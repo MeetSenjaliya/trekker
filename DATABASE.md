@@ -51,7 +51,6 @@ auth.users ──< platform_admins   (super-admin allowlist, SQL-Editor-only)
 | `difficulty` | `Easy, Moderate, Hard, Expert` | `treks.difficulty` |
 | `experience_level` | `Beginner, Intermediate, Expert` | `profiles.experience_level` |
 | `gender` | `Male, Female` | `profiles."Gender"` |
-| `mood` | `Biginer, intermediate, expert` | **unused** (typo'd; safe to drop) |
 | `company_status` | `pending, approved, rejected, suspended` | `companies.status` |
 | `company_role` | `owner, admin, staff` | `company_members.role` |
 
