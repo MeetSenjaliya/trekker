@@ -63,7 +63,6 @@ No custom backend server. All data access goes through the Supabase anon key; se
 
 App Router under `src/app/` (`page`, `explore`, `about`, `trek/[id]`, `auth`, `profile`, `favorites`, `messages`, `review`, `edits`); reusable UI in `src/components/ui/`, layout in `src/components/layout/`. List the tree to see the obvious parts — the non-obvious files that affect how you write code:
 
-- `src/lib/database.ts` — ⚠️ **DEAD**: wrong tables/columns, nothing imports it. Don't read or use it.
 - `src/lib/joinTrek.ts` — `joinTrekBatchAndChat()` / `leaveTrek()`, the **only** correct join path (→ RPC `join_trek_and_chat`).
 - `src/lib/auth.ts` — `signUp/signInAs/signOut/resetPassword/updatePassword/getCurrentUser`. `signInAs()` takes the account kind and only persists a session if it matches.
 - `src/contexts/AuthContext.tsx` — `useAuth(): { user, session, loading, signOut }`.
