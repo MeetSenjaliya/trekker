@@ -313,16 +313,16 @@ Your test suite currently does not cover the thing most likely to break catastro
 
 ## §7 — Code hygiene / dead code
 
-- [ ] Delete `src/lib/database.ts` — 199 lines, dead, wrong tables, documented as dead for months
-- [ ] Delete `src/components/ui/Chat.tsx` — stub
-- [ ] Delete `src/components/ui/favcard2.tsx` — duplicate of `FavCard`
-- [ ] Delete `src/app/edits/` — **decided 2026-08-05: `/profile/edit` is the real profile editor.** `/edits` is the duplicate: nothing links to it (the only reference anywhere is the `robots.ts` disallow list), so it is reachable only by typing the URL. Both were kept in sync during the storage rate-limit work (`compressImage()` + `uploadErrors` wired into each), so deleting `/edits` loses nothing. Note the two use different avatar path layouts — `/edits` writes `{uid}.{ext}` (fixed path, upsert-overwrite), `/profile/edit` writes `{uid}/{ts}.{ext}` (new object each time); the storage RLS policy accepts both, so removing `/edits` does not need a policy change. Remove `'/edits'` from `src/app/robots.ts` at the same time
-- [ ] Delete one of `postcss.config.js` / `postcss.config.mjs` — one is ignored
+- [x] Delete `src/lib/database.ts` — 199 lines, dead, wrong tables, documented as dead for months. **Done 2026-08-12**; the ⚠️ warning line in `CLAUDE.md` went with it.
+- [x] Delete `src/components/ui/Chat.tsx` — stub. **Done 2026-08-12.**
+- [x] Delete `src/components/ui/favcard2.tsx` — **not** a duplicate of `FavCard` as previously recorded: it was an abandoned alternate design (delete button instead of the heart, direct `supabase` call instead of `@/lib/queries`). It also linked to `/treks/${id}` (no such route) and deleted favorites with `.eq('trek_id', id)` and **no user filter**, leaning entirely on RLS. Dead, so never a live bug. **Done 2026-08-12.**
+- [ ] Delete `src/app/(trekker)/edits/` — note the path: the route lives inside the `(trekker)` route group, so `ls src/app/edits` misses it and it has twice been mistaken for already-deleted. It is **live** — `npm run build` still lists `ƒ /edits`. **decided 2026-08-05: `/profile/edit` is the real profile editor.** `/edits` is the duplicate: nothing links to it (the only reference anywhere is the `robots.ts` disallow list), so it is reachable only by typing the URL. Both were kept in sync during the storage rate-limit work (`compressImage()` + `uploadErrors` wired into each), so deleting `/edits` loses nothing. Note the two use different avatar path layouts — `/edits` writes `{uid}.{ext}` (fixed path, upsert-overwrite), `/profile/edit` writes `{uid}/{ts}.{ext}` (new object each time); the storage RLS policy accepts both, so removing `/edits` does not need a policy change. Remove `'/edits'` from `src/app/robots.ts` at the same time
+- [x] Delete one of `postcss.config.js` / `postcss.config.mjs` — **Done 2026-08-12: deleted the `.mjs`.** They were not merely redundant, they contradicted: `.js` held the Tailwind v3 setup (`tailwindcss` + `autoprefixer`, matching the installed `tailwindcss ^3.4.17`), while `.mjs` held Tailwind v4 syntax (`@tailwindcss/postcss`, a package this repo does not depend on). `postcss-load-config` resolves `.js` before `.mjs`, so the correct one was winning and styling worked. **Deleting the `.js` instead would have broken every style in the app** — if this ever comes up again, keep the `.js`.
 - [ ] Drop the unused `mood` enum and the dead `increment_participants` RPC (Phase 0 NEW-5).
       **Keep `update_participants_count()`** — it backs the `participants_joined` counter.
 - [ ] Consolidate the two Supabase client styles (`lib/supabase.ts` vs `utils/supabase/*`)
 
-Roughly 500 lines of pure noise that misleads every future reader.
+371 lines removed 2026-08-12 (367 of code + the stale postcss config). The remaining items are the `/edits` route, the `mood` enum, and the client consolidation.
 
 ---
 
