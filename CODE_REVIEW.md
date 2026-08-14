@@ -8,13 +8,14 @@ are deliberately omitted — this is a working backlog, not an assessment.
 > takes about an afternoon. §2 is the structural work that unblocks revenue. §3+ is
 > steady-state cleanup. Tick boxes as you go.
 >
-> **Verification state:** `npm run build` passes clean (exit 0, all 31 routes) as of this
-> review. Supabase MCP was unauthorized when this review was written, so DB findings were
-> taken from static reading of `supabase/schema.sql`, `supabase/migration-multi-tenant.sql`,
-> and `supabase/phases/*.sql`. **That produced one false critical finding (§1.3) — the SQL
-> files' status comments did not match the live database.** §1.3 has since been verified
-> against the live DB (2026-08-04) and withdrawn. Every other DB finding, including the
-> §3.1 index gaps, is still static-read only — confirm against the live schema before acting.
+> **Verification state (re-checked 2026-08-14):** `npm run build` exit 0, `npm test` 124/124,
+> `npm run lint` 0 errors / 22 known warnings. Supabase MCP was unauthorized when this review
+> was written, so DB findings were taken from static reading of the SQL files. **That produced
+> one false critical finding (§1.3) — the files' status comments did not match the live
+> database.** §1.3 was verified live (2026-08-04) and withdrawn; the §3.1 index gaps have since
+> been confirmed live and closed, with two corrections to the SQL this review suggested (see
+> §3.1). Findings not yet marked ✅ have **not** been re-verified against the live schema —
+> confirm before acting, and read `supabase_migrations.schema_migrations`, not a file comment.
 
 ---
 
@@ -190,10 +191,10 @@ to retrofit once real bookings exist.
 
 ---
 
-### 2.4 🟠 Adopt real migrations
+### 2.4 ✅ ~~Adopt real migrations~~ — DONE 2026-08-13
 
-- [ ] Create `supabase/migrations/NNNN_description.sql`, append-only, applied in order
-- [ ] Demote `schema.sql` to a generated artifact rather than a hand-edited one
+- [x] Create `supabase/migrations/NNNN_description.sql`, append-only, applied in order
+- [x] Demote `schema.sql` to a generated artifact rather than a hand-edited one
 
 Hand-maintained SQL files carry no proof of what's actually deployed — §1.3 is a worked example
 of a status comment outliving its truth and producing a false critical finding. That's not a
@@ -201,13 +202,40 @@ discipline failure — it's the method failing at this scale. You can still past
 into the SQL Editor by hand; you gain an ordered, replayable history and the ability to
 rebuild a dev database from scratch.
 
+**Shipped.** `0001_baseline.sql` is the live DB as of 2026-08-13; `schema.sql` is now built by
+`scripts/build-schema.mjs` (`npm run db:schema`) with a test that fails on drift; the DB suite
+replays the migrations instead of loading `schema.sql`, so every run re-proves they rebuild from
+nothing. The proof-of-deployment gap is closed by `supabase_migrations.schema_migrations`, which
+each migration writes its own row into — "is it applied?" is now a query. Workflow in
+`supabase/migrations/README.md`. The ledger was bootstrapped on production and verified live the
+same day (`0001 / baseline`, RLS on with no policies, no `anon`/`authenticated` privileges, no
+new security-advisor lint).
+
 ---
 
 ## §3 — Performance
 
-### 3.1 🟠 Missing indexes on the chat hot path
+### 3.1 ✅ ~~Missing indexes on the chat hot path~~ — DONE 2026-08-12
 
-- [ ] Verify against the live DB (MCP was unauthorized at review time), then apply
+- [x] Verify against the live DB (MCP was unauthorized at review time), then apply
+
+**Shipped.** All four indexes applied and verified live over read-only MCP; details and
+rationale in [FEATURES.md](FEATURES.md) "Chat hot-path indexes", DDL in `supabase/schema.sql`
+§3 beside each table.
+
+Two corrections to the SQL suggested below. **`trek_batches_trek_id_idx` was not applied** —
+`trek_batches_trekid_batchdate_key (trek_id, batch_date)` already serves `trek_id` as a leading
+prefix, so it would have been pure write overhead. And the participants index shipped as
+`(user_id, conversation_id)` rather than `(user_id)` alone: both hot callers select only
+`conversation_id`, so the two-column form answers them index-only and still indexes the FK.
+
+Also found while verifying, and not in this review: `conversation_participants` carried **two
+byte-identical uniques** on `(conversation_id, user_id)`, both maintained on every chat join.
+The undocumented one was dropped; every `on conflict (conversation_id, user_id)` in the codebase
+infers its arbiter from the column list, not a constraint name.
+
+Still unindexed, deliberately: `companies.approved_by` and `company_invites.invited_by` — 4 rows
+each, platform-admin paths only.
 
 Checked every `create index` across `schema.sql`, `migration-multi-tenant.sql`, and
 `phases/*.sql`. Two real gaps:
@@ -248,13 +276,24 @@ create index if not exists trek_batches_trek_id_idx  on public.trek_batches (tre
 
 ## §4 — Security hardening
 
-### 4.1 🟡 No security headers at all
+### 4.1 🟡 ~~No security headers at all~~ — headers shipped 2026-08-12; CSP still report-only
 
-- [ ] Add a `headers()` block to `next.config.mjs`: CSP, HSTS, `X-Frame-Options: DENY`,
+- [x] Add a `headers()` block to `next.config.mjs`: CSP, HSTS, `X-Frame-Options: DENY`,
       `Referrer-Policy`, `X-Content-Type-Options: nosniff`
+- [ ] Promote the CSP from report-only to enforcing — set `CSP_ENFORCE=1` in Vercel
 
-Currently there is none. For an app where the browser holds the auth token, clickjacking and
-XSS defense-in-depth matter.
+All five are served, plus `Permissions-Policy`. HSTS ships **without** `preload` (effectively
+irreversible, and it binds every future subdomain). Details in [FEATURES.md](FEATURES.md)
+"Security headers".
+
+**The CSP is `Content-Security-Policy-Report-Only`, so today it blocks nothing** — this stays
+🟡 until it is promoted. Two things worth knowing before flipping it: `script-src` keeps
+`'unsafe-inline'` (Next's App Router emits inline hydration scripts, and the nonce alternative
+forces every page dynamic, undoing the SSR/SEO work), so this is exfiltration containment via
+`connect-src`, not injection defence. And the likely breakage is **photo upload, not script** —
+`browser-image-compression` spawns its worker from a blob URL, and `compressImage()` swallows
+the failure by falling back to the uncompressed original, so a break shows up as bloated
+uploads rather than an error.
 
 ### 4.2 🟡 No rate limiting
 
@@ -277,26 +316,35 @@ XSS defense-in-depth matter.
 
 ## §5 — Testing
 
-### 5.1 🟡 Coverage is thin exactly where risk is highest
+### 5.1 ✅ ~~Coverage is thin exactly where risk is highest~~ — DONE 2026-08-13
 
-- [ ] Add RLS integration tests (pgTAP, or Vitest with two authenticated clients)
-- [ ] Add tests for `src/lib/company.ts`
+- [x] Add RLS integration tests (pgTAP, or Vitest with two authenticated clients)
+- [x] Add tests for `src/lib/company.ts`
 
-26 tests exist: Zod schemas plus two presentational components. **Zero** tests on
-`src/lib/company.ts` (830 lines of business-critical multi-tenant logic) and **zero** on RLS
-policies — which *are* your security model.
+**Shipped: 26 tests → 124.** 81 of them are `tests/db/**`, exercising RLS policies, SECURITY
+DEFINER RPCs and EXECUTE grants against a real Postgres — PGlite (Postgres 18 compiled to WASM,
+in-process, no Docker) replaying `supabase/migrations/*.sql` in order, so every run also proves
+the migrations rebuild a database from nothing. Plus 17 on the pure logic in `src/lib/company.ts`
+(its I/O is covered by `tests/db/`). Whole suite is under 10s. See
+[tests/db/README.md](tests/db/README.md) before adding to these.
 
-Highest-value assertions to write first:
+All five assertions below are covered, and writing them **found two live policy bugs** that
+every prior structural check had missed — see §1.7 and §1.8 in [FEATURES.md](FEATURES.md).
+`createTrek()` could not publish a trek *for anyone*, platform admins included, because
+`insert … returning` evaluates the SELECT policy against a pre-insert snapshot.
 
-| Assertion |
-|---|
-| User B cannot read User A's `trek_participants` row |
-| `anon` sees no `pending` company |
-| A suspended company's treks vanish from `search_treks` |
-| A non-owner cannot `PATCH` `companies.slug` |
-| A non-member gets an empty set from `get_company_batch_participants` |
+| Assertion | Covered by |
+|---|---|
+| User B cannot read User A's `trek_participants` row | `tenant-boundaries.test.ts` |
+| `anon` sees no `pending` company | `tenant-boundaries.test.ts` |
+| A suspended company's treks vanish from `search_treks` | `catalogue-writes.test.ts` |
+| A non-owner cannot `PATCH` `companies.slug` | `tenant-boundaries.test.ts` |
+| A non-member gets an empty set from `get_company_batch_participants` | `tenant-boundaries.test.ts:270` |
 
-Your test suite currently does not cover the thing most likely to break catastrophically.
+**What a green run does not prove.** It proves the policies *as committed to
+`supabase/migrations/`* are sound. It cannot see production — read
+`supabase_migrations.schema_migrations` over the read-only MCP server for that. The first run
+found 20 functions whose live EXECUTE grants the migration files could not reproduce.
 
 ---
 
@@ -316,7 +364,7 @@ Your test suite currently does not cover the thing most likely to break catastro
 - [x] Delete `src/lib/database.ts` — 199 lines, dead, wrong tables, documented as dead for months. **Done 2026-08-12**; the ⚠️ warning line in `CLAUDE.md` went with it.
 - [x] Delete `src/components/ui/Chat.tsx` — stub. **Done 2026-08-12.**
 - [x] Delete `src/components/ui/favcard2.tsx` — **not** a duplicate of `FavCard` as previously recorded: it was an abandoned alternate design (delete button instead of the heart, direct `supabase` call instead of `@/lib/queries`). It also linked to `/treks/${id}` (no such route) and deleted favorites with `.eq('trek_id', id)` and **no user filter**, leaning entirely on RLS. Dead, so never a live bug. **Done 2026-08-12.**
-- [ ] Delete `src/app/(trekker)/edits/` — note the path: the route lives inside the `(trekker)` route group, so `ls src/app/edits` misses it and it has twice been mistaken for already-deleted. It is **live** — `npm run build` still lists `ƒ /edits`. **decided 2026-08-05: `/profile/edit` is the real profile editor.** `/edits` is the duplicate: nothing links to it (the only reference anywhere is the `robots.ts` disallow list), so it is reachable only by typing the URL. Both were kept in sync during the storage rate-limit work (`compressImage()` + `uploadErrors` wired into each), so deleting `/edits` loses nothing. Note the two use different avatar path layouts — `/edits` writes `{uid}.{ext}` (fixed path, upsert-overwrite), `/profile/edit` writes `{uid}/{ts}.{ext}` (new object each time); the storage RLS policy accepts both, so removing `/edits` does not need a policy change. Remove `'/edits'` from `src/app/robots.ts` at the same time
+- [x] Delete `src/app/(trekker)/edits/` — **Done 2026-08-14**, along with the `'/edits'` entry in `src/app/robots.ts`. Note the path: the route lived inside the `(trekker)` route group, so `ls src/app/edits` missed it and it was mistaken for already-deleted **three times** — the last one while auditing this very checkbox. `npm run build` no longer lists `ƒ /edits`. **decided 2026-08-05: `/profile/edit` is the real profile editor.** `/edits` is the duplicate: nothing links to it (the only reference anywhere is the `robots.ts` disallow list), so it is reachable only by typing the URL. Both were kept in sync during the storage rate-limit work (`compressImage()` + `uploadErrors` wired into each), so deleting `/edits` loses nothing. Note the two use different avatar path layouts — `/edits` writes `{uid}.{ext}` (fixed path, upsert-overwrite), `/profile/edit` writes `{uid}/{ts}.{ext}` (new object each time); the storage RLS policy accepts both, so removing `/edits` does not need a policy change. Remove `'/edits'` from `src/app/robots.ts` at the same time
 - [x] Delete one of `postcss.config.js` / `postcss.config.mjs` — **Done 2026-08-12: deleted the `.mjs`.** They were not merely redundant, they contradicted: `.js` held the Tailwind v3 setup (`tailwindcss` + `autoprefixer`, matching the installed `tailwindcss ^3.4.17`), while `.mjs` held Tailwind v4 syntax (`@tailwindcss/postcss`, a package this repo does not depend on). `postcss-load-config` resolves `.js` before `.mjs`, so the correct one was winning and styling worked. **Deleting the `.js` instead would have broken every style in the app** — if this ever comes up again, keep the `.js`.
 - [x] Drop the unused `mood` enum and the dead `increment_participants` RPC (Phase 0 NEW-5).
       **Keep `update_participants_count()`** — it backs the `participants_joined` counter.
@@ -327,7 +375,7 @@ Your test suite currently does not cover the thing most likely to break catastro
       `DATABASE.md` updated the same day.
 - [ ] Consolidate the two Supabase client styles (`lib/supabase.ts` vs `utils/supabase/*`)
 
-371 lines removed 2026-08-12 (367 of code + the stale postcss config), plus the `mood` enum dropped from the live DB. The remaining items are the `/edits` route and the client consolidation.
+371 lines removed 2026-08-12 (367 of code + the stale postcss config), plus the `mood` enum dropped from the live DB; the `/edits` route went 2026-08-14. `npm run lint` is now **0 errors**, 22 warnings (the documented `no-img-element` / `exhaustive-deps` backlog). The only item left here is the client consolidation.
 
 ---
 
@@ -338,11 +386,14 @@ Your test suite currently does not cover the thing most likely to break catastro
 | 1 | §1.1 commit + push | 5 min | Total-loss risk; ships multi-tenant to prod |
 | ~~2~~ | ~~§1.2 delete `/test`~~ — done 2026-08-08 | — | — |
 | ~~3~~ | ~~§1.3 apply pending SQL~~ — already applied, no work | — | — |
-| 4 | §3.1 indexes | 15 min | Chat scaling cliff |
-| 5 | §4.1 security headers | 20 min | Clickjacking / XSS depth |
-| 6 | §2.1 + §2.2 server layer **and** SSR/SEO together | days | Unblocks revenue + organic growth |
-| 7 | §5.1 RLS tests | days | Protects the security model |
-| 8 | §2.3 payments | weeks | Revenue |
-| 9 | §7 dead code, §3.2–3.3, §6 notifications | ongoing | Noise, latency, retention |
+| ~~4~~ | ~~§3.1 indexes~~ — done 2026-08-12 | — | — |
+| ~~5~~ | ~~§4.1 security headers~~ — done 2026-08-12; CSP promotion still open | — | — |
+| ~~6~~ | ~~§2.4 real migrations~~ — done 2026-08-13 | — | — |
+| ~~7~~ | ~~§5.1 RLS tests~~ — done 2026-08-13 (26 → 124 tests) | — | — |
+| 8 | §2.1 + §2.2 server layer **and** SSR/SEO together | days | Unblocks revenue + organic growth |
+| 9 | §2.3 payments | weeks | Revenue |
+| 10 | §3.2–3.3, §6 notifications, §7 client consolidation | ongoing | Latency, retention, noise |
 
-Items 1–5 take one afternoon and clear both remaining critical risks (§1.3 needed no work).
+**§1.1 is the only thing left that is both critical and cheap** — and it now covers more work
+than when this review was written: the migrations, the 124-test suite, the indexes and the
+security headers are all uncommitted. Everything else remaining is measured in days or weeks.

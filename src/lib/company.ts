@@ -278,7 +278,7 @@ export interface TrekInput {
     coverImageUrl?: string | null;
 }
 
-function trekRow(input: TrekInput): Record<string, unknown> {
+export function trekRow(input: TrekInput): Record<string, unknown> {
     const row: Record<string, unknown> = {
         title: input.title.trim(),
         description: input.description || null,
@@ -741,7 +741,7 @@ const KNOWN_INVITE_ERRORS = [
 // the user is about to be told about, and console.error turns each into a red
 // Console Error panel in dev. The message and code are logged rather than the
 // error object, which the Next dev overlay renders as `{}`.
-function inviteErrorMessage(
+export function inviteErrorMessage(
     action: string,
     error: { message: string; code?: string },
     fallback: string

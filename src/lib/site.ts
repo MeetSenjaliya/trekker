@@ -18,6 +18,17 @@ export const SITE_NAME = 'Trek Buddies';
 export const DEFAULT_TREK_IMAGE =
   'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
+/** "Moderate trek · Uttarakhand · ₹4500" — the facts that make a shared link worth tapping. */
+export function factLine(trek: { difficulty?: string; location?: string; estimated_cost?: number }) {
+  return [
+    trek.difficulty ? `${trek.difficulty} trek` : null,
+    trek.location,
+    trek.estimated_cost != null ? `₹${trek.estimated_cost}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /** Clamp a meta description to roughly what Google renders, cutting on a word boundary. */
 export function truncate(text: string, max = 160): string {
   const clean = text.replace(/\s+/g, ' ').trim();

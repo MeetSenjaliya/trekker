@@ -1,10 +1,12 @@
 # Trekker — Database Reference
 
-Complete reference for the **live Supabase database** (Postgres 17, project `dtjmyqogeozrzzbdjokr`), introspected **2026-06-13**, updated **2026-07-02** after the multi-tenant migration ([supabase/migration-multi-tenant.sql](supabase/migration-multi-tenant.sql)) was applied and verified live, and **2026-08-05** after Postgres-enforced rate limiting ([supabase/phases/rate-limiting.sql](supabase/phases/rate-limiting.sql) and [supabase/phases/rate-limiting-storage.sql](supabase/phases/rate-limiting-storage.sql)), and **2026-08-06** after the account-type split ([supabase/phases/phase-f-account-types.sql](supabase/phases/phase-f-account-types.sql)) and the invite → accept flow ([supabase/phases/phase-g-invite-accept.sql](supabase/phases/phase-g-invite-accept.sql)), and **2026-08-08** after the storage rate limit was made visible to the user ([supabase/phases/fix-storage-rate-limit-message.sql](supabase/phases/fix-storage-rate-limit-message.sql)). The runnable, authoritative DDL lives in [supabase/schema.sql](supabase/schema.sql); this document is the readable companion (tables, relationships, RLS matrix, storage, edge functions, and known issues).
+Complete reference for the **live Supabase database** (Postgres 17, project `dtjmyqogeozrzzbdjokr`), introspected **2026-06-13**, updated **2026-07-02** after the multi-tenant migration ([supabase/migration-multi-tenant.sql](supabase/migration-multi-tenant.sql)) was applied and verified live, and **2026-08-05** after Postgres-enforced rate limiting ([supabase/phases/rate-limiting.sql](supabase/phases/rate-limiting.sql) and [supabase/phases/rate-limiting-storage.sql](supabase/phases/rate-limiting-storage.sql)), and **2026-08-06** after the account-type split ([supabase/phases/phase-f-account-types.sql](supabase/phases/phase-f-account-types.sql)) and the invite → accept flow ([supabase/phases/phase-g-invite-accept.sql](supabase/phases/phase-g-invite-accept.sql)), and **2026-08-08** after the storage rate limit was made visible to the user ([supabase/phases/fix-storage-rate-limit-message.sql](supabase/phases/fix-storage-rate-limit-message.sql)), and **2026-08-13** after the `createTrek()` RETURNING fix and the chat policy re-scoping ([supabase/phases/fix-trek-returning-and-chat-policy-roles.sql](supabase/phases/fix-trek-returning-and-chat-policy-roles.sql)), applied and read back from production the same day, and **2026-08-13** when all of the above was captured as [supabase/migrations/0001_baseline.sql](supabase/migrations/0001_baseline.sql) and the project moved to numbered, append-only migrations (§12) — with the RETURNING/chat-policy pair split back out as [0002](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) on **2026-08-14**, since it was applied after `0001` was recorded.
+
+The runnable DDL lives in [supabase/schema.sql](supabase/schema.sql), **generated** from those migrations; this document is the readable companion (tables, relationships, RLS matrix, storage, edge functions, and known issues). The live database remains the source of truth — check [`supabase_migrations.schema_migrations`](#supabase_migrationsschema_migrations--what-is-actually-deployed) to see what it actually has.
 
 - **Backend:** Supabase (Postgres + Auth + Storage + Edge Functions).
 - **Client access:** browser uses the **anon key** only; there is no service-role key in the app. RLS is therefore the primary security boundary.
-- **Schemas in play:** `public` (app tables), `auth` (Supabase-managed users), `storage` (buckets/objects).
+- **Schemas in play:** `public` (app tables), `auth` (Supabase-managed users), `storage` (buckets/objects), `supabase_migrations` (the deployment ledger, §12).
 
 ---
 
@@ -185,6 +187,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `photo_urls` | text[] | default `{}` |
 | `trek_date` | date | |
 | | | **UNIQUE(`trek_id`, `user_id`)** |
+| | | **INDEX** `trek_reviews_user_idx (user_id)` — the unique leads with `trek_id`, so the `user_id` FK was unindexed (2026-08-12) |
 
 ### `favorites` — wishlist (no surrogate PK)
 | Column | Type | Notes |
@@ -193,6 +196,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `trek_id` | uuid | FK → `treks(id)` |
 | `created_at` | timestamptz | `now()` |
 | | | **UNIQUE(`user_id`, `trek_id`)** |
+| | | **INDEX** `favorites_trek_idx (trek_id)` — the unique leads with `user_id`, so the `trek_id` FK was unindexed (2026-08-12) |
 
 ### `conversations` — one chat per batch
 | Column | Type | Notes |
@@ -209,10 +213,13 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `user_id` | uuid | **NOT NULL**, FK → `profiles(id)` |
 | `joined_at` | timestamptz | `now()` |
 | `last_read_at` | timestamptz | **NOT NULL**, `now()` — unread-count watermark; read by `get_unread_counts()`, advanced by `mark_conversation_read()` |
-| | | **UNIQUE(`conversation_id`, `user_id`)** |
+| | | **UNIQUE(`conversation_id`, `user_id`)** — was **two** byte-identical uniques until 2026-08-12; the Postgres-default-named duplicate (`…_conversation_id_user_id_key`) was dropped, since every `on conflict (conversation_id, user_id)` infers its arbiter from the column list, not a constraint name |
+| | | **INDEX** `conversation_participants_user_conv_idx (user_id, conversation_id)` — the unique leads with `conversation_id`, so "which chats am I in?" (the driving side of `get_unread_counts()`, and the `/messages` sidebar) had no usable index. Covering for both; also indexes the `user_id` FK |
 
 ### `conversation_messages` — chat messages
 Composite **PK (`created_at`, `id`)**.
+
+**Indexes** — `conversation_messages_conv_created_idx (conversation_id, created_at desc)` (2026-08-12) and `conversation_messages_user_created_idx (user_id, created_at desc)` (2026-08-05, for the §13 flood trigger). The first is the read path: `fetchMessagesPage()` filters `conversation_id` then takes `order by created_at desc limit 30`, so that column order serves the filter *and* the sort from one range scan (no Sort node, stops after 30 rows). Before it, nothing led with `conversation_id` and every conversation open was a sequential scan of the fastest-growing table here.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -330,7 +337,7 @@ RLS is enabled on all 16 public tables. `auth.uid() = …` checks appear under b
 | Table | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
 | `profiles` | own (`id = uid`) | own | own | — |
-| `treks` | `is_trek_visible(id)` (public rule: active + company approved; members/platform admins see own/all; participants keep read access to treks they've booked) | **approved** company member | **approved** company member, or platform admin | — (soft-delete via `is_active`; closed too while frozen) |
+| `treks` | **two policies, OR'd.** `to public`: `is_trek_visible(id)` (public rule: active + company approved; members/platform admins see own/all; participants keep read access to treks they've booked). `to authenticated`: `is_approved_company_member(company_id)` — added 2026-08-13 so `INSERT … RETURNING` can be satisfied (see note below); grants nothing new | **approved** company member | **approved** company member, or platform admin | — (soft-delete via `is_active`; closed too while frozen) |
 | `trek_batches` | `is_trek_visible(trek_id)` | **approved** company member (of parent trek) | **approved** company member | **approved** company member **AND no participants AND no chat conversation** (`batch_has_participants` / `batch_has_conversation`, both DEFINER; a lingering conversation FK would otherwise reject the delete) |
 | `companies` | approved, or own-company member, or platform admin | — (RPC only) | company owner/admin **of a writable company**, or platform admin (workflow columns trigger-pinned) | — (suspend, never delete) |
 | `company_members` | own-company members + platform admins | **— (no policy, INSERT revoked; RPC-only since 2026-08-06)** | company owner/admin **of a writable company**, non-owner rows, target role ∈ admin/staff | company owner/admin **of a writable company**, non-owner rows |
@@ -339,9 +346,9 @@ RLS is enabled on all 16 public tables. `auth.uid() = …` checks appear under b
 | `trek_participants` | **own** (`user_id = uid`) | own | own | own |
 | `trek_reviews` | **public `true`** | own **AND joined the trek** | own | own |
 | `favorites` | own | own | — | own |
-| `conversations` | `is_chat_participant(id)` | — | — | — |
-| `conversation_participants` | `is_chat_participant(cid)` | `service_role` only | — | own (`user_id = uid`) |
-| `conversation_messages` | `is_chat_participant(cid)` | own **AND** participant **AND** `is_announcement = false` | own **AND** `is_announcement = false` | own |
+| `conversations` | `is_chat_participant(id)` *(`to authenticated`)* | — | — | — |
+| `conversation_participants` | `is_chat_participant(cid)` *(`to authenticated`)* | `service_role` only | — | own (`user_id = uid`) |
+| `conversation_messages` | `is_chat_participant(cid)` *(`to authenticated`)* | own **AND** participant **AND** `is_announcement = false` *(`to authenticated`)* | own **AND** `is_announcement = false` | own |
 | `user_stats` | own | — (system) | — (system) | — |
 | `user_monthly_activity` | own | — (system) | — (system) | — |
 | `user_achievements` | own | — (system) | — (system) | — (system) |
@@ -356,6 +363,8 @@ Key design points:
 - **Company writes carry a status tier** (2026-08-08): `is_company_writable()` = `pending`+`approved` (settings, team, logos); `is_approved_company_member()` = `approved` only (treks, batches, trek images). Rejected and suspended tenants are **read-only** — before this, status gated reads only, so a rejected company kept full write access to its own tenant. Bare `is_company_member`/`is_company_admin` in a **write** policy is now a bug: it silently un-freezes. SELECT is deliberately never status-gated (`is_trek_visible` handles read visibility, and staff plus existing bookers must keep reading a hidden trek), and neither are the `is_platform_admin()` arms — freezing must not lock out the role that un-freezes.
 - **No client path to owner or platform-admin**: `role='owner'` is written only by `apply_for_company()`; the INSERT policy allows `'staff'` only and UPDATE's WITH CHECK excludes `'owner'`. `platform_admins` is default-deny with zero policies.
 - **PII stays out of company hands**: staff never get SELECT on `profiles`; rosters come only from `get_company_batch_participants()`, which re-checks membership per batch.
+- **A SELECT policy whose predicate reads its own table cannot satisfy `INSERT … RETURNING`** (2026-08-13). Postgres applies the SELECT policy to rows returned by `RETURNING`, and `is_trek_visible()` is `stable` with a body that selects from `public.treks` — so it evaluates against the statement's *pre-insert* snapshot and cannot see the row being created. It returns false and the insert is rejected with a `with_check`-shaped error naming the wrong policy. This broke `createTrek()` for every caller, platform admins included. Fixed with a **second** permissive SELECT policy scoped `to authenticated`, whose predicate reads `company_members`/`companies` and never `treks`. ⚠️ It could **not** be folded into `view treks` as an `or` arm: that policy is `to public`, and `is_approved_company_member` is revoked from `anon`, so every anonymous `/explore` read would raise `permission denied for function`.
+- **A policy's role list and its predicate's EXECUTE grant must agree** (2026-08-13). A `to public` policy is evaluated for `anon`, so if its qual calls a DEFINER function `anon` cannot execute, anonymous access raises `permission denied for function` instead of returning an empty set. It fails closed, but the shape resolves in **both** directions here: `is_trek_visible`/`is_company_member`/`is_platform_admin` keep their `anon` grant because `/explore` genuinely needs them, while the four chat policies calling `is_chat_participant` were re-scoped `to authenticated` because chat has no anonymous read path. Check both halves when adding either.
 - **Rate limits live in Postgres, not the app** (2026-08-05): the publishable key ships in the client bundle, so a limit enforced in a Route Handler is bypassed by calling PostgREST directly — only Postgres sees every path. See §7's three rate-limit triggers and `invite_company_member`'s inline cap, plus the per-upload size/MIME caps on the buckets in §9.
 
 ---
@@ -407,12 +416,29 @@ Correctness bugs (in DB):
 - ~~`create_trek_initial_message()` + `trg_initial_trek_message` insert into non-existent `trek_messages` → creating a trek errors.~~ **FIXED 2026-07-02** — the multi-tenant migration dropped the trigger; the (unused) function remains.
 - `treks.participants_joined` is kept in sync by `trek_participants_count_trigger` → `update_participants_count()` on every join/leave (NEW-5); it counts **confirmed only** (follow-up #1), so it now agrees with `get_trek_participant_count()`.
 - Duplicate dead notification triggers (`notify_trek_join/remove` → non-existent edge fn).
-- App-side dead code: [src/lib/database.ts](src/lib/database.ts) targets a non-existent `reviews` table and `trek_participants.trek_id` column and the non-existent `increment_participants` RPC. Not on any live path (the app uses [src/lib/joinTrek.ts](src/lib/joinTrek.ts)).
+- ~~App-side dead code: `src/lib/database.ts` targets a non-existent `reviews` table and `trek_participants.trek_id` column and the non-existent `increment_participants` RPC.~~ **FIXED 2026-08-12** — the file was deleted (199 lines, zero importers). The live join path is and was [src/lib/joinTrek.ts](src/lib/joinTrek.ts).
 
-See [SECURITY_AUDIT_ISSUE.md](SECURITY_AUDIT_ISSUE.md) for the full hardening backlog and history, and [supabase/security-fixes.sql](supabase/security-fixes.sql) for applied-fix SQL with rationale.
+See [SECURITY_AUDIT_ISSUE.md](SECURITY_AUDIT_ISSUE.md) for the full hardening backlog and history, and [supabase/security-fixes.sql](supabase/security-fixes.sql) for the rationale behind each applied fix. Both are dated records, not current state — `SECURITY_AUDIT_ISSUE.md` still describes findings since fixed (e.g. `src/lib/database.ts`, deleted 2026-08-12). New hardening SQL goes in a [migration](supabase/migrations/README.md).
 
 ---
 
 ## 12. How to apply
 
-`supabase/schema.sql` is dependency-ordered and idempotent where practical. On a fresh project, run it top-to-bottom (SQL editor or `psql`). On the existing project it's a reference — the live DB already matches it. After DDL changes, re-run the security advisor (`get_advisors`) to catch missing RLS.
+Every change is a numbered, append-only file in [supabase/migrations/](supabase/migrations/README.md) — that README is the full workflow. Write the next `NNNN_*.sql`, prove it with `npx vitest run --project db`, paste it into the SQL editor, then `npm run db:schema`. After DDL changes, re-run the security advisor (`get_advisors`) to catch missing RLS.
+
+`supabase/schema.sql` is **generated** from those migrations — do not hand-edit it. On a fresh project, run it top-to-bottom (SQL editor or `psql`); it is every migration concatenated in order.
+
+### `supabase_migrations.schema_migrations` — what is actually deployed
+
+| Column | Type | Notes |
+|---|---|---|
+| `version` | `text` PK | Zero-padded migration number, e.g. `0001` |
+| `name` | `text` | Description from the filename |
+| `statements` | `text[]` | Unused here; present so the Supabase CLI recognises the table |
+| `applied_at` | `timestamptz` | Defaults to `now()` |
+
+Each migration inserts its own row as its last statement. This table — not a comment in a SQL file — is the answer to "is it applied?"; trusting a comment produced a false 🔴 critical in `CODE_REVIEW.md` §1.3. Three locks, in order of what actually stops a client: it sits outside `public` on purpose (PostgREST exposes `public`, so a ledger there would be anon-readable); `anon` and `authenticated` hold no privileges on it; and RLS is on with no policies, which is a no-op today but holds if the schema is ever exposed. Deny-all is safe because every role that must read it bypasses RLS — `postgres` and `supabase_read_only_user` (the MCP reader) both have `rolbypassrls`, and the owner is exempt absent `FORCE ROW LEVEL SECURITY`.
+
+```sql
+select version, name, applied_at from supabase_migrations.schema_migrations order by version;
+```

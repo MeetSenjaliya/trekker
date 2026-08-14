@@ -1,6 +1,10 @@
 -- ============================================================================
 -- FIX — drop the duplicate UNIQUE on conversation_participants (2026-08-05)
 -- ============================================================================
+-- ⚠️ SUPERSEDED (2026-08-12) — this was never applied. The same drop is folded
+-- into supabase/phases/perf-chat-hot-path-indexes.sql §5. Run that file
+-- instead; running this one too is a harmless no-op.
+-- ============================================================================
 -- ⚠️ Confirm the SQL Editor tab is on project dtjmyqogeozrzzbdjokr first:
 --    select current_database(), to_regclass('public.rate_events');
 --

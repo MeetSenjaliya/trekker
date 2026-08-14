@@ -38,7 +38,7 @@ Guidelines to reduce common coding mistakes. Bias toward caution over speed — 
 
 - Turn vague tasks into verifiable goals ("fix the bug" → "reproduce it, then confirm the repro is gone").
 - For multi-step tasks, state a brief plan with a verify step for each.
-- The build is the gating check — run `npm run build` before marking work complete (see Testing & Linting).
+- `npm run build` is the gating check; `npm test` is cheap enough (~1.4s) to run alongside it. Both before marking work complete (see Testing & Linting).
 
 ---
 
@@ -69,6 +69,7 @@ App Router under `src/app/` (`page`, `explore`, `about`, `trek/[id]`, `auth`, `p
 - `src/utils/imageCompression.ts` — `compressImage()`, `sanitizeFileName()`.
 - `src/proxy.ts` → `src/utils/supabase/middleware.ts` `updateSession()` — session refresh + route guard.
 - `supabase/functions/` — edge functions (`send-trek-notification`, `send-trek-leave-notification`).
+- `supabase/migrations/` — every DB change, append-only. See its `README.md`; `schema.sql` is generated from it.
 
 **Two Supabase client styles coexist:**
 - `src/lib/supabase.ts` — plain singleton, used by most page components
@@ -93,21 +94,41 @@ New server-side code should use the `utils/supabase` factories. Client component
 
 ## Testing & Linting
 
-There are **no automated tests** in this project.
-
 ```bash
 npm run lint      # ESLint (next/core-web-vitals)
 npm run build     # TypeScript + ESLint errors fail the build
 npm run dev       # Local dev server on http://localhost:3000
+npm test          # Vitest unit tests (~1.4s) — run this too, it's cheap
+npm run test:watch
+npm run test:e2e  # Playwright; starts its own dev server on :3000
+npm run db:schema # Regenerate supabase/schema.sql from supabase/migrations/
+npm run db:check  # Fail if schema.sql is stale (also asserted by npm test)
 ```
 
-ESLint rules in `.eslintrc.json`:
-- `@typescript-eslint/no-explicit-any` — off
-- `@typescript-eslint/no-unused-vars` — off
-- `react-hooks/exhaustive-deps` — off
-- `@next/next/no-img-element` — warn (use `next/image` for remote images)
+**124 unit + DB tests across 10 files, plus 2 Playwright smoke specs.** Don't assume a change is safe because `npm test` passes; assume only that the tested surface still works:
+- `tests/db/**` (81) — **RLS policies, definer RPCs and EXECUTE grants against real Postgres**, plus a check that `schema.sql` still matches the migrations. See `tests/db/README.md` before adding to these
+- `src/lib/schemas.test.ts` (15) — Zod schema validation
+- `src/lib/company.test.ts` (17) — the pure logic in `company.ts`; its I/O is covered by `tests/db/`
+- `src/components/ui/ConfirmationModal.test.tsx` (5), `TrekPagination.test.tsx` (6)
+- `e2e/smoke.spec.ts` (2) — homepage loads, `/explore` reachable
 
-Before marking any task complete: run `npm run build`. If it errors, fix it — the build is the gating check.
+**Vitest runs two projects** (`vitest.config.ts`): `unit` (jsdom, `src/**/*.test.{ts,tsx}`) and `db` (node, `tests/db/**/*.test.ts`). The DB project boots PGlite — Postgres 18 compiled to WASM, in-process, no Docker — and replays `supabase/migrations/*.sql` in order, so every run also proves the migrations rebuild a database from nothing. Target it with `npx vitest run --project db`.
+
+**The DB tests are only as true as `supabase/migrations/`.** They prove the policies *as committed* are sound, not that production matches them — read `supabase_migrations.schema_migrations` over the MCP server for that. Their first run found 20 functions whose live EXECUTE grants the file could not reproduce.
+
+Config is `vitest.config.ts` (jsdom, `vitest.setup.ts`, `@` alias mirrored from tsconfig) and `playwright.config.ts` (chromium only). **Vitest only collects `src/**/*.test.{ts,tsx}` and explicitly excludes `e2e/**`** — a Playwright spec placed under `src/` would be picked up by Vitest and fail on the missing Playwright fixtures. Add unit tests beside the code as `*.test.ts(x)`; add browser specs to `e2e/` as `*.spec.ts`.
+
+`npm run test:e2e` binds port 3000 and reuses an existing server locally (`reuseExistingServer`), so a dev server you already have running will serve the specs — stop it first if you want a clean run.
+
+ESLint config is `eslint.config.mjs` (flat config, ESLint 9). It extends `next/core-web-vitals` + `next/typescript` and sets **no rule overrides**; the only customisation is an `ignores` list (`.next`, `node_modules`, `out`, `build`, `src/app/test`). A stale `.eslintrc.json` is still in the repo turning four rules off — ESLint 9 ignores it entirely, so none of that applies; don't trust it. It's queued for deletion in `FEATURES.md` §1.5.
+
+So every rule those presets ship is live at its default severity — including ones previously documented here as off. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
+
+**Known warning backlog** (non-blocking — `npm run build` passes; do not "fix" these in passing as part of unrelated work):
+- 12× `@next/next/no-img-element` — use `next/image` for remote images
+- 10× `react-hooks/exhaustive-deps` — real stale-closure risk; each needs individual judgement, since a wrongly-added dep can turn a one-shot effect into a re-render loop
+
+Before marking any task complete: run `npm run build` and `npm test`. If either fails, fix it — the build is the gating check, and the unit tests are fast enough that skipping them buys nothing.
 
 ---
 
@@ -136,9 +157,20 @@ Before marking any task complete: run `npm run build`. If it errors, fix it — 
 
 **All database changes must be applied manually** by the user through the Supabase SQL Editor (dashboard → SQL Editor → run the SQL).
 
-When suggesting a DB/RLS/storage change:
-1. Write the exact SQL to run.
-2. After the user confirms they've applied it, update the relevant reference files below to stay in sync.
+### Every DB change is a migration
+
+`supabase/migrations/NNNN_description.sql`, append-only. Full workflow in `supabase/migrations/README.md`. The short version:
+
+1. **Write the next migration.** Never edit an applied one — fix it with a new one. It must run top-to-bottom on an empty database, and must end by recording itself in `supabase_migrations.schema_migrations`.
+2. **Test it:** `npx vitest run --project db` replays every migration into a real in-process Postgres.
+3. **Give the user the file to paste** into the SQL Editor (dashboard → SQL Editor → run).
+4. **After they confirm**, run `npm run db:schema` to regenerate `schema.sql`, and update the reference files below.
+
+**Never claim a migration is applied because a file says so.** Comments outlive their truth — that produced a false 🔴 critical in `CODE_REVIEW.md` §1.3. Check the ledger over the read-only MCP server:
+
+```sql
+select version, name, applied_at from supabase_migrations.schema_migrations order by version;
+```
 
 ### Reference files (not source of truth)
 
@@ -146,8 +178,8 @@ These document the live database state but **do not reflect changes automaticall
 
 | File | What it tracks |
 |------|---------------|
-| `supabase/schema.sql` | Full DDL: tables, enums, views, functions, triggers, RLS policies, storage buckets + policies. Update whenever anything changes on Supabase. |
-| `supabase/security-fixes.sql` | Rationale + SQL for each security hardening step. Append new entries; don't rewrite history. |
+| `supabase/schema.sql` | **Generated — do not hand-edit.** Every migration concatenated in order (`npm run db:schema`); `npm test` fails on drift. Run it whole to build a fresh project. |
+| `supabase/security-fixes.sql` | Rationale for each security hardening step. Append new entries; don't rewrite history. The SQL itself now lives in a migration. |
 | `CONTEXT.md` | High-level architecture, flows, known issues. Update on significant structural changes. |
 | `DATABASE.md` | Human-readable DB reference (tables, columns, RLS summary). Update alongside `schema.sql`. |
 | `FEATURES.md` | Feature status (built / partial / pending). Update whenever a feature is added, changed, or completed. |

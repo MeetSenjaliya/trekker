@@ -1,7 +1,14 @@
--- Security hardening changelog (rationale + idempotent fix SQL).
--- NOTE: the authoritative current-state DDL/RLS for the whole DB now lives in
--- supabase/schema.sql. This file is kept as the "why" behind each hardening
--- change (referenced by SECURITY_AUDIT_ISSUE.md); apply blocks in order.
+-- Security hardening changelog (rationale + the fix SQL as it was applied).
+--
+-- ⚠️ CLOSED TO NEW SQL as of 2026-08-13. Everything below is folded into
+-- supabase/migrations/0001_baseline.sql; new hardening work is a new migration
+-- (see supabase/migrations/README.md). This file remains the "why" behind each
+-- change — the reasoning that a migration's DDL cannot carry — and is still
+-- referenced by SECURITY_AUDIT_ISSUE.md. Keep appending rationale here when a
+-- migration hardens something; do not re-apply the blocks below.
+--
+-- Current-state DDL/RLS lives in supabase/schema.sql, which is GENERATED from
+-- the migrations (npm run db:schema) — not hand-edited, and not this file.
 
 -- =====================================================================
 -- H1: Stop public reads of PII on profiles.
@@ -1261,4 +1268,95 @@ using (
 -- Full SQL + verification blocks:
 --   supabase/phases/fix-announcement-requires-listeners.sql
 -- Folded into supabase/schema.sql §17.
+-- ============================================================================
+
+
+-- ============================================================================
+-- EXECUTE GRANTS THAT LIVED ONLY IN THE DATABASE — found by the new db suite
+-- ============================================================================
+-- Not a live hole. A documentation hole with a security-shaped blast radius:
+-- production was correct and supabase/schema.sql was not, so replaying the file
+-- onto a fresh project produced a MEASURABLY LESS SAFE database than the real
+-- one. Recorded here because that failure mode is invisible to advisors — they
+-- lint the live database, which was fine.
+--
+-- FOUND 2026-08-13 by tests/db/acl.test.ts, on its first run.
+--
+-- 18 SECURITY DEFINER functions were revoked from anon by
+-- phases/fix-anon-execute-definer-rpcs.sql, applied live 2026-08-08 and never
+-- folded back into schema.sql. Among them get_company_batch_participants(),
+-- which returns phone_no / emergency_contact / emergency_no for every booking
+-- in a batch. A further 2 — is_chat_participant() and join_trek_and_chat() —
+-- had anon = false live with NO grant or revoke in ANY file under supabase/;
+-- that state existed only in the database and nothing could reproduce it.
+--
+-- WHY IT PERSISTED: Postgres grants EXECUTE to PUBLIC on every new function,
+-- and `create or replace` preserves the existing ACL. So a definer RPC created
+-- without an explicit revoke stays anon-callable forever, and nothing in the
+-- policy text hints at it. Reading the policies cannot find this class of bug —
+-- only reading the ACLs can, which is why acl.test.ts is a separate file.
+--
+-- All 20 verified against production with has_function_privilege() before being
+-- written down. schema.sql §17 now records live state; applying it is a no-op.
+--
+-- REGRESSION GUARD: acl.test.ts asserts that the set of anon-executable definer
+-- functions is EXACTLY {is_trek_visible, is_company_member, is_platform_admin}
+-- — and, in the other direction, that those three keep the grant. Both halves
+-- matter: the trio is called from `to public` SELECT policies on treks /
+-- trek_batches / companies, so revoking them to get the advisor to zero takes
+-- /explore, /trek/[id] and /company/[slug] down for anonymous visitors.
+--
+-- Full SQL: supabase/schema.sql §17.
+
+
+-- ============================================================================
+-- createTrek() BROKEN BY ITS OWN SELECT POLICY + CHAT POLICY ROLE SCOPING
+-- ============================================================================
+-- FOUND 2026-08-13 by tests/db/catalogue-writes.test.ts and chat.test.ts.
+--
+-- (A) NOT a hole — an availability bug, logged here because the fix sits one
+-- keystroke away from a real one. `insert … returning` applies the table's
+-- SELECT policy to the returned row. "view treks" is is_trek_visible(id), which
+-- is `stable` and selects from public.treks, so it runs against the statement's
+-- pre-insert snapshot, cannot see the row being created, and returns false. The
+-- insert is rejected with `new row violates row-level security policy` — an
+-- error that reads like a with_check failure and points at the wrong policy.
+-- src/lib/company.ts does .insert({...}).select('id').single(), so NO company
+-- could publish a trek; platform admins failed too, since the
+-- `or is_platform_admin()` arm sits inside the same unsatisfiable FROM.
+--
+-- ⚠️ THE OBVIOUS FIX IS AN OUTAGE. Folding the arm into "view treks" as
+--      using (is_trek_visible(id) or is_approved_company_member(company_id))
+-- breaks the public site: that policy is `to public`, which includes anon, and
+-- is_approved_company_member is revoked from anon (§17.3). Every anonymous
+-- /explore and /trek/[id] read would raise permission denied for function.
+--
+-- FIX — a SECOND permissive policy scoped `to authenticated`. Postgres applies
+-- only policies whose roles include the current role, so anon never evaluates
+-- it, and permissive policies on one command are OR'd. Its predicate reads
+-- company_members/companies and never treks, so no snapshot dependency. Grants
+-- nothing new: is_trek_visible already carries `or is_company_member(company_id)`
+-- ungated by status, and this is the strictly narrower approved-only form.
+--
+-- (B) The four chat policies calling is_chat_participant() were `to public`
+-- while anon lacks EXECUTE on it, so anonymous reads raised permission denied
+-- rather than returning empty. Failed closed; re-scoped `to authenticated` for
+-- tidiness. The other four chat policies stay `to public` deliberately —
+-- "System adds participants" admits service_role and would be excluded by
+-- re-scoping, and the three user_id = auth.uid() ones call no revoked function.
+--
+-- THE GENERAL RULE, which (A) and (B) resolve in OPPOSITE directions: a policy's
+-- role list and its predicate's EXECUTE grant must agree. Chat has no anonymous
+-- read path, so the policy narrows to match the grant. /explore does, so the
+-- grant stays wide to match the policy. Check both halves when adding either.
+--
+-- VERIFIED LIVE 2026-08-13 after apply: treks carries two SELECT policies,
+-- "view treks" {public} and "company members view own treks" {authenticated};
+-- the four chat policies are {authenticated} with quals intact (is_announcement
+-- = false still pinned on "Send messages"); the four left alone are unchanged;
+-- and is_trek_visible still holds its anon EXECUTE grant.
+--
+-- Full SQL + verification block:
+--   supabase/phases/fix-trek-returning-and-chat-policy-roles.sql
+-- Folded into supabase/schema.sql §12.6 (treks) and §8 (chat).
 -- ============================================================================

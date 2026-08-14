@@ -70,7 +70,15 @@ A modern, responsive Next.js application for trekking enthusiasts to discover, j
    
    b. Navigate to SQL Editor
    
-   c. Copy and run the SQL schema from `src/lib/supabase-schema.sql`
+   c. Copy and run `supabase/schema.sql` top-to-bottom. It is every migration in
+      [`supabase/migrations/`](supabase/migrations/README.md) concatenated in
+      order, so it builds an empty project up to the current state.
+   
+   d. Re-run the security advisors afterwards to confirm no table is missing RLS.
+   
+   > Changing the schema later is a new migration, never an edit to `schema.sql`
+   > — that file is generated (`npm run db:schema`) and a test fails on drift.
+   > See [`supabase/migrations/README.md`](supabase/migrations/README.md).
 
 5. **Configure Authentication**
    
@@ -118,10 +126,12 @@ src/
 ├── lib/                   # Utility libraries
 │   ├── supabase.ts        # Supabase client configuration
 │   ├── auth.ts            # Authentication utilities
-│   ├── database.ts        # Database operations
-│   └── supabase-schema.sql # Database schema
+│   └── joinTrek.ts        # The only correct join/leave path
 └── styles/                # Global styles
 ```
+
+The SQL lives outside `src/`, in [`supabase/`](supabase/migrations/README.md):
+numbered migrations plus the `schema.sql` generated from them.
 
 ## Database Schema
 
@@ -132,7 +142,9 @@ The application uses the following main tables:
 - **trek_participants**: Trek participation tracking
 - **reviews**: Trek reviews and ratings
 
-See `src/lib/supabase-schema.sql` for the complete schema with Row Level Security policies.
+See [`supabase/schema.sql`](supabase/schema.sql) for the complete schema with Row Level Security
+policies, and [`DATABASE.md`](DATABASE.md) for the readable companion (tables, RLS matrix,
+storage, known issues).
 
 ## Authentication Flow
 
@@ -156,6 +168,8 @@ See `src/lib/supabase-schema.sql` for the complete schema with Row Level Securit
 - `npm run build` - Build for production
 - `npm run start` - Start production server
 - `npm run lint` - Run ESLint
+- `npm test` - Run Vitest unit tests (`npm run test:watch` to watch)
+- `npm run test:e2e` - Run Playwright end-to-end specs
 
 ## Deployment
 

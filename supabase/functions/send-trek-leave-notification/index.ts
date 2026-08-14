@@ -154,8 +154,9 @@ serve(async (req: Request) => {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
-  } catch (error: any) {
+  } catch (error) {
+    // Detail stays in the function logs; the caller gets a generic message.
     console.error("Error in send-trek-leave-notification:", error);
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: "Internal error" }), { status: 500 });
   }
 });

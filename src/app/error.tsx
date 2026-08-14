@@ -28,6 +28,10 @@ export default function Error({
         >
           Try again
         </button>
+        {/* Deliberately a full document load, not next/link: this is the escape
+            hatch after reset() has already failed, so the client tree is likely
+            wedged and a client-side navigation would carry that state along. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
           href="/"
           className="rounded-lg border border-slate-300 px-5 py-2.5 font-medium text-slate-700 transition hover:bg-slate-100"

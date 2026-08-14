@@ -4,6 +4,12 @@ Open security/hardening tasks for the Trekker app, verified against the **live S
 
 > The Critical/High issues (RPC impersonation, public PII reads, world-writable batches, `.env.local` in git) are already fixed. The items below are what's left.
 
+> ⚠️ **This file is the rationale archive, not the live backlog.** Several statuses below are stale
+> (they predate the migrations folder, the key migration and the 2026-08-08 verification pass).
+> **`FEATURES.md` §1 is the source of truth for what is still open** — including everything found in
+> the 2026-08-14 audit pass, which is filed under §1.5 rather than duplicated here. Check a claim
+> against `supabase_migrations.schema_migrations` before acting on it.
+
 ## Checklist
 - [ ] CRIT-1 — rotate leaked service_role key + source notification-trigger token from Vault *(SQL ready; rotation + apply pending — see below)*
 - [ ] M-dos — harden `join_trek_and_chat` (require caller, validate batch date) *(SQL ready; apply pending)*
@@ -94,5 +100,5 @@ Combined with the `public_profiles` view, anyone (incl. logged-out) can enumerat
 - **L2** — verbose error logging (`JSON.stringify(error)`) leaks DB detail to console; strip in prod.
 - **L3** — no app-level rate limiting / security headers.
 - ~~**L4** — test pages shipped in App Router (`src/app/test/*`) are routable in production; remove or guard.~~ **RESOLVED 2026-08-08** — all 16 files deleted, `/test` dropped from `publicRoutes` and from `robots.ts`; absent from the build route table.
-- **L5** — run `npm audit` for dependency CVEs.
+- **L5** — ~~run `npm audit` for dependency CVEs.~~ **RUN 2026-08-14 — 7 high in production deps:** `next@16.2.9` (SSRF via rewrites, unauthenticated Server Function endpoint disclosure, image-opt DoS via SVG), `postcss@8.5.15` (arbitrary `.map` disclosure), `sharp@0.34.5` (4 libvips CVEs). All fixed by `npm audit fix`. Tracked to completion in `FEATURES.md` §1.5 → "Dependency CVEs"; §1.0 #2.
 - **M5** — consolidate overlapping SQL policy files into a single source of truth (`supabase/security-fixes.sql` started this).

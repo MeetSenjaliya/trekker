@@ -9,7 +9,6 @@ const DISALLOW = [
   '/profile',
   '/favorites',
   '/messages',
-  '/edits',
   '/review',
   '/auth',
 ];

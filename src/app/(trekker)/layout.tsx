@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 
 // Server-side counterpart of the /dashboard guard, for the customer side of the
-// platform: /profile, /favorites, /messages, /edits, /review. The middleware
+// platform: /profile, /favorites, /messages, /review. The middleware
 // only guarantees a session — this additionally requires a trekker account, so
 // a company account that types the URL lands on its own dashboard instead.
 //

@@ -1,6 +1,6 @@
 # Trekker — Project Context
 
-A detailed map of the whole project: stack, architecture, routes, components, data/auth/chat flows, configuration, and known issues. For the database specifically, see [DATABASE.md](DATABASE.md) (reference) and [supabase/schema.sql](supabase/schema.sql) (authoritative DDL + RLS).
+A detailed map of the whole project: stack, architecture, routes, components, data/auth/chat flows, configuration, and known issues. For the database specifically, see [DATABASE.md](DATABASE.md) (reference), [supabase/migrations/](supabase/migrations/README.md) (every change, append-only — where you make one) and [supabase/schema.sql](supabase/schema.sql) (the DDL + RLS they generate).
 
 > Snapshot date: 2026-06-13; multi-tenant changes folded in 2026-07-02; **account types + `(trekker)` route group folded in 2026-08-06**. Supabase project: `dtjmyqogeozrzzbdjokr`.
 
@@ -58,8 +58,7 @@ src/
 │   ├── dashboard/            # Company operator area (Phase C). Guard: company membership
 │   │   ├── layout.tsx        #   no membership → trekker: /  |  company: /company/apply
 │   │   └── account/          #   operator's own name + password (⚠️ see §10 reachability gap)
-│   ├── admin/                # Platform admin panel (Phase D). Guard: is_platform_admin() else /
-│   └── test/                 # ⚠️ dev/RLS test pages — routable in prod (should be removed/guarded)
+│   └── admin/                # Platform admin panel (Phase D). Guard: is_platform_admin() else /
 ├── auth/
 │   ├── callback/route.ts     # OAuth/magic-link callback (placeholder)
 │   └── confirm/route.ts      # GET: email OTP verify via supabase.auth.verifyOtp()
@@ -211,7 +210,7 @@ All buckets are public-read; writes are owner-scoped (M1 fix) or company-scoped 
 
 App-level:
 - **`/dashboard/account` is unreachable for a company account that hasn't applied yet** — the `/dashboard` guard sends member-less company accounts to `/company/apply` first. Known, accepted, documented (decision 2026-08-06); not a lockout, since `/auth/forgot-password` still works and the gap closes once they apply. Fixing it means lifting the page to a top-level `/account` route rather than special-casing the guard.
-- No app-level rate limiting / security headers; verbose `console.error(JSON.stringify(error))` can leak DB detail.
+- Security headers ship from `next.config.mjs` (2026-08-12) — but the **CSP is report-only** until `CSP_ENFORCE=1` is set in Vercel, so it blocks nothing today. No app-level rate limiting; verbose `console.error(JSON.stringify(error))` can leak DB detail.
 
 Database-level (see DATABASE.md §11 for detail): ~~broken `trg_initial_trek_message`~~ (dropped 2026-07-02 by the multi-tenant migration — trek creation works now), ~~`platform_admins` empty~~ (populated 2026-07-02), duplicate dead notification triggers on `trek_participants` (three fire on join — `trek-join-notification`, `trek_join_email_trigger`, plus `trek-leave-notification` on delete).
 
@@ -236,7 +235,8 @@ Security history and the remaining hardening checklist live in [SECURITY_AUDIT_I
 
 | I want to… | Look at |
 |---|---|
-| Change a table / policy | [supabase/schema.sql](supabase/schema.sql) (then apply + re-run advisors) |
+| Change a table / policy | A new [supabase/migrations/](supabase/migrations/README.md)`NNNN_*.sql` — never an edit to `schema.sql` (generated). Test, apply in the SQL Editor, `npm run db:schema`, re-run advisors |
+| Check whether a DB change is actually deployed | `select version, name, applied_at from supabase_migrations.schema_migrations order by version` over the read-only MCP server. **Not** a comment in a SQL file |
 | Understand the DB | [DATABASE.md](DATABASE.md) |
 | Add/inspect a page | `src/app/<route>/page.tsx` |
 | Fetch data server-side (SSR / `generateMetadata` / sitemap) | `src/lib/server-queries.ts` (via `src/utils/supabase/server.ts`) |
@@ -248,3 +248,43 @@ Security history and the remaining hardening checklist live in [SECURITY_AUDIT_I
 | Touch chat | `src/app/messages/page.tsx` + `conversation_*` tables |
 | Touch uploads | `src/utils/imageCompression.ts`, `ReviewForm`, profile-edit pages |
 | Security backlog | [SECURITY_AUDIT_ISSUE.md](SECURITY_AUDIT_ISSUE.md) |
+| Change an RLS policy or a definer RPC | Write the next migration, run `npx vitest run --project db` **before** applying it, then paste it in the SQL Editor and `npm run db:schema` — see §12 |
+
+---
+
+## 12. Testing the security model
+
+`npm test` runs two Vitest projects (`vitest.config.ts`):
+
+- **`unit`** — jsdom, `src/**/*.test.{ts,tsx}`. Zod schemas, the pure logic in
+  `company.ts`, two presentational components.
+- **`db`** — node, `tests/db/**/*.test.ts`. **RLS policies, SECURITY DEFINER
+  RPCs and EXECUTE grants exercised against a real Postgres.**
+
+The `db` project boots **PGlite** — Postgres 18 compiled to WebAssembly, running
+in-process. No Docker, no Supabase CLI, no local server; a full boot is ~1.5s and
+the whole suite is under 10s. `tests/db/harness/load.ts` replays
+`supabase/migrations/*.sql` in version order, verbatim — so every run is also a
+proof that the migrations rebuild a database from nothing, and a migration that
+only works against an already-populated DB fails here rather than in the SQL
+Editor; `harness/shim.sql` supplies the pieces the
+platform normally provides (the `auth`/`storage`/`net`/`cron` schemas, the
+`anon`/`authenticated`/`service_role` roles, and Supabase's default grants).
+
+Tests impersonate a user with `asUser(db, id, fn)`, which does what PostgREST
+does: `set local role authenticated` plus `set local request.jwt.claims`, which
+`auth.uid()` reads. `set role` is the load-bearing half — PGlite connects as a
+superuser, and superusers bypass RLS unconditionally. Everything runs in a
+transaction that is always rolled back, so tests are order-independent.
+
+**What this proves, and what it does not.** It proves the policies **as committed
+in `supabase/migrations/`** are sound. It cannot see production. That is not a
+footnote: the suite's first run found 20 SECURITY DEFINER functions whose live
+`anon` revokes existed only in the database and had never been written back to
+the file, so replaying it produced a materially less safe database than the real
+one. Since 2026-08-13 the gap is at least *visible*: every migration records
+itself in `supabase_migrations.schema_migrations`, so "what does production
+actually have?" is a query rather than an act of faith. Closing the gap still
+depends on writing the migration in the same change as the SQL Editor paste.
+
+Read [tests/db/README.md](tests/db/README.md) before adding to these.
