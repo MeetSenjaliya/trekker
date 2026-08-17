@@ -44,24 +44,13 @@ Guidelines to reduce common coding mistakes. Bias toward caution over speed — 
 
 ## Tech Stack
 
-| Area | Choice |
-|------|--------|
-| Framework | Next.js `^16` (App Router, `output: 'standalone'`) |
-| UI runtime | React `19` |
-| Language | TypeScript `^5` (`strict: true`, path alias `@/* → src/*`) |
-| Backend | Supabase (`@supabase/supabase-js ^2.51`, `@supabase/ssr ^0.6`) |
-| Styling | Tailwind CSS `^3.4` (primary), MUI `^7` + Emotion (partial), Bootstrap (minimal) |
-| Animation | Framer Motion `^12` |
-| Icons | Lucide React |
-| Image compression | `browser-image-compression` (review photo uploads) |
-
-No custom backend server. All data access goes through the Supabase anon key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
+Versions live in `package.json`. Two things it doesn't tell you: styling is **Tailwind-first** — MUI + Emotion and Bootstrap are partial legacy holdovers, don't reach for them in new code; and there is **no custom backend server**. All data access goes through the Supabase publishable key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
 
 ---
 
 ## Directory Structure
 
-App Router under `src/app/` (`page`, `explore`, `about`, `trek/[id]`, `auth`, `profile`, `favorites`, `messages`, `review`, `edits`); reusable UI in `src/components/ui/`, layout in `src/components/layout/`. List the tree to see the obvious parts — the non-obvious files that affect how you write code:
+App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src/components/layout/`. List the tree to see the obvious parts — the non-obvious files that affect how you write code:
 
 - `src/lib/joinTrek.ts` — `joinTrekBatchAndChat()` / `leaveTrek()`, the **only** correct join path (→ RPC `join_trek_and_chat`).
 - `src/lib/auth.ts` — `signUp/signInAs/signOut/resetPassword/updatePassword/getCurrentUser`. `signInAs()` takes the account kind and only persists a session if it matches.
@@ -94,23 +83,9 @@ New server-side code should use the `utils/supabase` factories. Client component
 
 ## Testing & Linting
 
-```bash
-npm run lint      # ESLint (next/core-web-vitals)
-npm run build     # TypeScript + ESLint errors fail the build
-npm run dev       # Local dev server on http://localhost:3000
-npm test          # Vitest unit tests (~1.4s) — run this too, it's cheap
-npm run test:watch
-npm run test:e2e  # Playwright; starts its own dev server on :3000
-npm run db:schema # Regenerate supabase/schema.sql from supabase/migrations/
-npm run db:check  # Fail if schema.sql is stale (also asserted by npm test)
-```
+Scripts are in `package.json`. `npm test` is Vitest and takes ~1.4s.
 
-**124 unit + DB tests across 10 files, plus 2 Playwright smoke specs.** Don't assume a change is safe because `npm test` passes; assume only that the tested surface still works:
-- `tests/db/**` (81) — **RLS policies, definer RPCs and EXECUTE grants against real Postgres**, plus a check that `schema.sql` still matches the migrations. See `tests/db/README.md` before adding to these
-- `src/lib/schemas.test.ts` (15) — Zod schema validation
-- `src/lib/company.test.ts` (17) — the pure logic in `company.ts`; its I/O is covered by `tests/db/`
-- `src/components/ui/ConfirmationModal.test.tsx` (5), `TrekPagination.test.tsx` (6)
-- `e2e/smoke.spec.ts` (2) — homepage loads, `/explore` reachable
+**Don't assume a change is safe because `npm test` passes**; assume only that the tested surface still works. The heaviest coverage is `tests/db/**` — **RLS policies, definer RPCs and EXECUTE grants against real Postgres**, plus a check that `schema.sql` still matches the migrations. Read `tests/db/README.md` before adding to those.
 
 **Vitest runs two projects** (`vitest.config.ts`): `unit` (jsdom, `src/**/*.test.{ts,tsx}`) and `db` (node, `tests/db/**/*.test.ts`). The DB project boots PGlite — Postgres 18 compiled to WASM, in-process, no Docker — and replays `supabase/migrations/*.sql` in order, so every run also proves the migrations rebuild a database from nothing. Target it with `npx vitest run --project db`.
 
@@ -120,9 +95,9 @@ Config is `vitest.config.ts` (jsdom, `vitest.setup.ts`, `@` alias mirrored from 
 
 `npm run test:e2e` binds port 3000 and reuses an existing server locally (`reuseExistingServer`), so a dev server you already have running will serve the specs — stop it first if you want a clean run.
 
-ESLint config is `eslint.config.mjs` (flat config, ESLint 9). It extends `next/core-web-vitals` + `next/typescript` and sets **no rule overrides**; the only customisation is an `ignores` list (`.next`, `node_modules`, `out`, `build`, `src/app/test`). A stale `.eslintrc.json` is still in the repo turning four rules off — ESLint 9 ignores it entirely, so none of that applies; don't trust it. It's queued for deletion in `FEATURES.md` §1.5.
+A stale `.eslintrc.json` is still in the repo turning four rules off — ESLint 9 reads `eslint.config.mjs` and ignores it entirely, so none of that applies; don't trust it. It's queued for deletion in `FEATURES.md` §1.5.
 
-So every rule those presets ship is live at its default severity — including ones previously documented here as off. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
+So every rule the `next/core-web-vitals` + `next/typescript` presets ship is live at its default severity — including ones previously documented here as off. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
 
 **Known warning backlog** (non-blocking — `npm run build` passes; do not "fix" these in passing as part of unrelated work):
 - 12× `@next/next/no-img-element` — use `next/image` for remote images
@@ -151,20 +126,11 @@ Before marking any task complete: run `npm run build` and `npm test`. If either 
 
 ---
 
-## Supabase — Read-Only MCP + Reference Files
+## Supabase — Read-Only MCP
 
-**The Supabase MCP server is connected in read-only mode.** It can inspect live schema, query logs, and fetch advisors, but cannot apply changes.
+**The Supabase MCP server is connected in read-only mode.** It can inspect live schema, query logs, and fetch advisors, but cannot apply changes — **all database changes are applied manually** by the user through the Supabase SQL Editor.
 
-**All database changes must be applied manually** by the user through the Supabase SQL Editor (dashboard → SQL Editor → run the SQL).
-
-### Every DB change is a migration
-
-`supabase/migrations/NNNN_description.sql`, append-only. Full workflow in `supabase/migrations/README.md`. The short version:
-
-1. **Write the next migration.** Never edit an applied one — fix it with a new one. It must run top-to-bottom on an empty database, and must end by recording itself in `supabase_migrations.schema_migrations`.
-2. **Test it:** `npx vitest run --project db` replays every migration into a real in-process Postgres.
-3. **Give the user the file to paste** into the SQL Editor (dashboard → SQL Editor → run).
-4. **After they confirm**, run `npm run db:schema` to regenerate `schema.sql`, and update the reference files below.
+Every DB change is an append-only migration in `supabase/migrations/`. **Never edit an applied migration** — fix it with a new one. **`supabase/schema.sql` is generated — never hand-edit it** (`npm test` fails on drift).
 
 **Never claim a migration is applied because a file says so.** Comments outlive their truth — that produced a false 🔴 critical in `CODE_REVIEW.md` §1.3. Check the ledger over the read-only MCP server:
 
@@ -172,19 +138,7 @@ Before marking any task complete: run `npm run build` and `npm test`. If either 
 select version, name, applied_at from supabase_migrations.schema_migrations order by version;
 ```
 
-### Reference files (not source of truth)
-
-These document the live database state but **do not reflect changes automatically**. Update them manually after any schema, RLS, or storage policy change is applied on Supabase:
-
-| File | What it tracks |
-|------|---------------|
-| `supabase/schema.sql` | **Generated — do not hand-edit.** Every migration concatenated in order (`npm run db:schema`); `npm test` fails on drift. Run it whole to build a fresh project. |
-| `supabase/security-fixes.sql` | Rationale for each security hardening step. Append new entries; don't rewrite history. The SQL itself now lives in a migration. |
-| `CONTEXT.md` | High-level architecture, flows, known issues. Update on significant structural changes. |
-| `DATABASE.md` | Human-readable DB reference (tables, columns, RLS summary). Update alongside `schema.sql`. |
-| `FEATURES.md` | Feature status (built / partial / pending). Update whenever a feature is added, changed, or completed. |
-
-**When a user applies a change on Supabase, immediately update these files** so the next conversation starts with accurate context.
+For the full write → test → apply → sync workflow and the reference files to update afterwards, use the **`db-migration` skill**.
 
 ---
 
