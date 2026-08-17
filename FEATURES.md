@@ -12,7 +12,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-08-14 — full history in [§3 Changelog](#3--changelog-newest-first)._
+_Last updated: 2026-08-17 — full history in [§3 Changelog](#3--changelog-newest-first)._
 
 ## Contents
 
@@ -38,12 +38,11 @@ _Last updated: 2026-08-14 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | **`npm audit fix`** — 7 high-severity CVEs in *production* dependencies | Live SSRF via rewrites + unauthenticated Server Function endpoint disclosure in `next@16.2.9`. One command; re-run `npm run build && npm test` after | [§1.5](#dependency-cves-7-high-in-production-deps) |
-| 2 | **Commit + push.** 46 files are uncommitted and `a1` is 19 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **and now the migrations, the 124-test suite, the chat indexes and the security headers** — exists only in one working tree. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
-| 3 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
-| 4 | **After** #3 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #3 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 5 | **After** the headers deploy: watch Sentry CSP reports for ~a week, then set `CSP_ENFORCE=1` in Vercel | The policy ships **report-only**, so today it blocks nothing. Until it is promoted, the `connect-src` exfiltration cap — the part that actually protects the browser-held Supabase session — is inert | [§1.5](#15-phase-0--security-tail-remaining) |
-| 6 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 1 | **Push.** `a1` is 20 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **the migrations, the 124-test suite, the chat indexes, the security headers and now the CVE bumps** — exists only on one branch. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
+| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
+| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
+| 4 | **After** the headers deploy: watch Sentry CSP reports for ~a week, then set `CSP_ENFORCE=1` in Vercel | The policy ships **report-only**, so today it blocks nothing. Until it is promoted, the `connect-src` exfiltration cap — the part that actually protects the browser-held Supabase session — is inert | [§1.5](#15-phase-0--security-tail-remaining) |
+| 5 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
 
 > **The DB backlog is empty as of 2026-08-14.** Both hardening SQL files applied,
 > batch announcements built and applied, the chat hot-path indexes applied and
@@ -136,20 +135,6 @@ Also worth pinning while in here: CI runs `npm run test` and `npm run build` but
 ## 1.5 Phase 0 — Security tail (remaining)
 
 > Everything from here to "Promote CSP" was found in the 2026-08-14 audit pass (§3).
-
-### Dependency CVEs — 7 high in production deps
-
-**Status:** ❌ — closes the old `L5` item in `SECURITY_AUDIT_ISSUE.md`, which said "run `npm audit`". Ran it (2026-08-14):
-
-| Package | Installed | Fixed in | Advisories |
-|---|---|---|---|
-| `next` | 16.2.9 | 16.3.0 | SSRF via attacker-controlled rewrite destination hostname; **unauthenticated disclosure of internal Server Function endpoints**; DoS in the Image Optimization API via SVG |
-| `postcss` | 8.5.15 | >8.5.22 | Path traversal in source-map auto-loading → arbitrary `.map` file disclosure (`GHSA-r28c-9q8g-f849`, `GHSA-fxqj-rqcc-2cmp`) |
-| `sharp` | 0.34.5 | 0.35.0 | 4 inherited libvips CVEs (`CVE-2026-33327`, `-33328`, `-35590`, `-35591`) |
-
-The Server Function disclosure and the image-optimization DoS both apply directly — this app runs `output: 'standalone'` with `next/image` over two remote hosts. `npm audit fix` resolves all three; note `package.json` pins `overrides.postcss` to `$postcss`, so bump the direct dependency rather than expecting the override to float.
-
-**Verify after:** `npm run build && npm test`, and confirm the CSP still builds (`next.config.mjs` reads `NEXT_PUBLIC_SUPABASE_URL` at config load).
 
 ### Leaked-password protection is client-side only
 
@@ -731,6 +716,22 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 
 ## Phase 0 — Security tail (shipped)
 
+### Dependency CVEs patched — 6 high in production deps (shipped 2026-08-17)
+
+**Status:** ✅ — closes the old `L5` item in `SECURITY_AUDIT_ISSUE.md` ("run `npm audit`"), found 2026-08-14 and fixed 2026-08-17 with `npm audit fix`.
+
+| Package | Was | Now | Advisories closed |
+|---|---|---|---|
+| `next` | 16.2.9 | 16.3.1 | SSRF via attacker-controlled rewrite destination hostname; **unauthenticated disclosure of internal Server Function endpoints**; DoS in the Image Optimization API via SVG; cache confusion on request bodies; unbounded Server Action payload on Edge |
+| `postcss` | 8.5.15 | 8.5.26 | Path traversal in source-map auto-loading → arbitrary `.map` file disclosure (`GHSA-r28c-9q8g-f849`, `GHSA-fxqj-rqcc-2cmp`) |
+| `sharp` | 0.34.5 | ≥0.35.0 | 4 inherited libvips CVEs (`CVE-2026-33327`, `-33328`, `-35590`, `-35591`) — transitive via `next`, not a direct dependency |
+
+The Server Function disclosure and the image-optimization DoS both applied directly — this app runs `output: 'standalone'` with `next/image` over two remote hosts. All three resolved inside the existing `^16` / `^8` ranges, so **`package.json` is unchanged**; only `package-lock.json` moved.
+
+**Verified:** `npm run build` passes (all 31 routes emit, CSP still builds from `NEXT_PUBLIC_SUPABASE_URL` at config load) and `npm test` is green at 124/124.
+
+**One low-severity finding is left and is deliberately not fixed:** `esbuild` 0.27.3–0.28.0 (`GHSA-g7r4-m6w7-qqqr`) — arbitrary file read *when running the dev server on Windows*. It arrives transitively and does not reach production or this repo's macOS/Linux workflow.
+
 ### Security headers
 
 **Status:** 🟡 — headers enforced; CSP is report-only pending [§1.5](#promote-csp-from-report-only-to-enforcing).
@@ -849,6 +850,20 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## Dependency CVEs patched — the 2026-08-14 audit's top finding closed  ·  2026-08-17
+
+`npm audit fix` applied. All 6 high-severity advisories in production dependencies
+are gone: `next` 16.2.9 → 16.3.1, `postcss` 8.5.15 → 8.5.26, `sharp` → ≥0.35.0.
+Everything resolved inside the existing semver ranges, so `package.json` did not
+change — only the lockfile. `npm run build` passes; `npm test` green at 124/124.
+One low-severity `esbuild` advisory remains, scoped to the dev server on Windows,
+and is intentionally left. Detail in
+[§2 Phase 0 — Security tail](#dependency-cves-patched--6-high-in-production-deps-shipped-2026-08-17).
+
+Also corrected here: §1.0's old item 2 claimed "46 files are uncommitted". They were
+committed in `525cb09`; the real exposure is that `a1` is **20 commits ahead of
+`main`** and none of it is deployed. The row now says that instead.
 
 ## Testing + security audit — 7 dependency CVEs, RPC bodies untested  ·  2026-08-14
 
