@@ -21,8 +21,14 @@ export default function InvitesPage() {
   const queryClient = useQueryClient();
 
   const { data: invites, isLoading, isError } = useMyInvites(user?.id);
-  const { data: accountType } = useAccountType(user?.id);
-  const isTrekker = accountType === 'trekker';
+  const { data: accountType, isPending: accountTypePending } = useAccountType(user?.id);
+  // Unknown has to fall on the cautious side. `accountType === 'trekker'` reads
+  // false while the query is still in flight, which dropped the consent warning
+  // and the two-step confirm and let a fast click convert a trekker account
+  // irreversibly with no prompt at all — `useMyInvites` is cached by the Header,
+  // so the card can render before the account type resolves. Only a confirmed
+  // 'company' account skips the gate; the buttons stay disabled until we know.
+  const isTrekker = accountType !== 'company';
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
@@ -204,7 +210,7 @@ export default function InvitesPage() {
                         onClick={() =>
                           isTrekker ? setConfirmingId(invite.invite_id) : accept(invite.invite_id)
                         }
-                        disabled={busy}
+                        disabled={busy || accountTypePending}
                         className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-blue-700 disabled:opacity-60"
                       >
                         {busy && <Loader2 className="h-4 w-4 animate-spin" />}

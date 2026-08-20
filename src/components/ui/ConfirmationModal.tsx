@@ -2,23 +2,30 @@
 
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
+import { localMaxBatchDate, localToday } from '@/lib/schemas';
 
 interface ConfirmationModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: (date: string) => void;
   trekTitle?: string;
+  defaultDate?: string;
 }
 
 const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   isOpen,
   onClose,
   onConfirm,
-  trekTitle = "this trek"
+  trekTitle = "this trek",
+  defaultDate
 }) => {
   const [safetyChecked, setSafetyChecked] = useState(false);
   const [rulesChecked, setRulesChecked] = useState(false);
-  const [selectedDate, setSelectedDate] = useState('');
+  // Only a real ISO date seeds the input; callers pass through placeholders like
+  // 'No upcoming dates', which the date input would silently drop anyway.
+  const [selectedDate, setSelectedDate] = useState(
+    defaultDate && /^\d{4}-\d{2}-\d{2}$/.test(defaultDate) ? defaultDate : ''
+  );
 
   const handleConfirm = () => {
     if (safetyChecked && rulesChecked && selectedDate) {
@@ -55,7 +62,14 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               type="date"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
-              min={new Date().toISOString().split('T')[0]}
+              // Local calendar date, not toISOString(): UTC is already tomorrow
+              // for timezones behind it late in the day (blocking the user's real
+              // today) and still yesterday for IST before 05:30 (offering a past
+              // date the RPC's one-day grace would happily turn into a batch).
+              // max mirrors join_trek_and_chat's +1-year cap, so the picker can't
+              // offer a date the RPC is guaranteed to reject.
+              min={localToday()}
+              max={localMaxBatchDate()}
               className="p-4 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
             />
           </div>

@@ -5,13 +5,12 @@ import TrekCard from '@/components/ui/TrekCard';
 import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
 import { useSearchTreks, type SearchTreksResult } from '@/lib/queries';
+import { EXPLORE_FILTERS_STORAGE_KEY } from '@/lib/exploreFilters';
 
 const DEFAULT_IMAGE_URL =
   'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
 const TREKS_PER_PAGE = 6;
-
-const FILTERS_STORAGE_KEY = 'explore-filters';
 
 export default function ExploreClient({ initialData }: { initialData: SearchTreksResult }) {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
@@ -22,14 +21,14 @@ export default function ExploreClient({ initialData }: { initialData: SearchTrek
   // lazy initializer) so server and first client render match — sessionStorage
   // isn't available during SSR.
   useEffect(() => {
-    const saved = sessionStorage.getItem(FILTERS_STORAGE_KEY);
+    const saved = sessionStorage.getItem(EXPLORE_FILTERS_STORAGE_KEY);
     if (!saved) return;
     try {
       const { filters: savedFilters, page } = JSON.parse(saved);
       if (savedFilters) setFilters({ ...DEFAULT_FILTERS, ...savedFilters });
       if (page) setCurrentPage(page);
     } catch {
-      sessionStorage.removeItem(FILTERS_STORAGE_KEY);
+      sessionStorage.removeItem(EXPLORE_FILTERS_STORAGE_KEY);
     }
   }, []);
 
@@ -37,7 +36,7 @@ export default function ExploreClient({ initialData }: { initialData: SearchTrek
   // which would write the default state back over the saved value on the first
   // render after remounting and reset everything.
   const persist = (f: FilterState, page: number) =>
-    sessionStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify({ filters: f, page }));
+    sessionStorage.setItem(EXPLORE_FILTERS_STORAGE_KEY, JSON.stringify({ filters: f, page }));
 
   const handleFilterChange = (f: FilterState) => {
     setFilters(f);

@@ -14,6 +14,7 @@ import {
 import { motion, Variants } from 'framer-motion';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
 import { joinTrekBatchAndChat, leaveTrek } from '@/lib/joinTrek';
+import { localToday } from '@/lib/schemas';
 import { toast } from 'sonner';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 import { useIsTrekker } from '@/lib/queries';
@@ -51,6 +52,32 @@ interface TrekDetailClientProps {
 
 const DEFAULT_IMAGE = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
+// trek_participants row with its trek_batches embed. Supabase types a to-one
+// embed as an object, but PostgREST answers with an array in some shapes — both
+// are handled rather than cast away.
+type JoinedRow = {
+  batch_id: string;
+  status: string;
+  trek_batches: { batch_date: string } | { batch_date: string }[] | null;
+};
+
+const batchDateOf = (row: JoinedRow): string => {
+  const b = Array.isArray(row.trek_batches) ? row.trek_batches[0] : row.trek_batches;
+  return b?.batch_date ?? '';
+};
+
+// The booking the sidebar reports on, and the one "Leave" cancels. Earliest
+// UPCOMING departure, not earliest overall — a repeat booker with a walked trek
+// and a new date would otherwise be shown the completed one and leave that.
+// Falls back to the whole set so a purely historic booking still shows as joined.
+const pickCurrentBooking = (rows: JoinedRow[]): JoinedRow | undefined => {
+  const today = localToday();
+  const upcoming = rows.filter((r) => batchDateOf(r) >= today);
+  return (upcoming.length ? upcoming : rows)
+    .slice()
+    .sort((a, b) => batchDateOf(a).localeCompare(batchDateOf(b)))[0];
+};
+
 export default function TrekDetailClient({
   id,
   trek,
@@ -77,15 +104,21 @@ export default function TrekDetailClient({
   useEffect(() => {
     if (!user || !id) return;
     const checkJoinStatus = async () => {
+      // Nothing stops a trekker booking several departures of the same trek
+      // (trek_participants is unique on (user_id, batch_id), not on the trek), so
+      // this must not assume a single row — maybeSingle() errors on two and the
+      // page would then offer "Book This Trek" to someone already booked, with no
+      // way to leave.
       const { data } = await supabase
         .from('trek_participants')
-        .select('batch_id, status, trek_batches!inner(trek_id)')
+        .select('batch_id, status, trek_batches!inner(trek_id, batch_date)')
         .eq('user_id', user.id)
-        .eq('trek_batches.trek_id', id)
-        .maybeSingle();
-      if (data) {
-        setJoinedBatchId(data.batch_id);
-        setJoinedStatus(data.status === 'waitlisted' ? 'waitlisted' : 'confirmed');
+        .eq('trek_batches.trek_id', id);
+      const rows = (data ?? []) as JoinedRow[];
+      const current = pickCurrentBooking(rows);
+      if (current) {
+        setJoinedBatchId(current.batch_id);
+        setJoinedStatus(current.status === 'waitlisted' ? 'waitlisted' : 'confirmed');
       } else {
         setJoinedBatchId(null);
         setJoinedStatus(null);
@@ -96,10 +129,11 @@ export default function TrekDetailClient({
 
   useEffect(() => {
     const initFavoriteStatus = async () => {
-      if (user) {
-        const { data } = await supabase.from('favorites').select('*').eq('user_id', user.id).eq('trek_id', id).single();
-        if (data) setIsLiked(true);
-      }
+      if (!user) { setIsLiked(false); return; }
+      // maybeSingle(), not single(): "not favorited" is the common case and
+      // single() turns it into a PGRST116 error instead of an empty result.
+      const { data } = await supabase.from('favorites').select('trek_id').eq('user_id', user.id).eq('trek_id', id).maybeSingle();
+      setIsLiked(!!data);
     };
     initFavoriteStatus();
   }, [id, user, supabase]);
@@ -145,9 +179,13 @@ export default function TrekDetailClient({
       return;
     }
     try {
-      const { data, error } = await supabase.from("trek_participants").select(`batch_id, trek_batches!inner (trek_id, conversations!inner ( id ))`).eq("user_id", user.id).eq("trek_batches.trek_id", id).maybeSingle();
-      if (error || !data) { toast.error("Please join a trek batch to access chat."); return; }
-      const batch = Array.isArray(data.trek_batches) ? data.trek_batches[0] : data.trek_batches;
+      // Same multi-booking caveat as checkJoinStatus: don't collapse to one row.
+      // Open the chat for the departure the sidebar is reporting on.
+      const { data, error } = await supabase.from("trek_participants").select(`batch_id, trek_batches!inner (trek_id, conversations!inner ( id ))`).eq("user_id", user.id).eq("trek_batches.trek_id", id);
+      const rows = data ?? [];
+      if (error || rows.length === 0) { toast.error("Please join a trek batch to access chat."); return; }
+      const row = rows.find((r) => r.batch_id === joinedBatchId) ?? rows[0];
+      const batch = Array.isArray(row.trek_batches) ? row.trek_batches[0] : row.trek_batches;
       const conversationId = batch?.conversations?.[0]?.id;
       if (conversationId) router.push(`/messages?conversationId=${conversationId}`);
       else toast.error('Chat not initialized yet.');

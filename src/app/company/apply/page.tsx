@@ -69,37 +69,10 @@ export default function CompanyApplyPage() {
 
   if (loading) return null;
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col">
-        <main className="flex-grow">
-          <div className="container mx-auto flex flex-1 items-center justify-center px-4 py-12 sm:px-6 lg:px-8">
-            <div className="w-full max-w-md space-y-8 text-center">
-              <div className="mx-auto w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                <Building2 className="w-8 h-8 text-blue-600" />
-              </div>
-              <div>
-                <h2 className="text-3xl font-extrabold tracking-tight text-gray-900">
-                  List your treks on Trek Buddies
-                </h2>
-                <p className="mt-2 text-gray-600">
-                  Sign in to apply as a trek company. Once a platform admin
-                  approves your application, you can publish and manage your own
-                  treks.
-                </p>
-              </div>
-              <Link
-                href="/auth/login"
-                className="inline-flex justify-center rounded-full border border-transparent bg-blue-600 px-8 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-              >
-                Log in to apply
-              </Link>
-            </div>
-          </div>
-        </main>
-      </div>
-    );
-  }
+  // The middleware sends a signed-out visitor to /auth/login before this renders
+  // (/company/apply is deliberately not a public route), so this only guards the
+  // gap where a session expires with the page already open.
+  if (!user) return null;
 
   // Wait for the account type before rendering anything — showing the form to a
   // trekker and only failing on submit would waste the whole form.

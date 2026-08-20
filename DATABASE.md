@@ -153,7 +153,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 **Reads**: the company side selects directly (SELECT policy = any member). The invitee has **no** read policy — as a non-member, `companies` hides an unapproved company from them and `profiles` is self-only, so they read through `get_my_invites()` instead. Writes are RPC-only (INSERT/UPDATE/DELETE revoked from `authenticated`, everything revoked from `anon`).
 
 ### `platform_admins` — super-admin allowlist (added 2026-07-02)
-`user_id` (PK, FK → `auth.users`), `created_at`. **RLS enabled with zero policies = default-deny for every client role.** Rows are added only via the SQL Editor — there is deliberately no client path (see `supabase/phases/phase-d-platform-admin.sql`). ⚠️ **Empty as of 2026-07-02** — `/admin` and company moderation are unusable until the manual insert runs.
+`user_id` (PK, FK → `auth.users`), `created_at`. **Defended two ways (since migration `0003`, applied 2026-08-18):** the `anon`/`authenticated` grants are revoked outright (`relacl` = `{postgres, service_role}`), **and** RLS is enabled with zero policies = default-deny. Either alone denies every client role; both together mean disabling RLS does not silently reopen the allowlist, and a client read returns a permission error rather than an empty array. Rows are added only via the SQL Editor — there is deliberately no client path (see `supabase/phases/phase-d-platform-admin.sql`). **Holds one admin as of 2026-08-18** (`senjaliyameet8@gmail.com`).
 
 ### `trek_batches` — a dated departure
 | Column | Type | Notes |
@@ -342,7 +342,7 @@ RLS is enabled on all 16 public tables. `auth.uid() = …` checks appear under b
 | `companies` | approved, or own-company member, or platform admin | — (RPC only) | company owner/admin **of a writable company**, or platform admin (workflow columns trigger-pinned) | — (suspend, never delete) |
 | `company_members` | own-company members + platform admins | **— (no policy, INSERT revoked; RPC-only since 2026-08-06)** | company owner/admin **of a writable company**, non-owner rows, target role ∈ admin/staff | company owner/admin **of a writable company**, non-owner rows |
 | `company_invites` | own-company members + platform admins | — (RPC only) | — (RPC only) | — (RPC only) |
-| `platform_admins` | — | — | — | — (**zero policies — SQL Editor only**) |
+| `platform_admins` | — | — | — | — (**grants revoked + zero policies — SQL Editor only; `0003`**) |
 | `trek_participants` | **own** (`user_id = uid`) | own | own | own |
 | `trek_reviews` | **public `true`** | own **AND joined the trek** | own | own |
 | `favorites` | own | own | — | own |

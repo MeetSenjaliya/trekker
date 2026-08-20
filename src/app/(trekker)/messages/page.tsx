@@ -353,6 +353,39 @@ function MessagesPageContent() {
     }
   };
 
+  // "Edit" filled the composer but had no save path: the submit handler was a
+  // no-op stub, and Enter fell through to handleSendMessage and posted a second
+  // message instead. Mirrors deleteMessage — RLS ("Edit own messages") is what
+  // actually scopes this to the author.
+  const handleEditMessage = async (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    const parsed = messageSchema.safeParse(newMessage);
+    if (!parsed.success) {
+      if (newMessage.trim()) toast.error(parsed.error.issues[0]?.message ?? 'Invalid message');
+      return;
+    }
+    const content = parsed.data;
+    if (content === editing.content) { setEditing(null); setNewMessage(''); return; }
+
+    const target = editing;
+    const updated_at = new Date().toISOString();
+    setEditing(null);
+    setNewMessage('');
+    setMessages(prev => prev.map(m => m.id === target.id ? { ...m, content, updated_at } : m));
+
+    const { error } = await supabase
+      .from('conversation_messages')
+      .update({ message: content, updated_at })
+      .eq('id', target.id);
+    if (error) {
+      setMessages(prev => prev.map(m => m.id === target.id ? { ...m, content: target.content, updated_at: target.updated_at } : m));
+      setEditing(target);
+      setNewMessage(content);
+      toast.error('Error editing message');
+    }
+  };
+
   const deleteMessage = async (id: string) => {
     if (!confirm('Delete message?')) return;
     setMessages(prev => prev.map(m => m.id === id ? { ...m, is_deleted: true, content: '' } : m));
@@ -634,7 +667,7 @@ function MessagesPageContent() {
                   </motion.div>
                 )}
               </AnimatePresence>
-              <form onSubmit={editing ? (e) => { e.preventDefault(); /* edit logic */ } : handleSendMessage} className="max-w-5xl mx-auto relative">
+              <form onSubmit={editing ? handleEditMessage : handleSendMessage} className="max-w-5xl mx-auto relative">
 
                 {/* STATUS INDICATORS (Reply/Edit) */}
                 <AnimatePresence>
@@ -662,7 +695,7 @@ function MessagesPageContent() {
                   <textarea
                     value={newMessage}
                     onChange={(e) => { setNewMessage(e.target.value); notifyTyping(); }}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (editing) handleEditMessage(e); else handleSendMessage(e); } }}
                     placeholder="Message the group..."
                     className="flex-1 bg-transparent border-none text-slate-100 placeholder:text-slate-500 focus:ring-0 resize-none py-3 text-sm md:text-base max-h-32 custom-scrollbar"
                     rows={1}

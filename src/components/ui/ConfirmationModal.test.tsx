@@ -33,6 +33,11 @@ describe('ConfirmationModal', () => {
     expect(screen.getByText(/Join Triund Trek/)).toBeInTheDocument()
   })
 
+  it('prefills the date from defaultDate, ignoring non-ISO placeholders', () => {
+    expect(setup({ defaultDate: '2099-01-01' }).dateInput.value).toBe('2099-01-01')
+    expect(setup({ defaultDate: 'No upcoming dates' }).dateInput.value).toBe('')
+  })
+
   it('keeps Confirm disabled until date + both checkboxes are set', async () => {
     const { dateInput } = setup()
     const confirm = screen.getByRole('button', { name: /confirm & join/i })

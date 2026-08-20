@@ -53,7 +53,6 @@ const optionalText = (max: number) =>
 // these keys before parsing (e.g. `name`/`full_name` → `fullName`).
 export const profileUpdateSchema = z.object({
   fullName: optionalText(100),
-  email: z.union([z.literal(''), z.email('Please enter a valid email')]),
   bio: optionalText(500),
   experienceLevel: z.string(),
   emergencyContactName: optionalText(100),
@@ -163,7 +162,7 @@ export const trekFormSchema = z.object({
 // The user's local calendar date as YYYY-MM-DD. toISOString() would give the
 // UTC date, which is still "yesterday" for timezones behind UTC late in the
 // day — rejecting a departure for the user's actual today.
-const localToday = () => {
+export const localToday = () => {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -171,7 +170,7 @@ const localToday = () => {
 // One year from today, as YYYY-MM-DD. Mirrors the join_trek_and_chat guard
 // (batch_date > current_date + interval '1 year' is rejected), so departures
 // that could never be booked can't be listed in the first place.
-const localMaxBatchDate = () => {
+export const localMaxBatchDate = () => {
   const d = new Date()
   return `${d.getFullYear() + 1}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }

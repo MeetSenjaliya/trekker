@@ -14,3 +14,9 @@ tsconfig.tsbuildinfo
 /test-results
 /playwright-report
 /playwright/.cache
+
+# security test plan — documents live test-account credentials, never commit
+TEST.md
+
+# Strix pentest prompts (Day 1-7) and their run logs/findings
+/strix-prompts

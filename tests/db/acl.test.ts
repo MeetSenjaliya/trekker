@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { PGlite } from '@electric-sql/pglite'
-import { asUser, getDb, ids } from './harness'
+import { asSuperuser, asUser, getDb, ids } from './harness'
 
 /**
  * Grants, not policies.
@@ -90,33 +90,58 @@ describe('EXECUTE grants on SECURITY DEFINER functions', () => {
   })
 
   it('platform_admins is unreachable by clients', async () => {
-    // The table grants are wide open here — RLS enabled with deliberately ZERO
-    // policies is what denies everyone, so this asserts behaviour rather than
-    // privileges. An advisor INFO flags it as rls_enabled_no_policy; that is
-    // the design. Adding a policy to silence the lint would create the
-    // client-reachable "make me an admin" path that must not exist.
+    // Defended two ways since 0003: no client grant (below) AND RLS enabled with
+    // deliberately ZERO policies. Either alone denies everyone; both together
+    // mean disabling RLS does not silently open the admin allowlist. An advisor
+    // INFO flags rls_enabled_no_policy; that is the design. Adding a policy to
+    // silence the lint would create the client-reachable "make me an admin" path
+    // that must not exist.
+    for (const role of ['anon', 'authenticated']) {
+      for (const priv of ['SELECT', 'INSERT']) {
+        const r = await db.query<{ ok: boolean }>(
+          `select has_table_privilege($1, 'public.platform_admins', $2) as ok`,
+          [role, priv],
+        )
+        expect(r.rows[0].ok, `${role} can ${priv} platform_admins directly`).toBe(false)
+      }
+    }
+
     const { rows } = await db.query<{ cnt: number }>(
       `select count(*)::int as cnt from pg_policies where tablename = 'platform_admins'`,
     )
     expect(rows[0].cnt, 'platform_admins gained a policy').toBe(0)
 
-    // Seeded with a real admin row, so an empty read is the policy working, not
-    // an empty table.
-    const seen = await asUser(db, ids.user.trekkerB, async (tx) =>
-      (await tx.query(`select user_id from public.platform_admins`)).rows,
+    // The table is seeded with a real admin row (confirmed as superuser), so the
+    // client-side refusals below are the lockdown working, not an empty table.
+    const seed = await asSuperuser(db, (tx) =>
+      tx.query(`select user_id from public.platform_admins`),
     )
-    expect(seen).toEqual([])
+    expect(seed.rows.length, 'platform_admins should be seeded with an admin').toBeGreaterThan(0)
 
-    const asAdminItself = await asUser(db, ids.user.platformAdmin, async (tx) =>
-      (await tx.query(`select user_id from public.platform_admins`)).rows,
-    )
-    expect(asAdminItself, 'even a platform admin cannot read the table').toEqual([])
+    // A client read no longer leaks an empty array (the old 200 `[]` oracle) — it
+    // is refused outright, because the SELECT grant is gone. This holds even for
+    // the seeded platform admin: the /admin flow asks is_platform_admin() (a
+    // SECURITY DEFINER function), never a direct select on this table.
+    await expect(
+      asUser(db, ids.user.trekkerB, (tx) =>
+        tx.query(`select user_id from public.platform_admins`),
+      ),
+    ).rejects.toThrow(/permission denied/i)
 
+    await expect(
+      asUser(db, ids.user.platformAdmin, (tx) =>
+        tx.query(`select user_id from public.platform_admins`),
+      ),
+    ).rejects.toThrow(/permission denied/i)
+
+    // With the grant revoked (0003), the privilege check now fails before RLS is
+    // even consulted, so the block surfaces as "permission denied" rather than a
+    // row-level-security violation. Either way the self-promotion is refused.
     await expect(
       asUser(db, ids.user.trekkerB, (tx) =>
         tx.query(`insert into public.platform_admins (user_id) values ($1)`, [ids.user.trekkerB]),
       ),
-    ).rejects.toThrow(/row-level security/i)
+    ).rejects.toThrow(/permission denied|row-level security/i)
   })
 
   it('rate_events is revoked from clients outright', async () => {

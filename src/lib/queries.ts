@@ -6,7 +6,11 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { supabase } from '@/lib/supabase';
+// The @supabase/ssr browser client, NOT the plain @/lib/supabase singleton:
+// sign-in stores the session in cookies, which only this client reads. The
+// singleton looks in localStorage, finds nothing, and runs every query below as
+// anon — which RLS answers with zero rows and no error (empty favourites page).
+import { createClient } from '@/utils/supabase/client';
 import {
   getMyCompanies,
   getCompanyOverview,
@@ -27,6 +31,8 @@ import {
 } from '@/lib/company';
 import type { CompanyStatusFilter } from '@/lib/company';
 import type { FilterState } from '@/components/ui/FilterSection';
+
+const supabase = createClient();
 
 // Central registry of query keys so reads and the mutations that invalidate
 // them stay in sync. Favorite keys are nested under ['favorites', userId] so a

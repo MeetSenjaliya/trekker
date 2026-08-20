@@ -1360,3 +1360,33 @@ using (
 --   supabase/phases/fix-trek-returning-and-chat-policy-roles.sql
 -- Folded into supabase/schema.sql §12.6 (treks) and §8 (chat).
 -- ============================================================================
+
+
+-- ============================================================================
+-- 0003 — lock platform_admins grants (defense in depth)   ·   2026-08-18
+-- ============================================================================
+-- WHY: platform_admins (the super-admin allowlist) was protected only by RLS
+-- enabled with ZERO policies. In production the table still carried Supabase's
+-- default GRANT ALL to anon/authenticated, so a plain `select` returned `[]`
+-- with 200 (not a permission error), and — more importantly — RLS was the SOLE
+-- barrier. Disable RLS once (a stray migration, a debug session) and an
+-- anonymous caller could read the admin list AND insert its own uid as an admin:
+-- full privilege escalation. A Strix Day-1 probe (TEST.md) surfaced the [] read.
+--
+-- There is no client path to add an admin (no policy, no RPC — rows are inserted
+-- only in the SQL Editor as the table owner), and exactly one admin exists today
+-- (senjaliyameet8@gmail.com). This closes the last-resort hole, not an active one.
+--
+-- FIX: revoke all on public.platform_admins from anon, authenticated — the same
+-- treatment rate_events already had. The table is now defended by BOTH the
+-- missing privilege AND RLS; either alone denies access, and a client read
+-- returns a hard permission error instead of an empty-array oracle.
+--
+-- Full SQL: supabase/migrations/0003_lock-platform-admins-grants.sql
+-- Test: tests/db/acl.test.ts "platform_admins is unreachable by clients" now
+-- asserts the grant is gone (has_table_privilege false), not just RLS behaviour.
+-- STATUS: APPLIED + VERIFIED LIVE 2026-08-18 10:08 UTC. platform_admins.relacl
+-- is now {postgres, service_role} only; has_table_privilege is false for
+-- anon/authenticated on SELECT and INSERT; RLS still on with zero policies;
+-- ledger records 0003. Folded into schema.sql; tests/db/acl.test.ts asserts it.
+-- ============================================================================

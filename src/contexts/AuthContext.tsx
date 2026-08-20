@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import { User, Session } from '@supabase/supabase-js'
 import { createClient } from '@/utils/supabase/client'
+import { EXPLORE_FILTERS_STORAGE_KEY } from '@/lib/exploreFilters'
 
 interface AuthContextType {
   user: User | null
@@ -31,6 +32,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
+        // Per-tab UI state that must not survive the session, whoever signs in
+        // next. Cleared here rather than in signOut() so it also covers a
+        // sign-out from another tab and an expired session.
+        if (event === 'SIGNED_OUT') sessionStorage.removeItem(EXPLORE_FILTERS_STORAGE_KEY)
         setSession(session)
         setUser(session?.user ?? null)
         setLoading(false)

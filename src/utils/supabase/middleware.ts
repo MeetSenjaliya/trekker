@@ -39,9 +39,16 @@ export async function updateSession(request: NextRequest) {
 
   // Routes that don't require authentication. A path is public if it matches
   // one of these exactly or starts with it followed by a "/".
-  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek', '/company']
+  const publicRoutes = ['/', '/explore', '/about', '/auth', '/trek']
 
   const { pathname } = request.nextUrl
+
+  // /company is deliberately NOT in publicRoutes: the prefix rule would also
+  // cover /company/apply, which is a signed-in-only form. Admit the SEO-indexed
+  // storefront explicitly instead — one segment under /company, never `apply`.
+  const isPublicCompanyRoute =
+    pathname === '/company' ||
+    (/^\/company\/[^/]+$/.test(pathname) && pathname !== '/company/apply')
 
   // Signed-in users have no business on the login / signup screens — send them
   // home. (Recovery flows like /auth/reset-password are intentionally left
@@ -56,9 +63,9 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  const isPublicRoute = publicRoutes.some(
-    (route) => pathname === route || pathname.startsWith(`${route}/`)
-  )
+  const isPublicRoute =
+    publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`)) ||
+    isPublicCompanyRoute
 
   if (!user && !isPublicRoute) {
     // no user, redirect the user to the login page

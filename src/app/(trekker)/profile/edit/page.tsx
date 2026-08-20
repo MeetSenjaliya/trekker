@@ -8,7 +8,7 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
-import { compressImage } from '@/utils/imageCompression';
+import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
 import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
 
 export default function EditProfilePage() {
@@ -122,7 +122,6 @@ export default function EditProfilePage() {
 
     const result = profileUpdateSchema.safeParse({
       fullName: formData.name,
-      email: formData.email,
       bio: formData.bio,
       experienceLevel: formData.experience,
       emergencyContactName: formData.emergencyContact.name,
@@ -143,7 +142,10 @@ export default function EditProfilePage() {
       if (avatarFile) {
         setUploading(true);
         const compressed = await compressImage(avatarFile);
-        const fileExt = avatarFile.name.split('.').pop();
+        // The extension comes off a user-supplied filename, so run it through the
+        // same sanitiser the other three upload call sites use — an unsanitised
+        // one can carry '/' and spray nested folders under the user's prefix.
+        const fileExt = sanitizeFileName(avatarFile.name.split('.').pop() ?? '') || 'jpg';
         const fileName = `${user.id}/${Date.now()}.${fileExt}`;
 
         const { error: uploadError } = await supabase.storage
@@ -162,11 +164,13 @@ export default function EditProfilePage() {
         setUploading(false);
       }
 
-      // Update Profile
+      // email is absent on purpose — the form shows it read-only. That also rules
+      // out .upsert() here: profiles.email is NOT NULL, and Postgres checks NOT NULL
+      // on the proposed tuple BEFORE resolving ON CONFLICT, so an omitted column
+      // raises 23502 even on a row that exists. A plain .update() ignores what it
+      // isn't given.
       const updates = {
-        id: user.id,
         full_name: formData.name,
-        email: formData.email,
         experience_level: formData.experience,
         bio: formData.bio,
         emergency_contact: formData.emergencyContact.name,
@@ -176,7 +180,7 @@ export default function EditProfilePage() {
         avatar_url: currentAvatarUrl,
       };
 
-      const { error } = await supabase.from('profiles').upsert(updates);
+      const { error } = await supabase.from('profiles').update(updates).eq('id', user.id);
       if (error) throw error;
 
       toast.success('Profile updated successfully!');
@@ -268,15 +272,20 @@ export default function EditProfilePage() {
                 />
               </div>
 
-              <div className="relative">
-                <Mail className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400" />
-                <input
-                  type="email"
-                  placeholder="Email Address"
-                  value={formData.email}
-                  onChange={(e) => handleInputChange('email', e.target.value)}
-                  className={inputClass}
-                />
+              <div>
+                <div className="relative">
+                  <Mail className="absolute left-3.5 top-3.5 w-5 h-5 text-gray-400" />
+                  <input
+                    type="email"
+                    placeholder="Email Address"
+                    value={formData.email}
+                    readOnly
+                    className={`${inputClass} opacity-60 cursor-not-allowed`}
+                  />
+                </div>
+                <p className="mt-1.5 pl-1 text-xs text-gray-400">
+                  Your email can&apos;t be changed here — it identifies your account.
+                </p>
               </div>
 
               <div className="relative">

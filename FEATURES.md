@@ -12,7 +12,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-08-17 — full history in [§3 Changelog](#3--changelog-newest-first)._
+_Last updated: 2026-08-20 — full history in [§3 Changelog](#3--changelog-newest-first)._
 
 ## Contents
 
@@ -44,7 +44,13 @@ _Last updated: 2026-08-17 — full history in [§3 Changelog](#3--changelog-newe
 | 4 | **After** the headers deploy: watch Sentry CSP reports for ~a week, then set `CSP_ENFORCE=1` in Vercel | The policy ships **report-only**, so today it blocks nothing. Until it is promoted, the `connect-src` exfiltration cap — the part that actually protects the browser-held Supabase session — is inert | [§1.5](#15-phase-0--security-tail-remaining) |
 | 5 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
 
-> **The DB backlog is empty as of 2026-08-14.** Both hardening SQL files applied,
+> **The DB backlog is empty as of 2026-08-18.** Migration `0003_lock-platform-admins-grants`
+> applied and **verified live** (10:08 UTC): `platform_admins.relacl` is now
+> `{postgres, service_role}` only — `anon`/`authenticated` hold no privilege
+> (`has_table_privilege` false for SELECT+INSERT), RLS still on with zero policies.
+> Ledger shows `0003`. See §3 (2026-08-18) and `security-fixes.sql`.
+>
+> Before that, all applied as of 2026-08-14: both hardening SQL files,
 > batch announcements built and applied, the chat hot-path indexes applied and
 > verified, every behavioural control run (the smoke test, the forgery control, and
 > the vacated-departure refusal + its positive control), and the migration ledger
@@ -150,11 +156,16 @@ The advisor still reports `auth_leaked_password_protection` **disabled** (re-che
 
 ### `/company/apply` is reachable logged-out
 
-**Status:** ❌ — low severity, **fails safe.**
+**Status:** ✅ **fixed 2026-08-18** — see the gotcha-audit entry in §3.
 
-[src/utils/supabase/middleware.ts:42](src/utils/supabase/middleware.ts#L42) lists `/company` in `publicRoutes`, and the match is a prefix (`pathname.startsWith('/company/')`) — so `/company/apply` passes the guard with no session. The write is still refused (`apply_for_company` is `authenticated`-only and derives the owner from `auth.uid()`), so nothing leaks; a signed-out visitor just fills in the whole form before finding out.
-
-**Fix:** drop `/company` from `publicRoutes` and admit the storefront explicitly, so the prefix rule stops covering `/company/apply`. Keep `/company/[slug]` public — it is the SEO-indexed page.
+`publicRoutes` listed `/company` and matched on prefix, so `/company/apply` passed
+the guard with no session. `/company` is gone from the list; the storefront is
+admitted explicitly as *one* segment under `/company` that isn't `apply`
+([src/utils/supabase/middleware.ts](src/utils/supabase/middleware.ts)), so
+`/company/[slug]` stays public (SEO-indexed) and the bare `/company` 404 is
+unchanged. The write was always refused (`apply_for_company` is
+`authenticated`-only and derives the owner from `auth.uid()`), so this was
+defence-in-depth, not a leak.
 
 ### Delete the dead `.eslintrc.json`
 
@@ -462,7 +473,7 @@ exported for this; no behaviour changed.
 |---------|--------|----------|
 | 🔥 Realtime chat | ✅ | commit `696c385`; `src/app/messages/page.tsx` — `postgres_changes`, presence, typing, unread badges; `src/lib/chat.ts`. DB deps verified live 2026-06-20: `mark_conversation_read()` + `get_unread_counts()` RPCs, `conversation_participants.last_read_at`, and `conversation_messages` in the `supabase_realtime` publication all present |
 | Real ratings rollup | ✅ | DB: `get_trek_avg_rating()` in `supabase/schema.sql`; wired via `src/lib/utils.ts`, `src/components/ui/TrekCard.tsx` |
-| Search & filters on Explore | ✅ | DB: `search_treks()` + `fts` tsvector/GIN in `supabase/schema.sql` (filters/sort/pagination + total_count in one RPC); wired at `src/app/explore/page.tsx`, `src/components/ui/FilterSection.tsx`. Empty / punctuation-only search returns no matches (follow-up #3, applied 2026-06-22). `FilterSection` is now a controlled component (single source of truth in the page); applied filters **and** the current page persist across navigation via `sessionStorage` (`explore-filters`, shape `{ filters, page }`) so leaving and returning to Explore keeps the same results. Writes happen on user actions (filter/page change), not via a `filters` effect — an effect would write the default state back over the saved value on the first render after remount and reset everything |
+| Search & filters on Explore | ✅ | DB: `search_treks()` + `fts` tsvector/GIN in `supabase/schema.sql` (filters/sort/pagination + total_count in one RPC); wired at `src/app/explore/page.tsx`, `src/components/ui/FilterSection.tsx`. Empty / punctuation-only search returns no matches (follow-up #3, applied 2026-06-22). `FilterSection` is now a controlled component (single source of truth in the page); applied filters **and** the current page persist across navigation via `sessionStorage` (`explore-filters`, shape `{ filters, page }`) so leaving and returning to Explore keeps the same results. Writes happen on user actions (filter/page change), not via a `filters` effect — an effect would write the default state back over the saved value on the first render after remount and reset everything. The key is cleared on `SIGNED_OUT` in `src/contexts/AuthContext.tsx` (shared constant in `src/lib/exploreFilters.ts`) — `sessionStorage` is keyed to the tab, not the session, so without that a search survived the sign-out and greeted the next sign-in |
 | Capacity + waitlist | ✅ | DB: `trek_participants.status` + `promote_waitlist_on_leave()` in `supabase/schema.sql` (per-batch capacity, FIFO promotion trigger); wired into `src/lib/joinTrek.ts`. `participants_joined` counts confirmed only (#1); `waitlist_position` tie-breaks by id (#5); trek-detail button no longer asserts a misleading trek-wide full state (#4) — all applied 2026-06-22 |
 | Trekker profiles & gamification | ✅ | DB: `award_user_achievements()` + `get_user_profile()` in `supabase/schema.sql`; `src/lib/achievements.ts` (15 badges); wired at `src/app/profile/page.tsx`. Includes `src/components/ui/ItineraryView.tsx`. Stats + badges count confirmed participations only (follow-up #2, applied 2026-06-22) |
 
@@ -814,6 +825,12 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **`accept_company_invite()` opts out of the `account_type` pin with a transaction-local GUC, and that is the ONLY sanctioned way through it.** `protect_profile_account_type()` returns NEW unchanged when `app.account_type_change = 'allow'`; the RPC sets it with `set_config(..., is_local => true)` immediately before its UPDATE and clears it immediately after. This is safe only because PostgREST gives clients no way to call `set_config` — it is not in the exposed schema, and the only GUCs a request can influence are the `request.*` ones PostgREST sets itself. If a future change exposes an RPC that takes a GUC name, or moves this logic somewhere a client can reach, the pin from step 1 is gone and with it every rule that depends on `account_type`.
 
+- **A trekker can book several departures of the same trek — never read `trek_participants` for a trek with `.maybeSingle()`.** The unique constraint is `(user_id, batch_id)`, not `(user_id, trek_id)`, and `join_trek_and_chat()` has no rule against a second date. `.maybeSingle()` **raises** on two rows and hands back `data: null`, which reads exactly like "not booked" — so the trek page offered "Book This Trek" to someone already booked, hid the Leave button, and told them to join before using the chat they were already in. Fixed 2026-08-18 in [`TrekDetailClient`](src/app/trek/[id]/TrekDetailClient.tsx) (both the status read and `handleChat`) by taking all rows and picking the earliest departure. **The failure mode is the trap**: one booking is the state you develop and test in, and the bug only appears on the second.
+
+- **When a gate protects an irreversible action, "still loading" must resolve to the *safe* side, not to `false`.** `useAccountType` returns `undefined` while in flight, so `accountType === 'trekker'` is false for a trekker for as long as the query takes — and [`/invites`](src/app/invites/page.tsx) used that to decide whether to show the conversion warning and the two-step confirm. The Header's `showTrekkerNav` comment makes the opposite call on purpose (unknown ⇒ hide the trekker links, so nothing flashes), and copying that default here removed the consent gate on an account change only a platform admin can undo. Read the direction off the *consequence*: cosmetic nav ⇒ default to hiding; destructive action ⇒ default to asking, and disable the control until the answer arrives. Fixed 2026-08-18.
+
+- **"Omit the key and the old value survives" is true of `.update()` and FALSE of `.upsert()` against a `not null` column.** PostgREST's upsert is `INSERT … ON CONFLICT DO UPDATE`, and **Postgres runs the `NOT NULL` check on the proposed tuple before it resolves the conflict** — so leaving a `not null` column out of an `.upsert()` payload raises `23502` even when the row already exists and only the UPDATE half would ever run. This is exactly how the first `/profile/edit` email fix broke every save with a cleared email (2026-08-18, replaced 2026-08-20). **Nothing catches it**: types pass, lint passes, the whole test suite passes, and the failure only appears at runtime against a real row. If you need "leave this column alone", use `.update(...).eq('id', …)` — a plain UPDATE genuinely ignores what it is not given. `profiles` is the only table this app upserted.
+
 - **`is_trekker()` and `profiles.account_type` deliberately disagree for platform admins — pick the one that matches the rule you are mirroring, not the one that sounds right.** `is_trekker()` is `account_type = 'trekker' OR is_platform_admin()`, so a platform admin whose column reads `'company'` still gets `true`. That exemption is intentional (one rule instead of two half-rules), and it means the two are **not** interchangeable: use `is_trekker()` when gating something the *RLS policies* gate — `trek_participants`/`favorites` INSERT, `join_trek_and_chat()`, the `src/app/(trekker)/layout.tsx` guard — so the UI can never disagree with what the DB will allow; use the **raw `account_type`** when mirroring a rule the DB writes against the column itself — `apply_for_company()` requires `account_type = 'company'`, and `accept_company_invite()` branches on the raw value. Getting it backwards is not a type error and not a crash; it silently shows the wrong screen to exactly one class of user. This already bit `/company/apply`, which reads `getMyAccountType()` and **not** `useIsTrekker()` for that reason: gated on `is_trekker()` a platform admin would be shown the "this is a trekker account, you can't apply" explainer while `apply_for_company()` would have happily accepted them. **Testing corollary:** the main test account (`senjaliyameet8@gmail.com`) is both `account_type='company'` and a platform admin, so it passes every `is_trekker()` check and cannot detect this class of bug — verify account-type gating against a non-admin account, which is also why `verify-phase-f.sql` and `verify-phase-g.sql` both name non-admin UIDs explicitly.
 
 - **`/dashboard/account` is unreachable for a company account that hasn't registered a company yet** — known, accepted, documented rather than fixed (decided 2026-08-06). The page sits under `src/app/dashboard/layout.tsx`, whose guard sends a member-less company account to `/company/apply`, so a brand-new company operator can't reach their own name/password form until their application exists. Not a lockout: `/auth/forgot-password` still changes the password, and the gap closes the moment they apply. Fixing it means either lifting the page to a top-level `/account` route or special-casing it inside the guard — don't do the latter casually, since every future `/dashboard` page then has to reason about the exception. (See [§1.6](#16-decided-leave-as-is).)
@@ -844,12 +861,192 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **Company-scoped write policies have TWO status tiers — `is_company_member` alone in a write policy silently un-freezes a rejected tenant.** `is_company_writable()` = status `pending` OR `approved` (a pending applicant sets its company up while it waits); `is_approved_company_member()` = `approved` only, and it gates the **publishing** surfaces — treks, departures, `trek-images` storage. Plain `is_company_member` / `is_company_admin` now mean "is a member", *not* "may write": pair them with `is_company_writable()`, or use `is_approved_company_member()` for anything that reaches the public catalogue. The same split lives in the app as `isCompanyFrozen()` ([`src/lib/company.ts`](src/lib/company.ts)) — a rejected/suspended company sees the dashboard read-only. **SELECT is deliberately never gated by either** (`is_trek_visible` already handles read visibility, and staff plus existing bookers must keep reading a hidden trek), and neither are the `is_platform_admin()` arms — freezing must not lock out the role that un-freezes. Watch the storage half in particular: both company buckets are public, so a write policy left on bare membership lets a frozen company overwrite its logo/cover at the same CDN paths the storefront links to, with no `companies` row ever changing. Rules live in [`supabase/phases/phase-h-frozen-companies.sql`](supabase/phases/phase-h-frozen-companies.sql), folded into `schema.sql` §16; **applied + verified live 2026-08-08.**
 
+- **The two Supabase browser clients do not share a session, and mixing them fails silently as "no rows".** `@supabase/ssr`'s `createBrowserClient` ([`src/utils/supabase/client.ts`](src/utils/supabase/client.ts)) keeps the session in **cookies** — that is what sign-in writes and what the proxy reads. The plain `createClient` singleton in [`src/lib/supabase.ts`](src/lib/supabase.ts) looks in **localStorage**, finds nothing, and runs every request as `anon`. Under RLS that is not an error: an own-rows-only SELECT just returns `[]`, so the UI renders its empty state and nothing reaches the console. This bit `useFavorites` ([`src/lib/queries.ts`](src/lib/queries.ts)) from 2026-06-20 (`33a202c`, which moved the page onto TanStack Query) to 2026-08-20 — `/favorites` showed "No Favorites Yet" while the rows sat in the table, because the hearts are written by `TrekDetailClient` on the *cookie* client and read back on the *localStorage* one. **Every client component uses the `utils/supabase` factory**; `src/lib/supabase.ts` is now only reachable from `opengraph-image.tsx` (server, anon reads by design) and its exported types. The tell for this class of bug is asymmetry — a write lands, the matching read comes back empty.
+
 ---
 
 # §3 — Changelog (newest first)
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## Two regressions: the card's Join skipped the date picker, `/favorites` read as anon  ·  2026-08-20
+
+Both were long-standing regressions from unrelated refactors, and both were silent.
+
+**Join Now bypassed the date modal.** `TrekCard` still rendered `ConfirmationModal`, but
+`setIsModalOpen(true)` had no caller — `1138e55` (2025-11-29) replaced the modal-opening
+handler with a direct `joinTrekBatchAndChat()` on `next_batch_date`, leaving
+`handleConfirmJoin` unreachable dead code. Clicking Join booked the next departure outright,
+with no date choice and no safety/rules consent, while `/trek/[id]` (identical modal, same
+component) kept asking. `handleJoinTrek` now checks auth and fullness and opens the modal;
+`handleConfirmJoin` does the join and owns the `joining` state. `next_batch_date` is not
+dropped — it seeds the picker through a new optional `defaultDate` prop, so the common case
+is still one extra click, not a date lookup. The prop ignores anything that isn't an ISO
+date, because callers pass the literal string `'No upcoming dates'`.
+
+**`/favorites` rendered "No Favorites Yet" with rows in the table.** `src/lib/queries.ts`
+was the last client-side importer of the plain `src/lib/supabase.ts` singleton, whose session
+lives in localStorage; sign-in writes the session to **cookies**, which only the
+`@supabase/ssr` client reads. So every direct table query in that file ran as `anon`, and
+`favorites` is `to authenticated using (auth.uid() = user_id)` — zero rows, no error. The
+write path hid it: the hearts are toggled by `TrekDetailClient` on the cookie client, so
+favouriting worked and only the read came back empty. (`FavCard`, which toggles through the
+broken singleton, is not rendered anywhere — otherwise the insert would have failed loudly
+and this would have been found in June.) `queries.ts` now builds its client from
+`@/utils/supabase/client`. Verified over MCP first that the four favourited treks are
+`is_active` under an `approved` company and pass `is_trek_visible()` — the RLS on `treks`
+was never the cause. New Known Gotcha; `CLAUDE.md` no longer suggests the singleton for
+client components.
+
+## Explore's saved search no longer survives a sign-out  ·  2026-08-20
+
+Searching "desert" on `/explore`, then signing out, left the term sitting in the search
+box — and it was still there after the next sign-in. `sessionStorage` is scoped to the
+**tab**, not the Supabase session, so the `explore-filters` key written for the
+navigate-away-and-back case outlived the account that typed it.
+
+`src/contexts/AuthContext.tsx` now removes the key on the `SIGNED_OUT` auth event; the key
+itself moved to `src/lib/exploreFilters.ts` so both sides share one constant. Clearing on
+the event rather than inside `signOut()` also covers a sign-out from another tab and a
+session that simply expired. Restoring on return is untouched — leaving Explore for a trek
+and coming back still lands on the same filters and page. Deliberately **not** cleared on
+`SIGNED_IN`: that event also fires on token refresh and tab focus, which would wipe a
+search mid-use. `npm run build` clean, `npm test` 124/124. No database change.
+
+## Review of the gotcha audit — 5 follow-ups fixed  ·  2026-08-20
+
+A review of the previous entry's diff before pushing it to `main` found that **one of its
+eight fixes was itself broken**, plus four smaller things. All five are now fixed.
+`npm run build` clean, `npm test` 124/124, `npm run lint` 0 errors (22-warning backlog
+unchanged). No database change was needed.
+
+1. **The `/profile/edit` fix would have failed every save with a cleared email.** Fix #5
+   below stopped writing `''` by omitting the key from the payload — but the write was
+   `.upsert()`, and **Postgres checks `NOT NULL` on the proposed tuple *before* it resolves
+   `ON CONFLICT`**, so an omitted `not null` column raises `23502` even though the row
+   exists and would only ever be UPDATEd. The whole save died — name, bio, avatar,
+   emergency contact — behind the generic `Profile save error` toast. Confirmed against the
+   real `profiles` DDL in PGlite: `.upsert()` without `email` errors, plain `update`
+   succeeds with the stored address untouched.
+
+   **The email field is now read-only** (decided 2026-08-20), which is what it should always
+   have been: `profiles.email` is the identity anchor — `not null unique`, and what
+   `invite_company_member()` resolves an invitee by — and writing it here never changed the
+   real login address in `auth.users` anyway. The write is `.update(...).eq('id', user.id)`,
+   `email` is gone from both the payload and `profileUpdateSchema`, and the now-vacuous
+   `allows an empty email` test is repurposed as a happy-path parse. This was the only
+   `.upsert()` in `src/`.
+
+2. **The trek page reported on the wrong departure for repeat bookers.** Fix #2 below
+   correctly stopped using `.maybeSingle()`, but took the earliest departure *overall* — so
+   someone who walked this trek last year and has a new date booked saw the **completed**
+   one, and **Leave** would have cancelled that instead of the upcoming trip. Now
+   `pickCurrentBooking()` prefers the earliest departure on or after `localToday()`, falling
+   back to the full set so a purely historic booking still shows as joined.
+
+3. **`TEST.md` was one `git add -A` away from committing live production passwords.** It
+   documents the three security-test accounts and states the password scheme in plain text;
+   it was untracked but **not ignored**, and a history rewrite is the only undo. Added to
+   `.gitignore`.
+
+4. **Two dead branches removed.** The `P0001` check in `handleEditMessage` could never fire
+   (`conversation_messages_rate_limit` is `after insert`, not `after insert or update`), and
+   the ~30-line signed-out "Log in to apply" screen in `/company/apply` became unreachable
+   the moment that route stopped being public — replaced with a bare `if (!user) return null;`
+   guarding the session-expires-mid-page gap.
+
+5. **`optionalDependencies: @rollup/rollup-linux-arm64-gnu` removed.** It looked like a
+   lockfile repair but wasn't: `package-lock.json` already carried the entry and `npm ci`
+   validates with *and* without it. Being Linux-ARM, npm skips it on macOS, on
+   `ubuntu-latest` CI and on Vercel alike — every machine that builds this project.
+
+**Left alone deliberately:** the middleware's `pathname === '/company'` clause. It matches no
+route today (the build emits only `/company/[slug]` and `/company/apply`), but it costs one
+clause and correctly admits a future `/company` index page.
+
+## Lock `platform_admins` grants — migration `0003`  ·  2026-08-18
+
+A Strix probe (Day 1 of `TEST.md`) flagged that an anonymous `select` on
+`platform_admins` returned `[]` with `200` instead of a permission error. Root
+cause: the table carried Supabase's default `GRANT ALL` to `anon`/`authenticated`,
+so **RLS-with-zero-policies was the *only* barrier** — disable RLS once and an
+anonymous caller could read the admin list and insert its own uid as an admin
+(full privilege escalation). There is exactly **one** admin today
+(`senjaliyameet8@gmail.com`), and no client path adds another — this closes the
+last-resort hole rather than an active one.
+
+`0003_lock-platform-admins-grants.sql` does `revoke all on public.platform_admins
+from anon, authenticated`, mirroring what `rate_events` already had. Now the table
+is defended by **both** the missing grant and RLS, and a client read returns a hard
+permission error instead of an empty-array oracle. `acl.test.ts` updated to assert
+the grant is gone (was asserting RLS behaviour only); `npm test` 124/124, `npm run
+build` clean. **Applied and verified live 2026-08-18 10:08 UTC** — `platform_admins.relacl`
+is `{postgres, service_role}` only; `anon`/`authenticated` hold no SELECT/INSERT; ledger
+records `0003`.
+
+## Gotcha audit — 8 app-side bugs fixed, no SQL needed  ·  2026-08-18
+
+A pass over the whole app against this file, hunting broken flows and edge cases
+rather than missing features. **Nothing needed a database change** — every finding
+was client-side. `npm run build` clean, `npm test` 124/124, `npm run lint` 0
+errors (the 22-warning backlog is unchanged).
+
+Ordered by what a user actually loses:
+
+1. **The invite consent gate could be skipped by a race** — [`/invites`](src/app/invites/page.tsx)
+   derived `isTrekker` as `accountType === 'trekker'`, which reads **false while
+   `useAccountType` is still in flight**. The Header caches `useMyInvites` for 60s,
+   so the invite card renders before the account type resolves — and in that window
+   the button said "Accept invitation", skipped the amber warning *and* the two-step
+   confirm, and converted a trekker account **irreversibly** (platform-admin-only to
+   undo) on one click. Unknown now falls on the cautious side (`accountType !== 'company'`)
+   and the button is disabled until the answer is in. Same shape as the `Header`
+   `showTrekkerNav` note, opposite safe default — see Known Gotchas.
+2. **Two departures of the same trek broke the trek page.** Nothing stops booking
+   several dates of one trek (`trek_participants` is unique on `(user_id, batch_id)`,
+   not on the trek), but [`TrekDetailClient`](src/app/trek/[id]/TrekDetailClient.tsx)
+   read the join status with `.maybeSingle()` — which **errors** on two rows and
+   returns null. The second booking made the page show "Book This Trek" to someone
+   already booked, with no Leave button, and `handleChat` answered *"Please join a
+   trek batch to access chat."* Both now read all rows; the sidebar reports the
+   earliest departure and Chat opens the one it is reporting on.
+3. **Chat "Edit" was a no-op that could post a duplicate.** The composer's submit
+   handler in [`/messages`](src/app/(trekker)/messages/page.tsx) was
+   `editing ? (e) => { e.preventDefault(); /* edit logic */ } : handleSendMessage`,
+   so clicking Send while editing did nothing at all — and Enter bypassed the branch
+   entirely and **posted the edit as a new message**. Now saves through the existing
+   `Edit own messages` policy, optimistic with rollback, matching `deleteMessage`.
+4. **"Join Now" sent signed-out visitors to a 404.** [`TrekCard`](src/components/ui/TrekCard.tsx)
+   pushed `/login`; the route is `/auth/login`.
+5. **Clearing the email field wrote `''` over `profiles.email`** ([`/profile/edit`](src/app/(trekker)/profile/edit/page.tsx)).
+   The column is `not null unique` and is what `invite_company_member()` resolves an
+   invitee by — so this quietly made an account un-inviteable, and the *second*
+   account to do it collided on the unique index. **The first attempt at this fix was
+   itself broken and was replaced on 2026-08-20** — see the entry above; the field is
+   now read-only and the column is never written from this form at all.
+6. **The join date-picker's `min` was the UTC date** ([`ConfirmationModal`](src/components/ui/ConfirmationModal.tsx)).
+   UTC is already tomorrow for timezones behind it late in the day (blocking the
+   user's real today) and still yesterday for IST before 05:30 — and
+   `join_trek_and_chat`'s one-day grace would have turned that into a real batch.
+   Now uses the local calendar date via `localToday()`, which `batchSchema` already
+   had for exactly this reason (now exported rather than duplicated), plus a `max`
+   mirroring the RPC's +1-year cap so the picker can't offer a guaranteed rejection.
+7. **`.single()` on the favourites lookup** in `TrekDetailClient` turned the *common*
+   "not favourited" case into a PGRST116 error, and never reset the heart to unfilled.
+   `maybeSingle()`.
+8. **The avatar path took an unsanitised extension** off the user's filename
+   (`/profile/edit`), the one upload call site of four not using `sanitizeFileName()`.
+   RLS keys on the first path segment so nothing could escape the user's prefix, but
+   a `/` in the extension sprays nested folders and strands the object.
+
+**Left alone deliberately, all recorded in the audit report rather than fixed:**
+`/review` is a static mock whose form fakes a success toast (wiring a real
+submission is feature work and needs a product call on trek selection + the
+join-gate); `/profile/edit` collects privacy, favourite terrains and an emergency
+contact *relationship* that no `profiles` column can hold; "Remember me" on the
+login form is inert; `/auth/reset-password` accepts any session, not only a
+recovery one — which the middleware comment says is intentional.
 
 ## Dependency CVEs patched — the 2026-08-14 audit's top finding closed  ·  2026-08-17
 

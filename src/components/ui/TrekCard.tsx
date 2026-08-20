@@ -94,7 +94,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
 
     if (!user) {
       toast.error('Please log in to join this trek.');
-      router.push('/login');
+      router.push('/auth/login');
       return;
     }
 
@@ -102,30 +102,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
       return;
     }
 
-    if (!next_batch_date || next_batch_date === 'No upcoming dates') {
-      toast.error('No upcoming batch dates available for this trek.');
-      return;
-    }
-
-    setJoining(true);
-
-    try {
-      const result = await joinTrekBatchAndChat({
-        userId: user.id,
-        trekId: id,
-        trekTitle: title,
-        date: next_batch_date
-      });
-
-      if (result.success) toast.success(result.message);
-      else toast.error(result.message);
-
-      if (result.success && result.conversationId) {
-        router.push(`/messages?conversationId=${result.conversationId}`);
-      }
-    } finally {
-      setJoining(false);
-    }
+    setIsModalOpen(true);
   };
 
   const handleConfirmJoin = async (date: string) => {
@@ -134,21 +111,27 @@ const TrekCard: React.FC<TrekCardProps> = ({
       return;
     }
 
-    const result = await joinTrekBatchAndChat({
-      userId,
-      trekId: id,
-      trekTitle: title,
-      date
-    });
+    setJoining(true);
 
-    if (result.success) toast.success(result.message);
-    else toast.error(result.message);
+    try {
+      const result = await joinTrekBatchAndChat({
+        userId,
+        trekId: id,
+        trekTitle: title,
+        date
+      });
 
-    if (result.success) {
-      setIsModalOpen(false);
-      if (result.conversationId) {
-        router.push(`/messages?conversationId=${result.conversationId}`);
+      if (result.success) toast.success(result.message);
+      else toast.error(result.message);
+
+      if (result.success) {
+        setIsModalOpen(false);
+        if (result.conversationId) {
+          router.push(`/messages?conversationId=${result.conversationId}`);
+        }
       }
+    } finally {
+      setJoining(false);
     }
   };
 
@@ -265,6 +248,7 @@ const TrekCard: React.FC<TrekCardProps> = ({
         onClose={() => setIsModalOpen(false)}
         onConfirm={handleConfirmJoin}
         trekTitle={title}
+        defaultDate={next_batch_date}
       />
     </div>
   );

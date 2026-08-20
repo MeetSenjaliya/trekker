@@ -84,7 +84,6 @@ describe('resetPasswordSchema', () => {
 describe('profileUpdateSchema', () => {
   const valid = {
     fullName: 'Asha',
-    email: '',
     bio: 'I hike.',
     experienceLevel: 'beginner',
     emergencyContactName: 'Ravi',
@@ -92,7 +91,7 @@ describe('profileUpdateSchema', () => {
     emergencyContactPhone: '+91 98765 43210',
   }
 
-  it('allows an empty email', () => {
+  it('accepts a filled-in profile', () => {
     expect(profileUpdateSchema.safeParse(valid).success).toBe(true)
   })
 
