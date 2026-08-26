@@ -64,7 +64,6 @@ const cspHeaderName = process.env.CSP_ENFORCE
 /** @type {(phase: string) => import('next').NextConfig} */
 export default function config(phase) {
     const nextConfig = {
-        output: 'standalone',
         images: {
             remotePatterns: [
                 {

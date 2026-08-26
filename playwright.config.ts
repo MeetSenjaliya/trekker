@@ -16,7 +16,7 @@ export default defineConfig({
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
-  // Locally use the dev server; in CI run the standalone production build.
+  // Locally use the dev server; in CI run the production build via `next start`.
   webServer: {
     command: process.env.CI ? 'npm run start' : 'npm run dev',
     url: baseURL,

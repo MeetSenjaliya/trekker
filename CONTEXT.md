@@ -20,7 +20,7 @@ Since 2026-07-02 it is a **multi-tenant marketplace**: independent trek **compan
 
 | Area | Choice |
 |---|---|
-| Framework | Next.js `^16.0.10` (App Router, `output: 'standalone'`) |
+| Framework | Next.js `^16.0.10` (App Router) |
 | UI runtime | React `19` |
 | Language | TypeScript `^5` (path alias `@/* → src/*`) |
 | Backend | Supabase (`@supabase/supabase-js` `^2.51`, `@supabase/ssr` `^0.6` for cookie/session handling) |
@@ -200,7 +200,7 @@ All buckets are public-read; writes are owner-scoped (M1 fix) or company-scoped 
 ## 9. Configuration & env
 
 - **Env vars** (`.env.local`, see `.env.local.example`): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `NEXT_PUBLIC_SITE_URL` (canonical origin for `metadataBase`, canonical links, OG image URLs and the sitemap — **must be set in Vercel**, or every shared link advertises `http://localhost:3000`; falls back to `VERCEL_PROJECT_PRODUCTION_URL` then localhost, resolved in `src/lib/site.ts`). A `SUPABASE_SERVICE_ROLE_KEY` slot exists in the example but is **not used** in code (and must never reach the browser). `.env*` files are git-ignored (untracked since commit `4e180fa`).
-- **`next.config.js`:** `output: 'standalone'`; image `remotePatterns` for the Supabase project host + Unsplash.
+- **`next.config.js`:** image `remotePatterns` for the Supabase project host + Unsplash. No `output` mode — Vercel builds its own serverless output, and `output: 'standalone'` broke `next build` there (see Known Gotchas in `FEATURES.md`).
 - **`tailwind.config.js`:** scans `src/app`, `src/components`, `src/pages`.
 - **`tsconfig.json`:** strict, `@/*` alias.
 
