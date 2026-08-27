@@ -290,10 +290,11 @@ irreversible, and it binds every future subdomain). Details in [FEATURES.md](FEA
 🟡 until it is promoted. Two things worth knowing before flipping it: `script-src` keeps
 `'unsafe-inline'` (Next's App Router emits inline hydration scripts, and the nonce alternative
 forces every page dynamic, undoing the SSR/SEO work), so this is exfiltration containment via
-`connect-src`, not injection defence. And the likely breakage is **photo upload, not script** —
-`browser-image-compression` spawns its worker from a blob URL, and `compressImage()` swallows
-the failure by falling back to the uncompressed original, so a break shows up as bloated
-uploads rather than an error.
+`connect-src`, not injection defence. And the photo-upload breakage expected
+here is **already fixed** (2026-08-27): the library's blob worker `importScripts`-ed itself
+from jsdelivr, which `script-src 'self'` blocks, so `compressImage()` now compresses on the
+main thread (`useWebWorker: false`) and `worker-src` is `'none'`. See
+[FEATURES.md](FEATURES.md) §1.5.
 
 ### 4.2 🟡 No rate limiting
 

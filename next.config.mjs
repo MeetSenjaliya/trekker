@@ -40,9 +40,9 @@ function buildCsp(isDev) {
         `img-src 'self' data: blob: ${supabaseOrigin} https://images.unsplash.com https://www.transparenttextures.com`,
         `font-src 'self' data:`,
         `connect-src 'self' ${supabaseOrigin} ${supabaseSocketOrigin} https://api.pwnedpasswords.com ${sentry.origin}`,
-        // browser-image-compression runs with useWebWorker: true, which spawns the
-        // worker from a blob URL. Without blob: every photo upload fails silently.
-        `worker-src 'self' blob:`,
+        // Nothing spawns a worker: compressImage() runs on the main thread
+        // because the library's worker fetches itself from a CDN.
+        `worker-src 'none'`,
         `object-src 'none'`,
         `base-uri 'self'`,
         `form-action 'self'`,
