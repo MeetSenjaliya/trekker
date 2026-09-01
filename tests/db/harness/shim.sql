@@ -104,6 +104,13 @@ create table storage.objects (
   bucket_id   text references storage.buckets(id),
   name        text,
   owner       uuid,
+  -- storage-api stamps a new `version` per real upload; §13.4's rate-limit
+  -- trigger reads new.version to tell an upload from a rename. PL/pgSQL plans
+  -- that expression when the statement is reached, not when the branch is
+  -- taken, so without this column EVERY insert into storage.objects fails with
+  -- `record "new" has no field "version"` — the trigger's tg_op guard does not
+  -- save it.
+  version     text,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   metadata    jsonb
@@ -126,6 +133,39 @@ $$;
 grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
 grant select on storage.buckets to anon, authenticated, service_role;
 grant execute on function storage.foldername(text) to anon, authenticated, service_role;
+
+-- ---- realtime -------------------------------------------------------------------
+-- Only the surface 0004 touches: the messages table private channels are
+-- authorized against, and the topic() helper Realtime sets per-message from
+-- the connected websocket's current channel. Real column set per Supabase's
+-- realtime extension (partitioned on inserted_at in production; a plain table
+-- here since PGlite tests never insert enough rows to care).
+create schema if not exists realtime;
+grant usage on schema realtime to anon, authenticated, service_role;
+
+create table realtime.messages (
+  id           uuid primary key default gen_random_uuid(),
+  topic        text not null,
+  extension    text not null,
+  payload      jsonb,
+  event        text,
+  private      boolean not null default false,
+  inserted_at  timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+grant select, insert on realtime.messages to anon, authenticated, service_role;
+
+-- Production sets this GUC from the client's channel name on every message;
+-- tests set it the same way (see chat.test.ts) so a policy cannot tell the
+-- difference.
+create or replace function realtime.topic() returns text
+language sql stable
+as $$
+  select nullif(current_setting('realtime.topic', true), '')::text
+$$;
+
+grant execute on function realtime.topic() to anon, authenticated, service_role;
 
 -- ---- pg_net -------------------------------------------------------------------
 -- The notify_trek_* triggers fire net.http_post() on participant writes. We do

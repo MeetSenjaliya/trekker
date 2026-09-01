@@ -101,7 +101,7 @@ So every rule the `next/core-web-vitals` + `next/typescript` presets ship is liv
 
 **Known warning backlog** (non-blocking — `npm run build` passes; do not "fix" these in passing as part of unrelated work):
 - 12× `@next/next/no-img-element` — use `next/image` for remote images
-- 10× `react-hooks/exhaustive-deps` — real stale-closure risk; each needs individual judgement, since a wrongly-added dep can turn a one-shot effect into a re-render loop
+- 3× `react-hooks/exhaustive-deps` — real stale-closure risk; each needs individual judgement, since a wrongly-added dep can turn a one-shot effect into a re-render loop
 
 Before marking any task complete: run `npm run build` and `npm test`. If either fails, fix it — the build is the gating check, and the unit tests are fast enough that skipping them buys nothing.
 

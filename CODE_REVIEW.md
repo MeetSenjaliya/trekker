@@ -269,25 +269,77 @@ create index if not exists trek_batches_trek_id_idx  on public.trek_batches (tre
 
 ### 3.3 🟡 Messages page effect churn
 
+- [x] **Realtime channels died on tab focus — fixed 2026-09-01** (`src/app/(trekker)/messages/page.tsx`).
+      `auth-js` re-emits `SIGNED_IN` on every `visibilitychange` and `TOKEN_REFRESHED` hourly, each
+      with a **new `User` object**, so every `[user]` effect re-ran. That did not merely churn: the
+      cleanup's `removeChannel()` is async, so the channel sat in `client.channels` in state
+      `leaving` while the new effect body called `supabase.channel(sameTopic)` — which
+      **returns the existing dying channel** (`RealtimeClient.js:268-278`). `.subscribe()` on it is
+      a **silent no-op**, since it only acts when `state === 'closed'` (`RealtimeChannel.js:130`).
+      The leave ack then closed and removed it: no channel, no `CHANNEL_ERROR`, chat dead until
+      reload. Fix: effects key on `const uid = user?.id` (a stable string). Safe to hold the
+      channel across a refresh — `RealtimeClient.setAuth()` pushes the new token into joined
+      channels, and the effect on `[session?.access_token]` already calls it. Also removed the
+      mount-time rebuild caused by `myName` (resolved async) being a dep of the presence effect —
+      it now reads `myNameRef` and re-`track()`s when the name lands. `supabase` is `useMemo`'d and
+      `fetchProfilesMap` `useCallback`'d so the arrays are complete rather than suppressed:
+      this file went 8 → 1 `exhaustive-deps` warnings, repo 22 → 15 total.
+- [x] **The same-topic race itself — fixed 2026-09-01, second pass.** Stable deps removed the
+      common *trigger* but not the *mechanism*: Strict Mode's mount double-invoke still fired it,
+      and the symptom was invisible. Messages kept arriving (that channel won the race, and
+      `send()` silently falls back to an HTTP POST when it can't push —
+      `RealtimeChannel.js:229-255`), while the **presence/typing channel's inbound bindings sat on
+      a channel that never joined** — so the typing indicator and online dots were dead with a
+      clean console. Fix: `messagesGateRef`/`presenceGateRef` chain each subscribe behind the
+      previous `removeChannel()` promise, which resolves only after `_onClose` has run and
+      dropped the channel from the registry. A cancelled setup is skipped rather than created and
+      immediately destroyed, so Strict Mode now yields exactly one `SUBSCRIBED` per channel.
+      **Lesson: an async teardown paired with a synchronous setup is not fixed by narrowing deps
+      — narrowing only makes it rarer.**
+- [x] **Online dot / presence dead — root-caused 2026-09-01, third pass.** Not a lifecycle bug at
+      all: a client/server version skew. Supabase made Realtime presence **opt-in server-side**,
+      but `realtime-js` 2.11.15 — pinned by `@supabase/supabase-js` 2.51.0, against 2.112.4
+      current — predates the flag and never sends `config.presence.enabled`. The server then
+      skips presence setup and never emits the initial `presence_state` frame. Since
+      `RealtimePresence.joinRef` is set *only* in that frame's handler,
+      `inPendingSyncState()` (`RealtimePresence.js:223-225`) stays permanently true and every
+      `presence_diff` is pushed to `pendingDiffs` instead of dispatched — so `onSync()` never
+      fires, `_trigger('presence', {event:'sync'})` never fires, and `onlineUsers` stays empty
+      while the data arrives correctly on the wire. Diagnosed by enabling realtime-js's
+      `logger` hook (noop by default) and observing `presence_diff` frames with **no**
+      `presence_state`. Fix: pass `presence: { key, enabled: true }` — `subscribe()` forwards
+      the object to the server verbatim, so the flag works ahead of the client upgrade.
+      **Confirmed working 2026-09-01** by `e2e/realtime-chat.spec.ts` (two live browser
+      sessions): presence, typing and delivery all pass, and delivery survives a tab-focus
+      round trip. The server honours the flag on the old `vsn=1.0.0` protocol, so no client
+      upgrade is required — an earlier prediction that it would not was wrong.
+      **Follow-up, still open: upgrade `@supabase/supabase-js`** (2.51.0 → 2.112.x; `@supabase/ssr`
+      0.6.1 peers `^2.43.4`, so it is compatible). Not needed for this fix, but ~100 minor
+      versions of protocol drift is what produced the skew, and it will produce more. Deferred
+      deliberately — it bumps auth-js/postgrest-js/storage-js together and needs login, signup
+      and password reset re-verified.
 - [ ] `src/app/messages/page.tsx:163` — the init effect lists `conversations` in its deps, so
       it re-runs on every conversation-list change. Use a ref or narrow the dependency.
+      **Still open** — the effect above narrowed `user` → `uid`, but `conversations` remains.
 
 ---
 
 ## §4 — Security hardening
 
-### 4.1 🟡 ~~No security headers at all~~ — headers shipped 2026-08-12; CSP still report-only
+### 4.1 ✅ ~~No security headers at all~~ — headers shipped 2026-08-12; CSP enforcing 2026-09-01
 
 - [x] Add a `headers()` block to `next.config.mjs`: CSP, HSTS, `X-Frame-Options: DENY`,
       `Referrer-Policy`, `X-Content-Type-Options: nosniff`
-- [ ] Promote the CSP from report-only to enforcing — set `CSP_ENFORCE=1` in Vercel
+- [x] Promote the CSP from report-only to enforcing — `CSP_ENFORCE=1` set in Vercel
+      (Production + Preview) and production redeployed 2026-09-01
 
 All five are served, plus `Permissions-Policy`. HSTS ships **without** `preload` (effectively
 irreversible, and it binds every future subdomain). Details in [FEATURES.md](FEATURES.md)
 "Security headers".
 
-**The CSP is `Content-Security-Policy-Report-Only`, so today it blocks nothing** — this stays
-🟡 until it is promoted. Two things worth knowing before flipping it: `script-src` keeps
+**The CSP is now `Content-Security-Policy` — it blocks.** Promoted 2026-09-01; the header
+name is resolved at build time, so the env var only lands on a rebuild, and hashed per-deploy
+URLs keep serving the header they were built with. Two things worth knowing: `script-src` keeps
 `'unsafe-inline'` (Next's App Router emits inline hydration scripts, and the nonce alternative
 forces every page dynamic, undoing the SSR/SEO work), so this is exfiltration containment via
 `connect-src`, not injection defence. And the photo-upload breakage expected
@@ -388,7 +440,7 @@ found 20 functions whose live EXECUTE grants the migration files could not repro
 | ~~2~~ | ~~§1.2 delete `/test`~~ — done 2026-08-08 | — | — |
 | ~~3~~ | ~~§1.3 apply pending SQL~~ — already applied, no work | — | — |
 | ~~4~~ | ~~§3.1 indexes~~ — done 2026-08-12 | — | — |
-| ~~5~~ | ~~§4.1 security headers~~ — done 2026-08-12; CSP promotion still open | — | — |
+| ~~5~~ | ~~§4.1 security headers~~ — done 2026-08-12; CSP enforcing 2026-09-01 | — | — |
 | ~~6~~ | ~~§2.4 real migrations~~ — done 2026-08-13 | — | — |
 | ~~7~~ | ~~§5.1 RLS tests~~ — done 2026-08-13 (26 → 124 tests) | — | — |
 | 8 | §2.1 + §2.2 server layer **and** SSR/SEO together | days | Unblocks revenue + organic growth |

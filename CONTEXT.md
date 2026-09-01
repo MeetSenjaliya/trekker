@@ -210,9 +210,9 @@ All buckets are public-read; writes are owner-scoped (M1 fix) or company-scoped 
 
 App-level:
 - **`/dashboard/account` is unreachable for a company account that hasn't applied yet** — the `/dashboard` guard sends member-less company accounts to `/company/apply` first. Known, accepted, documented (decision 2026-08-06); not a lockout, since `/auth/forgot-password` still works and the gap closes once they apply. Fixing it means lifting the page to a top-level `/account` route rather than special-casing the guard.
-- Security headers ship from `next.config.mjs` (2026-08-12) — but the **CSP is report-only** until `CSP_ENFORCE=1` is set in Vercel, so it blocks nothing today. No app-level rate limiting; verbose `console.error(JSON.stringify(error))` can leak DB detail.
+- Security headers ship from `next.config.mjs` (2026-08-12); the **CSP is enforcing** as of 2026-09-01 (`CSP_ENFORCE=1` in Vercel, Production + Preview). The header name is picked at build time, so the flag only takes effect on a rebuild, and hashed per-deploy URLs keep serving whatever they were built with — verify on the alias. No app-level rate limiting; verbose `console.error(JSON.stringify(error))` can leak DB detail.
 
-Database-level (see DATABASE.md §11 for detail): ~~broken `trg_initial_trek_message`~~ (dropped 2026-07-02 by the multi-tenant migration — trek creation works now), ~~`platform_admins` empty~~ (populated 2026-07-02), duplicate dead notification triggers on `trek_participants` (three fire on join — `trek-join-notification`, `trek_join_email_trigger`, plus `trek-leave-notification` on delete).
+Database-level (see DATABASE.md §11 for detail): ~~broken `trg_initial_trek_message`~~ (dropped 2026-07-02 by the multi-tenant migration — trek creation works now), ~~`platform_admins` empty~~ (populated 2026-07-02), ~~duplicate dead notification triggers on `trek_participants` (three fire on join — `trek-join-notification`, `trek_join_email_trigger`, plus `trek-leave-notification` on delete)~~ (dropped 2026-08-26 in `0007` — `trek_join_email_trigger`/`trek_remove_email_trigger` and their functions posted to an edge fn that was never deployed).
 
 **Advisors, re-run 2026-08-06 at closeout — 54 lints, nothing new from the account-type work:**
 

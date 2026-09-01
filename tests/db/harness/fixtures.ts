@@ -137,4 +137,21 @@ export async function seed(db: PGlite): Promise<void> {
       ('${ids.conversation.approvedActive}', '${u.trekkerA}', 'See you at the trailhead', false),
       ('${ids.conversation.approvedActive}', '${u.ownerApproved}', 'Departure moved to 6am', true);
   `)
+
+  // Storage objects, one per owner per bucket, so a SELECT policy that leaks
+  // across owners has something to leak. trekkerB's avatar is deliberately on
+  // the legacy flat `{uid}.ext` layout the write policies still accept:
+  // foldername() returns {} for it, so a folder-prefix-only policy would hide
+  // it from its own owner (0006).
+  await db.exec(`
+    insert into storage.objects (bucket_id, name, owner) values
+      ('avatars',       '${u.trekkerA}/face.jpg',        '${u.trekkerA}'),
+      ('avatars',       '${u.trekkerB}.png',             '${u.trekkerB}'),
+      ('trek-reviews',  '${u.trekkerA}/summit.jpg',      '${u.trekkerA}'),
+      ('trek-reviews',  '${u.trekkerB}/valley.jpg',      '${u.trekkerB}'),
+      ('company-logos', '${c.approved}/logo.png',        '${u.ownerApproved}'),
+      ('company-logos', '${c.suspended}/logo.png',       '${u.ownerSuspended}'),
+      ('trek-images',   '${c.approved}/ridge-walk.jpg',  '${u.ownerApproved}'),
+      ('trek-images',   '${c.suspended}/taken-down.jpg', '${u.ownerSuspended}');
+  `)
 }

@@ -100,10 +100,48 @@ server: the ledger now returns both rows, all five re-scoped policies are
 unchanged. Note `0002`'s `applied_at` is the day it was *recorded*, not the day it
 took effect — the SQL went live 2026-08-13 as the `phases/` file.
 
+## Exception: `realtime.*` cannot go through the SQL Editor
+
+Every other Supabase-provisioned schema this repo touches (`auth`, `storage`)
+grants `postgres` enough rights that its objects can be altered from the SQL
+Editor like anything else. `realtime.messages` — what Realtime's `private:
+true` channels check RLS against — does not: it's owned by
+`supabase_realtime_admin`, and `postgres` holds no membership in that role
+(confirmed via `pg_auth_members` over the read-only MCP, 2026-08-25). Any
+`ALTER TABLE realtime.messages ...` or `CREATE POLICY ... ON realtime.messages`
+pasted into the SQL Editor fails with `must be owner of table messages`,
+regardless of project. The only supported path is the Dashboard: **Database →
+Realtime → Policies**.
+
+That means a `realtime.*` migration file is documentation, not something to
+run step 3 (above) against — see `0004_realtime-private-channel-authorization.sql`
+for the pattern: write what's live, verify it against `pg_class`/`pg_policy`
+over MCP rather than trusting the file, and only its ledger `INSERT` (which
+targets `supabase_migrations.schema_migrations`, a table this repo does own)
+is actually meant to run in the SQL Editor.
+
+⚠️ **Run that ledger `INSERT` anyway — it is easy to skip the whole file.**
+`0004` was written, its policies confirmed live, and the file set aside as
+"nothing to run" — which skipped the one statement in it that *was* meant to
+run. The ledger sat at `0001, 0002, 0003, 0005` until 2026-08-25, and a gap
+there is exactly the ambiguity step 4 exists to prevent: nothing distinguishes
+"record-only, already true via the Dashboard" from "never applied". A
+record-only migration is still a migration; only its DDL is inert.
+
+**Order the ledger by `version`, never `applied_at`.** Two rows already break
+the correlation: `0002` (recorded a day after its SQL went live as a `phases/`
+file) and `0004` (recorded 11:26:56+00, eight minutes *after* `0005`'s
+11:18:08+00, while its policies predate both). `applied_at` records when the row
+was written, not when the change took effect.
+
 ## Rebuilding a dev database from scratch
 
 Run the generated `supabase/schema.sql` top-to-bottom on a fresh project — it is
-every migration concatenated in order.
+every migration concatenated in order. One exception per the note above: the
+`realtime.messages` policies in `0004` will fail with `must be owner of table
+messages` on a fresh project too — recreate those two policies via Dashboard →
+Database → Realtime → Policies afterward (current definitions are in `0004`'s
+comments).
 
 ## What about `phases/` and `security-fixes.sql`?
 

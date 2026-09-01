@@ -333,4 +333,86 @@ describe('tenant boundaries', () => {
       })
     })
   })
+
+  // ---- 6 ---------------------------------------------------------------------
+  // Threat: PostgREST's embedded-resource syntax (`?select=*,profiles(email)`)
+  // is a classic RLS-bypass vector — a naive reviewer assumes the parent row's
+  // policy governs the whole payload. trek_reviews is intentionally public
+  // ("Reviews are viewable by everyone"), so the review itself must stay
+  // visible to a stranger while the joined profiles row — governed by its own
+  // "Users can view own profile" policy — must not. The SQL LEFT JOIN below is
+  // the exact mechanism PostgREST embedding compiles down to, so nulling here
+  // is what makes the embed null there too.
+  describe('a public trek_reviews row does not leak the reviewer’s profile through a join', () => {
+    const withReview = (userId: string) =>
+      asSuperuser(db, async (tx) => {
+        await tx.query(
+          `insert into public.trek_reviews (trek_id, user_id, rating, comment)
+           values ($1, $2, 5, 'Great trek') returning id`,
+          [ids.trek.approvedActive, ids.user.trekkerA],
+        )
+        await tx.exec(`set local role authenticated`)
+        await tx.exec(
+          `set local request.jwt.claims = '${JSON.stringify({ sub: userId, role: 'authenticated' })}'`,
+        )
+        return (
+          await tx.query<{ rating: number; email: string | null; full_name: string | null }>(
+            `select r.rating, p.email, p.full_name
+               from public.trek_reviews r
+               left join public.profiles p on p.id = r.user_id
+              where r.trek_id = $1`,
+            [ids.trek.approvedActive],
+          )
+        ).rows
+      })
+
+    it('nulls the reviewer’s email and full_name for a stranger, but keeps the review itself', async () => {
+      const rows = await withReview(ids.user.trekkerB)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toEqual({ rating: 5, email: null, full_name: null })
+    })
+
+    it('still resolves the reviewer’s own profile through the same join for the reviewer themself', async () => {
+      // Guards against the opposite failure: a policy tightened into
+      // uselessness (nulling the join for everyone, reviewer included) would
+      // make the negative test above pass for the wrong reason.
+      const rows = await withReview(ids.user.trekkerA)
+      expect(rows).toHaveLength(1)
+      expect(rows[0].email).not.toBeNull()
+      expect(rows[0].full_name).toBe('Trekker A')
+    })
+  })
+
+  // ---- 7 ---------------------------------------------------------------------
+  // Threat: a "count-oracle" — even with row contents hidden, a client that
+  // learns whether a specific id *exists* (e.g. via PostgREST's exact-count
+  // Content-Range header) can enumerate other users. Denied SELECT must return
+  // zero rows the same way for "no such id" and "id exists but isn't mine" —
+  // any difference between the two is the leak.
+  describe('probing another user’s profile id by exact match leaks neither content nor existence', () => {
+    it('returns zero rows for a real id that belongs to someone else', async () => {
+      const rows = await asUser(db, ids.user.trekkerB, async (tx) =>
+        (await tx.query(`select id from public.profiles where id = $1`, [ids.user.trekkerA])).rows,
+      )
+      expect(rows).toEqual([])
+    })
+
+    it('returns the identical zero-row shape for an id that does not exist at all', async () => {
+      const rows = await asUser(db, ids.user.trekkerB, async (tx) =>
+        (
+          await tx.query(`select id from public.profiles where id = $1`, [
+            '00000000-0000-4000-8000-0000deadbeef',
+          ])
+        ).rows,
+      )
+      expect(rows).toEqual([])
+    })
+
+    it("still lets the user read their own profile by id", async () => {
+      const rows = await asUser(db, ids.user.trekkerB, async (tx) =>
+        (await tx.query(`select id from public.profiles where id = $1`, [ids.user.trekkerB])).rows,
+      )
+      expect(rows).toHaveLength(1)
+    })
+  })
 })

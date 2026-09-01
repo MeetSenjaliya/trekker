@@ -307,7 +307,8 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
       const { resetPassword } = await import('@/lib/auth');
       const { error } = await resetPassword(forgotEmail);
       if (error) {
-        toast.error(`Password reset failed: ${error.message}`);
+        console.error('Password reset error:', error);
+        toast.error('Could not send the reset email. Please try again in a moment.');
       } else {
         setForgotSent(true);
         toast.success('Reset link sent — check your email.');

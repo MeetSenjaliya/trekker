@@ -188,4 +188,110 @@ describe('chat isolation', () => {
       expect(removed).toHaveLength(1)
     })
   })
+
+  // REALTIME-002/003: private channels (presence + typing broadcast) are
+  // gated by RLS on realtime.messages, not by anything else in the public
+  // schema. Realtime sets the `realtime.topic` GUC per-message from the
+  // connected client's channel name (see messages/page.tsx:289's
+  // `conversation:${id}`); these two policies — already live in production,
+  // see 0004 — require a real `conversations` row matching that topic AND
+  // `is_chat_participant()` of it, same predicate the rest of chat uses.
+  // They are NOT filtered by `extension`: any authenticated participant can
+  // write/read any row shape on their own conversation's topic. That's fine
+  // — `postgres_changes` never consults this table's RLS at all (a totally
+  // separate, already-correct authorization path via conversation_messages),
+  // so the omission has no exploitable effect; these tests don't assert it.
+  describe('private channel authorization (realtime.messages)', () => {
+    const asTopic = async (tx: import('./harness').Actor, topic: string) => {
+      await tx.exec(`set local realtime.topic = '${topic}'`)
+    }
+
+    it('lets a member send a typing broadcast and track presence on their own conversation', async () => {
+      const rows = await asUser(db, ids.user.trekkerA, async (tx) => {
+        await asTopic(tx, `conversation:${conv}`)
+        return (await tx.query(
+          `insert into realtime.messages (topic, extension, event) values ($1, 'broadcast', 'typing') returning id`,
+          [`conversation:${conv}`],
+        )).rows
+      })
+      expect(rows).toHaveLength(1)
+    })
+
+    it('refuses a non-member sending presence/broadcast on a conversation they are not in', async () => {
+      await expect(
+        asUser(db, ids.user.trekkerB, async (tx) => {
+          await asTopic(tx, `conversation:${conv}`)
+          return tx.query(
+            `insert into realtime.messages (topic, extension, event) values ($1, 'broadcast', 'typing')`,
+            [`conversation:${conv}`],
+          )
+        }),
+      ).rejects.toThrow(/row-level security/i)
+    })
+
+    it('refuses an anonymous visitor outright', async () => {
+      await expect(
+        asAnon(db, async (tx) => {
+          await asTopic(tx, `conversation:${conv}`)
+          return tx.query(
+            `insert into realtime.messages (topic, extension, event) values ($1, 'presence', 'sync')`,
+            [`conversation:${conv}`],
+          )
+        }),
+      ).rejects.toThrow(/permission denied|row-level security/i)
+    })
+
+    it("refuses the operator's own staff, same as the rest of chat", async () => {
+      // ownerApproved can post an announcement into this conversation (via
+      // is_announcement, SECURITY DEFINER-adjacent) but holds no
+      // conversation_participants row — same distinction the read tests above
+      // already pin for conversation_messages. Presence/broadcast must follow.
+      await expect(
+        asUser(db, ids.user.ownerApproved, async (tx) => {
+          await asTopic(tx, `conversation:${conv}`)
+          return tx.query(
+            `insert into realtime.messages (topic, extension, event) values ($1, 'broadcast', 'typing')`,
+            [`conversation:${conv}`],
+          )
+        }),
+      ).rejects.toThrow(/row-level security/i)
+    })
+
+    it('refuses a channel topic naming a conversation that does not exist', async () => {
+      // The EXISTS clause requires a real conversations row, not just a
+      // plausible-looking uuid — a made-up topic must not be an easy in.
+      await expect(
+        asUser(db, ids.user.trekkerA, async (tx) => {
+          await asTopic(tx, 'conversation:00000000-0000-4000-8000-000000000000')
+          return tx.query(
+            `insert into realtime.messages (topic, extension, event) values ($1, 'broadcast', 'typing')`,
+            ['conversation:00000000-0000-4000-8000-000000000000'],
+          )
+        }),
+      ).rejects.toThrow(/row-level security/i)
+    })
+
+    it('a non-member SELECTing presence/broadcast on a real conversation sees nothing, not an error', async () => {
+      // RLS on SELECT filters rows rather than raising. Both the write (as
+      // the real member) and the read (as a non-member) happen inside one
+      // transaction — asUser() rolls each call back, so a row inserted in one
+      // call is never visible to the next; switching role mid-transaction is
+      // the only way to prove the SELECT policy actually filters a row that
+      // exists, rather than just observing an empty table.
+      const rows = await asUser(db, ids.user.trekkerA, async (tx) => {
+        await asTopic(tx, `conversation:${conv}`)
+        await tx.query(
+          `insert into realtime.messages (topic, extension, event) values ($1, 'broadcast', 'typing')`,
+          [`conversation:${conv}`],
+        )
+
+        await tx.exec(`set local role authenticated`)
+        await tx.exec(
+          `set local request.jwt.claims = '${JSON.stringify({ sub: ids.user.ownerApproved, role: 'authenticated' })}'`,
+        )
+        return (await tx.query(`select 1 from realtime.messages`)).rows
+      })
+      expect(rows).toEqual([])
+    })
+  })
 })

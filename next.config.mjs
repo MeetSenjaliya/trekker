@@ -26,6 +26,8 @@ const sentry = (() => {
     }
 })();
 
+const REPORT_GROUP = 'csp-endpoint';
+
 // NODE_ENV is not yet set when this config is loaded, so dev is detected from
 // the phase Next passes in rather than from the environment.
 function buildCsp(isDev) {
@@ -48,7 +50,11 @@ function buildCsp(isDev) {
         `form-action 'self'`,
         `frame-ancestors 'none'`,
         `upgrade-insecure-requests`,
+        // report-uri is deprecated but still the only one Safari/Firefox read;
+        // Chrome needs report-to plus the Reporting-Endpoints header below, and
+        // rejects a report-only policy outright when neither is present.
         sentry.reportUri && `report-uri ${sentry.reportUri}`,
+        sentry.reportUri && `report-to ${REPORT_GROUP}`,
     ]
         .filter(Boolean)
         .join('; ')
@@ -57,7 +63,8 @@ function buildCsp(isDev) {
 
 // Report-only until CSP_ENFORCE is set, so the policy can be promoted from the
 // hosting dashboard without a code change.
-const cspHeaderName = process.env.CSP_ENFORCE
+const cspEnforced = Boolean(process.env.CSP_ENFORCE);
+const cspHeaderName = cspEnforced
     ? 'Content-Security-Policy'
     : 'Content-Security-Policy-Report-Only';
 
@@ -70,7 +77,7 @@ export default function config(phase) {
                     protocol: 'https',
                     hostname: 'dtjmyqogeozrzzbdjokr.supabase.co',
                     port: '',
-                    pathname: '/**',
+                    pathname: '/storage/v1/object/public/**',
                 },
                 {
                     protocol: 'https',
@@ -81,33 +88,43 @@ export default function config(phase) {
             ],
         },
         async headers() {
-            return [
+            const headers = [
+                { key: 'X-Content-Type-Options', value: 'nosniff' },
+                { key: 'X-Frame-Options', value: 'DENY' },
                 {
-                    source: '/:path*',
-                    headers: [
-                        {
-                            key: cspHeaderName,
-                            value: buildCsp(phase === PHASE_DEVELOPMENT_SERVER),
-                        },
-                        { key: 'X-Content-Type-Options', value: 'nosniff' },
-                        { key: 'X-Frame-Options', value: 'DENY' },
-                        {
-                            key: 'Referrer-Policy',
-                            value: 'strict-origin-when-cross-origin',
-                        },
-                        {
-                            key: 'Permissions-Policy',
-                            value: 'camera=(), microphone=(), geolocation=(), payment=()',
-                        },
-                        // No preload: it is effectively irreversible and binds every
-                        // future subdomain.
-                        {
-                            key: 'Strict-Transport-Security',
-                            value: 'max-age=31536000; includeSubDomains',
-                        },
-                    ],
+                    key: 'Referrer-Policy',
+                    value: 'strict-origin-when-cross-origin',
+                },
+                {
+                    key: 'Permissions-Policy',
+                    value: 'camera=(), microphone=(), geolocation=(), payment=()',
+                },
+                // No preload: it is effectively irreversible and binds every
+                // future subdomain.
+                {
+                    key: 'Strict-Transport-Security',
+                    value: 'max-age=31536000; includeSubDomains',
                 },
             ];
+
+            // A report-only policy with nowhere to report enforces nothing and
+            // reports nothing — the browser discards it and logs a console
+            // error. Send the header only when it can enforce or actually
+            // report (NEXT_PUBLIC_SENTRY_DSN set).
+            if (cspEnforced || sentry.reportUri) {
+                headers.unshift({
+                    key: cspHeaderName,
+                    value: buildCsp(phase === PHASE_DEVELOPMENT_SERVER),
+                });
+            }
+            if (sentry.reportUri) {
+                headers.push({
+                    key: 'Reporting-Endpoints',
+                    value: `${REPORT_GROUP}="${sentry.reportUri}"`,
+                });
+            }
+
+            return [{ source: '/:path*', headers }];
         },
     };
 

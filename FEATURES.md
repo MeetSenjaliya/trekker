@@ -12,7 +12,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-08-20 — full history in [§3 Changelog](#3--changelog-newest-first)._
+_Last updated: 2026-09-01 — full history in [§3 Changelog](#3--changelog-newest-first)._
 
 ## Contents
 
@@ -41,10 +41,33 @@ _Last updated: 2026-08-20 — full history in [§3 Changelog](#3--changelog-newe
 | 1 | **Push.** `a1` is 20 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **the migrations, the 124-test suite, the chat indexes, the security headers and now the CVE bumps** — exists only on one branch. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
 | 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
 | 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 4 | **After** the headers deploy: watch Sentry CSP reports for ~a week, then set `CSP_ENFORCE=1` in Vercel | The policy ships **report-only**, so today it blocks nothing. Until it is promoted, the `connect-src` exfiltration cap — the part that actually protects the browser-held Supabase session — is inert | [§1.5](#15-phase-0--security-tail-remaining) |
-| 5 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-
-> **The DB backlog is empty as of 2026-08-18.** Migration `0003_lock-platform-admins-grants`
+| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
+> **The DB backlog is empty again as of 2026-08-26.** `0008_drop-embedded-publishable-key-from-notification-trigger`
+> is **applied and verified live** — ledger row `0008` at `10:04:57+00`, and the
+> live `pg_proc` body read back over MCP holds no key literal and sends no
+> `apikey`. Ledger reads `0001`–`0008` with no gaps. See
+> [§2](#publishable-key-removed-from-notify_trek_participation--a-rotation-trap-not-a-leak-2026-08-26).
+>
+> **The DB backlog is empty again as of 2026-08-25.** Both items closed and read
+> back over the read-only MCP server:
+>
+> - **`0005` applied 11:18:08+00** — `storage.buckets` returns `5 buckets, 5
+>   capped` at `file_size_limit = 3145728` + `image/jpeg,image/png,image/webp`.
+>   `trek-profile` no longer an exception.
+> - **`0004`'s ledger row inserted 11:26:56+00** — the gap found while verifying
+>   `0005` is closed; the ledger now returns `0001, 0002, 0003, 0004, 0005` with
+>   no holes. `realtime.messages` re-checked after the insert and unchanged: RLS
+>   on, both policies intact with their quals (`r` on the read policy, `a` +
+>   `with check` on the write policy).
+>
+> ⚠️ **`0004`'s `applied_at` (11:26:56) is later than `0005`'s (11:18:08).** Same
+> caveat as `0002` in [the migrations README](supabase/migrations/README.md):
+> `applied_at` is when the row was *recorded*, not when the change took effect.
+> `0004`'s policies went live via the Dashboard well before either. Order the
+> ledger by `version`, never by `applied_at`.
+>
+> Before this, the backlog was empty as of 2026-08-18: migration `0003_lock-platform-admins-grants`
 > applied and **verified live** (10:08 UTC): `platform_admins.relacl` is now
 > `{postgres, service_role}` only — `anon`/`authenticated` hold no privilege
 > (`has_table_privilege` false for SELECT+INSERT), RLS still on with zero policies.
@@ -76,12 +99,26 @@ Everything below is the same backlog, grouped by area, with the full reasoning k
 
 **Status:** ❌
 
-Edge functions exist (`supabase/functions/trek-email-notification`, `send-trek-notification`) but not wired; no in-app bell, no web push.
+Edge functions exist (`send-trek-notification`, `send-trek-leave-notification`) but not wired; no in-app bell, no web push.
 
 > **Multi-tenant / company admin UI** and **Trekker/company account split** both
 > closed on 2026-08-08 and moved to §2 ("Multi-tenant platform → F" and "Account
 > types → 5"). The account split's step 5 ships with one **unapplied** SQL file —
 > item 1 in [§1.0](#10-next-actions-ordered--start-at-the-top).
+
+### Static content pages the footer already links to
+
+**Status:** ❌ — the links ship, the routes do not.
+
+[`Footer.tsx`](src/components/layout/Footer.tsx) links to `/blog` (L35), `/gallery` (L40), `/faq` (L45), `/contact` (L50), `/privacy` (L97), `/terms` (L100) and `/cookies` (L103); none of the seven exist under `src/app/`. [`profile/page.tsx`](src/app/(trekker)/profile/page.tsx) L317 links to `/treks/history`, which does not exist either — the closest real route is `/dashboard/treks`.
+
+Nothing crashes ([`not-found.tsx`](src/app/not-found.tsx) catches them), but Next `<Link>` **prefetches in-viewport routes**, so all seven 404 on every page load with the footer visible — which is every page. That is the whole "404 (gallery/blog/faq/contact/privacy/cookies/terms)" block in the browser console; found while click-testing after the CSP was promoted (2026-09-01), and unrelated to CSP.
+
+Priority split, when this is picked up:
+
+- **`/privacy`, `/terms`, `/cookies`, `/contact`** — a product taking bookings is expected to have these; a user clicking "Privacy Policy" and landing on a 404 is the real cost here, not the console noise.
+- **`/blog`, `/gallery`, `/faq`** — marketing surfaces. These need *content*, not engineering; leave the links dead or remove them until there is something to put behind them.
+- **`/treks/history`** — decide whether it means `/dashboard/treks`, a new trekker-side history route, or should be dropped.
 
 ### Maps
 
@@ -131,7 +168,7 @@ As of 2026-08-14 the suite covers table-level RLS well — 81 DB tests across ch
 
 1. **`join_trek_and_chat` abuse paths.** Three threats, none pinned: `p_user_id ≠ auth.uid()` forgery; `p_batch_date` in the past or beyond the +1-year cap (the batch/conversation spam DoS); and `enforce_join_rate_limit`. `catalogue-writes.test.ts:281` and `chat.test.ts:158` both note in comments that this RPC is the real guard for booking and chat membership — and neither calls it. It is the single largest untested write path in the app: it is the *only* sanctioned way rows enter `trek_participants` and `conversation_participants`, and the table tests deliberately assert that direct inserts fail, so nothing else exercises the path that is supposed to succeed. All three were verified by hand once (§2 "H — behavioural verification"); hand-verification does not survive the next refactor.
 2. **`trek_reviews` join-gate.** Posting a review for a trek the user never joined. The policy exists (NEW-3), is the anti-rating-manipulation control, and has no test.
-3. **Storage policies.** Overwriting another user's avatar (the M1 fix). **Not expressible in PGlite** — the harness has no `storage` schema — so this needs a small integration script against a throwaway Supabase project, or it stays a documented manual check. Pick one explicitly: a gap that is written down is fine, a gap that is assumed covered is not.
+3. **Storage *write* policies.** Overwriting another user's avatar (the M1 fix). ~~**Not expressible in PGlite** — the harness has no `storage` schema~~ — **that was wrong**: `shim.sql` has modelled `storage.buckets`, `storage.objects` and `foldername()` since the harness shipped, and `storage-listing.test.ts` (2026-08-25, `0006`) now asserts the SELECT policies there directly. Writing that test also found the shim was missing `storage.objects.version`, which had silently made every storage insert fail. What is still uncovered is the INSERT/UPDATE/DELETE side — the actual M1 fix — which is now plainly expressible and just not written yet.
 4. **Auth flow e2e.** `signInAs()`'s mismatch path — the probe client, the wrong-account-type rejection, and the guarantee that **no session is persisted** on rejection — has no end-to-end coverage. `e2e/smoke.spec.ts` is two specs: the homepage title and `/explore` returning <400.
 
 **Closed 2026-08-14 while this section was being written:** chat ACL (now [tests/db/chat.test.ts](tests/db/chat.test.ts), 14 tests — reads, writes, forged announcements, self-add, cross-user edits) and the anon EXECUTE grant surface (now [tests/db/acl.test.ts](tests/db/acl.test.ts), including an assertion that the load-bearing trio stays anon-executable).
@@ -174,16 +211,6 @@ defence-in-depth, not a leak.
 [.eslintrc.json](.eslintrc.json) turns off `@typescript-eslint/no-explicit-any`, `no-unused-vars`, `no-unused-expressions` and `react-hooks/exhaustive-deps`. **ESLint 9 uses [eslint.config.mjs](eslint.config.mjs) and ignores this file completely**, so every one of those rules is live at error severity — as `CLAUDE.md` documents. No behaviour changes when it goes.
 
 The risk is purely that a human (or an agent) reads it and concludes `catch (e: any)` will pass lint, when it fails the build. Note `CLAUDE.md` states there is **no** `.eslintrc.json`; there is one, so either delete the file or correct that line — the two must not disagree.
-
-### Promote CSP from report-only to enforcing
-
-**Status:** 🟡 — shipped half is in §2 [Security headers](#security-headers).
-
-The policy is served as `Content-Security-Policy-Report-Only`, which reports violations and blocks nothing. Flipping it is an env change only: set `CSP_ENFORCE=1` in Vercel and redeploy; unset it to roll back without touching code.
-
-- **Watch the reports first.** They land in Sentry via `report-uri` (endpoint derived from `NEXT_PUBLIC_SENTRY_DSN` at build). Expect noise from browser extensions injecting into the page — those are not app bugs and do not block promotion. What *would* block it is any report naming a directive with a real origin behind it, especially `connect-src` or `worker-src`.
-- **The likely breakage is photo upload, not script.** `compressImage()` runs `browser-image-compression` with `useWebWorker: true`, which spawns its worker from a blob URL, so `worker-src 'self' blob:` is load-bearing. It also fails *silently* — the `catch` in [`src/utils/imageCompression.ts`](src/utils/imageCompression.ts) falls back to the uncompressed original, so a CSP break shows up as bloated uploads, not an error. Exercise an avatar/review/trek-cover upload before and after enforcing.
-- **Enforcing does not stop XSS here** — see the `'unsafe-inline'` note in §2. Treat this as exfiltration containment, not injection defence.
 
 **NEW-5 and everything before it are applied** — see §2 "Phase 0 — Security tail (shipped)".
 
@@ -299,9 +326,641 @@ the cost of carrying it is low. If it's ever fixed, lift the page to a top-level
 rather than special-casing the guard — an exception inside `dashboard/layout.tsx` is something
 every future dashboard page then has to reason about. Also in Known Gotchas and `CONTEXT.md` §10.
 
+## 1.9 Day 5 pentest — storage / edge functions / realtime bugs to solve
+
+**Status:** 🟡 — **all findings closed in production; one fix awaits deploy.**
+Every finding from the 2026-08-24 pentest Day 5 pass (`result.md`) against storage
+object policies, the three edge functions, and Realtime/WebSocket now has a §2
+entry. The section stays here rather than moving because six other places link to
+this anchor.
+
+**Re-verified live 2026-08-26** with fresh tokens for the three TEST.md accounts:
+`0004`–`0007` are all in `supabase_migrations.schema_migrations`, the storage
+SELECT policies, bucket MIME caps and `realtime.messages` RLS read back matching,
+and listing `avatars` as the plain trekker returns only its own folder.
+
+**One item remains open: [EDGE-004](#edge-004-fix--webhook-secret-compared-in-constant-time-2026-08-26)**
+— the non-constant-time webhook secret comparison, which the Day 5 pass raised in
+its source-only edge-function notes and which never got a finding ID. Fixed in the
+repo 2026-08-26; **needs `supabase functions deploy` for both notification
+functions before production matches.** It is hardening, not an exploitable hole —
+see the §2 entry for why.
+
+EDGE-002 (HTML/XSS injection in the email template) and EDGE-003 (unrate-limited
+webhook secret) were **fixed** — see
+[§2](#edge-002-fix--htmlxss-injection-in-trek-notification-emails-escaped-shipped-2026-08-24)
+and [§2](#edge-003-fix--unrate-limited-webhook-secret-now-capped-at-10-emails-per-hour-per-recipient-shipped-2026-08-24).
+EDGE-001 was **resolved as a non-issue** — see
+[§2](#edge-001-resolved--trek-email-notification-was-never-deployed-nothing-to-restore-or-delete-2026-08-25).
+Its DB-side follow-up — `trek_join_email_trigger` / `trek_remove_email_trigger`
+and their `notify_trek_join/remove()` functions, which `pg_net`-POSTed every
+join and leave to that never-deployed slug — was **dropped in `0007`, applied
+2026-08-26**. See
+[§2](#edge-001-follow-up--dropped-the-dead-notify_trek_joinremove-triggers-2026-08-26).
+REALTIME-002/003 turned out to already be **fixed in production** — see
+[§2](#realtime-002003-resolved--private-channel-authorization-was-already-live-in-production-not-in-any-migration-2026-08-25).
+REALTIME-001 was **resolved as a non-issue** (does not reproduce
+against live Realtime) — see
+[§2](#realtime-001-resolved--expired-jwt-is-rejected-by-live-realtime-does-not-reproduce-2026-08-25).
+STORAGE-002 is **mitigated as far as it can be** (nosniff is not settable on the
+Supabase domain; the MIME allowlist is the substitute) — see
+[§2](#storage-002-mitigated--nosniff-is-not-settable-on-the-supabase-domain-so-the-mime-allowlist-is-the-control-2026-08-25).
+STORAGE-001 was **the accepted tradeoff, revisited and reversed** — see
+[§2](#storage-001-fix--storage-select-scoped-to-the-callers-own-prefix-shipped-2026-08-25).
+
+A later re-test of the same storage surface (2026-08-26) raised **STORAGE-003**,
+a path traversal in public object URLs. **Resolved as a non-issue, with no code
+change** — the `../` is collapsed client-side before the request is sent, the
+server normalizes it correctly when it does arrive, and the victim object returns
+the same bytes with no traversal at all because the bucket is public. The
+reported `%2e%2e%2f` "block" is an `Object not found`, not a denial. Full
+reproduction and control cases in
+[§2](#storage-003-resolved--reported-path-traversal-in-public-object-urls-does-not-exist-2026-08-26).
+
+> **STORAGE-001 was originally triaged as "already known and deliberately
+> accepted", and that triage was reversed on 2026-08-25.** The reasoning is kept
+> because it is a good example of a comment outliving its truth. The accepted
+> design said the SELECT policies were "scoped to `authenticated` to block
+> *anonymous* enumeration of UUID-keyed paths", and `0001_baseline.sql` §10 called
+> `public_bucket_allows_listing` deliberate: "broad authenticated SELECT allows
+> listing; object URLs don't need it." Both halves are true and the second half is
+> what killed the first — **if object URLs don't need listing, then nothing needs
+> listing**, and the only thing the broad policy bought over an own-prefix policy
+> was cross-user enumeration. The tradeoff was never anon-vs-authenticated; it was
+> "leave it open because nothing depends on either answer." Confirmed by reading
+> the app rather than the comment: no `list()`, `download()` or `createSignedUrl()`
+> call exists anywhere in `src/`, `e2e/` or `supabase/functions/`. Fixed in `0006`.
+
 ---
 
 # §2 — Done (shipped features & changes)
+
+## Password-reset failures stopped surfacing raw auth errors (2026-08-29)
+
+**Status:** ✅ — both forgot-password paths now show a generic message and log the
+detail to the console.
+
+`resetPassword()` in [src/lib/auth.ts](src/lib/auth.ts) returns the `AuthError`
+verbatim, and both callers rendered `error.message` straight into the UI —
+[`AuthPanel.tsx:310`](src/components/auth/AuthPanel.tsx) (inline forgot form) and
+[`forgot-password/page.tsx:34`](src/app/auth/forgot-password/page.tsx) (standalone
+page). A Gmail SMTP outage on 2026-08-29 showed users a bare
+`Password reset failed: Internal Server Error (500)`.
+
+Both now `console.error` the real error and show
+`Could not send the reset email. Please try again in a moment.` — the same
+log-detail / show-generic shape the `catch` blocks a few lines below each call
+already used, and the `CLAUDE.md` rule that produced the same fix for the two
+edge functions in [§2](#security-headers).
+Nothing is lost for debugging: the underlying GoTrue error is still in the browser
+console, and `auth_logs` still carries the SMTP reply.
+
+**The trigger was config, not code.** The 500s were Gmail returning
+`535 5.7.8 BadCredentials` on `POST /recover` because the custom-SMTP **Username**
+held the App Password's *label* (`SUPABASE_TREKKER`) instead of the account address
+(`achutakeshavam@gmail.com`) — Gmail rejects the username/password as a pair, so a
+correct App Password under a non-existent username fails identically to a wrong one.
+Port 465 was never implicated: a `535` is an in-session reply, so TLS had already
+negotiated. Fixed in the dashboard; `POST /recover` returned 200 at 13:41:43.
+
+**Gmail is still not a production sender** — Supabase's own dashboard flags it as
+personal-not-transactional, and it caps at ~100–500/day. The swap to Resend/Postmark
+remains open in [§1](#1--to-do-add--change--fix).
+
+## Publishable key removed from `notify_trek_participation()` — a rotation trap, not a leak (2026-08-26)
+
+**Status:** ✅ — `0008` **applied and verified live 2026-08-26**. Closes the last
+embedded credential left behind by [CRIT-1](supabase/security-fixes.sql).
+
+`notify_trek_participation()` carried the project's publishable key as a literal
+in its body and sent it on `apikey`, with an inline comment asking whoever
+rotates the key to come back and edit the DDL.
+
+**This was never a disclosure.** The publishable key is public by design — it
+ships in every browser bundle, and CRIT-1 deliberately put it there in place of
+the leaked `service_role` JWT. What it was is a **rotation trap**: nothing
+enforces an inline comment, so the day the key is rotated the literal becomes a
+*wrong* key, and a wrong key is strictly worse than no key. The gateway rejects
+one before the function runs, the trigger's `exception when others` swallows the
+failure, and joins and leaves keep working while the emails silently stop. The
+symptom would be "we stopped getting trek emails a few weeks ago" with nothing
+in the app to point at.
+
+**The premise behind the header was wrong, and that is why the fix is a deletion
+rather than a move to Vault.** `0001` says the key "rides on `apikey` only for
+gateway routing". Measured against the live project (2026-08-26), routing does
+not need it — both functions run `verify_jwt=false`, and the Supabase gateway
+only validates an `apikey` when one is *present*:
+
+| Request | Result |
+|---|---|
+| no `apikey` | reaches the **function** — `x-served-by: supabase-edge-runtime`, `x-deno-execution-id` present; its own `x-trek-webhook-secret` check returns the 401 |
+| valid `apikey` | identical |
+| invalid `apikey` | **gateway** 401 `{"message":"Invalid API key"}`, no execution-id — the function never runs |
+
+CRIT-1's "the header is only used to PASS the gateway" was true of the
+`verify_jwt=true` configuration it was written against; both functions are
+`verify_jwt=false` today (`DATABASE.md` §10 said `true` and has been corrected).
+
+So `0008` drops the `apikey` header and the `v_apikey` declaration outright. No
+key material of any kind is left in DDL and there is nothing to keep in sync on
+rotation. **Moving the key into Vault was the obvious alternative and is the
+worse one** — it preserves a rotation step nothing enforces, for a header that
+buys nothing. Authorization is untouched and was never the `apikey`: the Vault
+secret `edge_function_token` on `x-trek-webhook-secret`, compared in constant
+time since [EDGE-004](#edge-004-fix--webhook-secret-compared-in-constant-time-2026-08-26).
+`SECURITY DEFINER`, the pinned `search_path`, the skip-when-no-secret branch and
+the exception handler all carry over verbatim; the two triggers are untouched
+and pick up the new body on their next fire.
+
+**The comment is replaced by a test, since a comment is what failed here.**
+`tests/db/no-embedded-credentials.test.ts` fails if any function body in
+`public` contains an `sb_publishable_…` / `sb_secret_…` or JWT-shaped literal —
+broader than the one key, because the failure mode is generic and no other check
+in the suite reads `prosrc`. A second case pins the positive half: the function
+must still send `x-trek-webhook-secret` and must not send an `apikey`.
+
+`supabase/schema.sql` still contains the old literal in its `0001` section. That
+is correct — the file is the migrations concatenated in order, `0001` is history,
+and the `0008` block later in the same file is the effective definition.
+
+**Applied 2026-08-26, read back over MCP** — ledger row `0008` at `10:04:57+00`,
+`0001`–`0008` with no gaps. The ledger row is not evidence of the body, so
+`pg_proc` was read too: `notify_trek_participation()` is `prosecdef` with
+`search_path=public, pg_temp`, still reads `edge_function_token` and sends
+`x-trek-webhook-secret`, still carries its `exception when others`, and now
+matches **neither** the key-literal pattern **nor** `'apikey'`. Widened to the
+whole schema: **0 functions in `public` contain a key or JWT literal** — the
+test's invariant holds against production, not only against the replay. Both
+notification triggers on `trek_participants` are present and enabled; the `0007`
+pair is gone.
+
+⚠️ **Structural verification only — no join or leave has fired since.**
+`net._http_response` holds no rows for 2026-08-26, so nothing yet proves an email
+actually went out under the new body. That distinction is the storage
+rate-limit lesson in [Known Gotchas](#known-gotchas): a trigger can read healthy
+in `pg_proc`/`pg_trigger` and be inert at fire time. The next real join should
+leave a 2xx in `net._http_response` — check there rather than re-reading the
+function.
+
+Evidence: [`0008_drop-embedded-publishable-key-from-notification-trigger.sql`](supabase/migrations/0008_drop-embedded-publishable-key-from-notification-trigger.sql),
+[`tests/db/no-embedded-credentials.test.ts`](tests/db/no-embedded-credentials.test.ts),
+`supabase/schema.sql` §5 (regenerated), `supabase/security-fixes.sql` (CRIT-1
+follow-up). `npx vitest run --project db` 108/108, `npm test` 152/152,
+`npm run build` clean.
+
+## EDGE-004 fix — webhook secret compared in constant time (2026-08-26)
+
+**Status:** 🟡 — in the repo, **not yet deployed**. Closes the last untracked
+item from the 2026-08-24 pentest's source-only edge-function assessment.
+
+Both functions authorized the DB trigger with
+`req.headers.get("x-trek-webhook-secret") !== WEBHOOK_SECRET`. A JS string
+`!==` returns on the first differing byte and short-circuits on a length
+mismatch before that, so both the secret's length and how far a guess matched
+are in principle recoverable from response timing.
+
+**Severity, stated honestly: this was hardening, not a live hole.** The signal
+is a byte comparison — nanoseconds — against a Cloudflare-fronted Deno function
+whose cold starts and network jitter are milliseconds, six-plus orders of
+magnitude larger, on an endpoint that is itself rate-limited (EDGE-003). It is
+fixed because the fix is ~15 lines and removes the item permanently, not
+because it was exploitable.
+
+Replaced with `secretMatches()` in both functions: SHA-256 both sides via
+`crypto.subtle.digest`, then XOR-accumulate over the two fixed-length 32-byte
+digests and compare the accumulator to zero. Digesting first is what makes the
+length leak go away too — the compared buffers are always 32 bytes regardless
+of what the caller sent, and an attacker cannot steer a digest. A `null` header
+(absent entirely) short-circuits to `false` before any digest work, which leaks
+only "you sent no header", something the caller already knows.
+
+No new import: `crypto.subtle` is a Web Crypto global in the Deno edge runtime,
+so this adds nothing to the cold-start path — deliberately preferred over
+`std/crypto/timing_safe_equal.ts`, which would add a network-fetched dependency
+*and* still compare raw lengths.
+
+Verified: the helper's logic run against 7 cases in Node (same Web Crypto API) —
+exact match true; `null`, empty string, wrong value, a prefix of the secret, the
+secret plus a suffix, and a case-flipped secret all false.
+
+**Deploy required** — run `supabase functions deploy send-trek-notification` and
+`supabase functions deploy send-trek-leave-notification`. Until then the repo is
+ahead of production, which is the state the two corrected notes above warn about.
+
+Evidence: [`send-trek-notification/index.ts`](supabase/functions/send-trek-notification/index.ts),
+[`send-trek-leave-notification/index.ts`](supabase/functions/send-trek-leave-notification/index.ts).
+
+## EDGE-001 follow-up — dropped the dead `notify_trek_join/remove` triggers (2026-08-26)
+
+**Status:** ✅ — replay-tested and **applied to production 2026-08-26**. Extends
+[EDGE-001](#edge-001-resolved--trek-email-notification-was-never-deployed-nothing-to-restore-or-delete-2026-08-25),
+which closed the "empty source" half.
+
+EDGE-001 established that `trek-email-notification` was never deployed. What it
+did not touch is the DB side that still *referenced* it: `0001` installed
+`trek_join_email_trigger` (AFTER INSERT) and `trek_remove_email_trigger` (AFTER
+DELETE) on `trek_participants`, calling `notify_trek_join()` /
+`notify_trek_remove()`, which `net.http_post` to
+`/functions/v1/trek-email-notification`. So every join and every leave has been
+queuing a pg_net request to a URL that 404s. `DATABASE.md` §11 had it in the
+correctness-bugs list; it is now fixed rather than documented.
+
+`0007_drop-dead-trek-email-notification-triggers.sql` drops both triggers and
+both functions. Two reasons beyond tidiness: the live function bodies hard-code
+a **legacy anon key** (that key class is DISABLED on the project, so it is a
+dead credential in a function body), and `notify_trek_join()` has **no
+`exception when others` handler** — unlike `notify_trek_participation()`, whose
+handler comment spells out why a notification must not roll back the
+transaction. A raise from `net.http_post` there would abort the enclosing
+INSERT, i.e. fail the join. It has not fired, but the shape is wrong.
+
+**Not a behaviour change for users.** The join/leave emails come from a
+different pair of triggers on the same table — `trek-join-notification` /
+`trek-leave-notification` → `notify_trek_participation()` → the two functions
+that do exist — which this migration does not touch.
+
+Evidence: `supabase/migrations/0007_drop-dead-trek-email-notification-triggers.sql`;
+`supabase/schema.sql` §5/§6 (regenerated, both functions and both triggers now
+absent); `npx vitest run --project db` 106/106.
+
+**Applied 2026-08-26** via the SQL Editor, confirmed by the user — and the
+ledger row is now **read back over MCP (2026-08-26)**: `0007
+drop-dead-trek-email-notification-triggers`, `applied_at 08:48:53+00`, with
+`0001`–`0007` present and no gaps. The earlier caveat here (the row had not been
+verified because the MCP server was not connected that session, `0004` being the
+precedent for a ledger row that silently went missing) is discharged.
+
+## STORAGE-003 resolved — reported path traversal in public object URLs does not exist (2026-08-26)
+
+**Status:** ✅ — closes a re-test finding against the same storage surface as
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+**No code or migration change.** Reproduced live against
+`dtjmyqogeozrzzbdjokr.supabase.co` on 2026-08-26.
+
+**The claim.** `GET /storage/v1/object/public/avatars/662d9204-…/../d903dbb6-…/1765975732683.jpg`
+returns `200` with another user's image, so `../` escapes the uploader's prefix;
+URL-encoded `%2e%2e%2f` returns `400` and is therefore "correctly blocked"; the
+server should normalize independently of `sanitizeFileName()`.
+
+**Why it's a non-issue.** The finding has no control case. Requesting the victim
+object **directly, with no traversal and no credentials** returns the identical
+`200` and the identical `259567` bytes — so the `../` contributes nothing. It is
+not an escape, because nothing was enclosing the object in the first place: all
+five buckets are `public: true`, and `/object/public/…` is unauthenticated read
+of any key in the bucket, by design and already recorded in Known Gotchas.
+
+Three control requests, all against the same object:
+
+| Request | Result |
+| --- | --- |
+| Direct victim URL, no `../`, no auth | `200`, 259567 bytes, `image/jpeg` |
+| `../` via plain `curl` (browser behaviour) | `200`, 259567 bytes — `url_effective` shows the `../` was **collapsed client-side before sending** |
+| `../` via `curl --path-as-is` (raw `../` reaches the server) | `200`, 259567 bytes — server normalizes correctly, lands on the same public key |
+
+**The `400` was misread.** `%2e%2e%2f` is not decoded as a path segment; it is
+taken as literal characters in the object key, and no such key exists. Its body
+is byte-identical to a request for an invented filename:
+
+```
+%2e%2e%2f request  → {"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}
+made-up "nope.jpg" → {"statusCode":"404","error":"not_found","message":"Object not found","code":"NoSuchKey"}
+```
+
+That is *not found*, not *not permitted* — no control fired. Reading it as a
+working defence is what made the unencoded case look like a bypass of one.
+
+**The recommendation targets the wrong layer.** The server already normalizes
+(row 3 above). And [`sanitizeFileName()`](src/utils/imageCompression.ts) strips
+characters on the **write** path; it has no bearing on **read** authorization,
+which is decided solely by `bucket.public`. Hardening it would change nothing.
+
+**Two things worth stating plainly, both pre-existing and accepted:**
+
+- `../../` does cross a bucket boundary in path terms (`avatars` → `trek-images`
+  returned `200`), but gains nothing — the destination bucket is equally public,
+  so a plain direct URL returns the same bytes.
+- There is no read authorization on these objects **at all**. The authenticated
+  route `/object/avatars/{uid}/{file}` with **no token** also returns `200` and
+  the image, because storage-api short-circuits auth for public buckets. The only
+  protection is key unguessability (`{uid}/{ms-timestamp}.{ext}`), and `0006`
+  already removed the ability to list and discover keys. Confidentiality would
+  require private buckets plus signed URLs, which would break anonymous trek
+  browsing, the generated OG cards and CDN caching — **not** taken; see the
+  Known Gotchas entry on `public: true` buckets.
+
+## STORAGE-001 fix — storage SELECT scoped to the caller's own prefix (shipped 2026-08-25)
+
+**Status:** ✅ — reverses the accepted tradeoff in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+Migration [`0006_scope-storage-select-to-own-prefix.sql`](supabase/migrations/0006_scope-storage-select-to-own-prefix.sql),
+regression test [`tests/db/storage-listing.test.ts`](tests/db/storage-listing.test.ts) (12 tests).
+
+**The bug.** All four policied buckets shipped their SELECT as
+`using (bucket_id = '<bucket>')` for role `authenticated`. storage-api's list
+endpoint is a plain SELECT over `storage.objects`, so one account holding the
+publishable key could enumerate **every other account's folder**: user UIDs and
+filenames in `avatars` and `trek-reviews`, company UUIDs in `company-logos` and
+`trek-images`. `0006` narrows each qual to the caller's own prefix.
+
+**Why it was safe to tighten.** The note calling the old policy deliberate said
+"object URLs don't need listing" — which is the argument *against* the policy,
+not for it. All five buckets are `public: true`, so every image in the app
+resolves over the CDN path with no session and no RLS; `getPublicUrl()` builds a
+string and issues no request. Checked rather than assumed: `src/`, `e2e/` and
+`supabase/functions/` contain **no `list()`, `download()` or `createSignedUrl()`
+call at all**. The only authenticated read left is the upload's own — `upload(…,
+{ upsert: true })` inserts with `RETURNING`, and `RETURNING` is checked against
+the SELECT policy — and every write policy already confines a writer to exactly
+the prefix the new SELECT grants, so a caller can always read back what it just
+wrote.
+
+**Two things that made this more than a one-line change:**
+
+1. **`avatars` has to accept both key layouts.** The write policies accept
+   `avatars/{uid}/file` **and** the legacy flat `avatars/{uid}.ext`.
+   `storage.foldername()` drops the last segment, so for a flat name it returns
+   `{}` and `[1]` is `NULL` — the obvious `foldername(name)[1] = auth.uid()::text`
+   would have hidden the 1 live flat object from its own owner and broken that
+   owner's next upsert on the `RETURNING` check. The SELECT qual mirrors the
+   write qual instead.
+2. **`trek-reviews` had the identical hole** and is keyed by `{uid}/` too, so it
+   is fixed in the same migration even though the advisor line is most often
+   quoted for the other three.
+
+**Deliberately *not* tiered.** The company buckets use `is_company_member`, not
+`is_company_writable`/`is_approved_company_member`. The §16 status tiers gate
+publishing; a frozen tenant reading back its own logo is not the capability they
+exist to withhold, and gating SELECT would also break that tenant's re-upload
+via the `RETURNING` path. Write policies are untouched.
+
+**Residual, stated not defended:** the company buckets cast
+`foldername(name)[1]` to `uuid` on read, so a non-uuid *folder* there would raise
+`22P02` for every reader rather than filtering out. No client can create one (the
+INSERT policies carry the same cast; a flat name yields `NULL`, not an error) —
+only a `service_role`/dashboard upload into e.g. `temp/` could. 0 such objects
+live when written.
+
+**Harness gap found and fixed:** `tests/db/harness/shim.sql` modelled
+`storage.objects` **without the `version` column**, which the §13.4 rate-limit
+trigger reads. PL/pgSQL plans that expression when the statement is reached, not
+when the branch is taken, so *every* insert into `storage.objects` failed with
+`record "new" has no field "version"` — the trigger's `tg_op` guard does not save
+it. The suite had never inserted a storage object, so nothing had surfaced it.
+Column added; this also retires the "not expressible in PGlite" half of the
+storage gap in [§1.4](#test-coverage-gaps).
+
+⚠️ **Not yet applied to production.** The ledger is authoritative — see the
+verification block at the top of this file.
+
+## STORAGE-002 mitigated — nosniff is not settable on the Supabase domain, so the MIME allowlist is the control (2026-08-25)
+
+**Status:** ✅ — closes the last finding in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+Migration [`0005_cap-trek-profile-bucket-mime.sql`](supabase/migrations/0005_cap-trek-profile-bucket-mime.sql),
+regression test [`tests/db/storage-content-type.test.ts`](tests/db/storage-content-type.test.ts),
+`DATABASE.md` §9. **Applied and verified live 2026-08-25 11:18:08+00** — ledger
+row `0005 / cap-trek-profile-bucket-mime` present, and `storage.buckets` read
+back over MCP shows all five buckets at `file_size_limit = 3145728` with
+`allowed_mime_types = {image/jpeg,image/png,image/webp}`, `trek-profile`
+included. The invariant the new test asserts locally is now the invariant in
+production.
+
+**The finding is confirmed and the header genuinely cannot be set.** Verified
+live 2026-08-25 with `curl -D -` against a real object
+(`/storage/v1/object/public/avatars/{uid}/{ts}.jpeg`): `200`, `content-type:
+image/jpeg`, `cache-control: public, max-age=3600`, and **no
+`x-content-type-options`**. The `nosniff` in
+[next.config.mjs:93](next.config.mjs#L93) is real but applies to the Next.js
+origin, and no image resolves there — `getPublicUrl()` returns
+`dtjmyqogeozrzzbdjokr.supabase.co`, which is storage-api behind Cloudflare with
+no header configuration exposed. Not fixable from `next.config.mjs`, and not
+from a migration either.
+
+**So the fix targets what nosniff protects, not the header.** Browsers sniff
+only when the declared Content-Type is absent, generic
+(`application/octet-stream`, `text/plain`) or unknown; a concrete `image/*` is
+taken at its word by Chrome, Firefox and Safari regardless of the bytes behind
+it. A bucket whose `allowed_mime_types` is restricted to real image types can
+therefore never emit a sniffable response — the same end state nosniff buys.
+Four buckets already had that from the 2026-08-05 rate-limit work; `0005` caps
+the fifth, `trek-profile`, which had been left uncapped on purpose (14 legacy
+objects, no policies, no client write path). That exemption was correct for the
+question it was written for — abuse volume — and wrong for this one: an uncapped
+bucket is the only place a non-image Content-Type could be stored, and the
+carve-out meant "every public bucket is capped" was not an invariant anything
+could assert. Its 14 objects are already `image/jpeg`/`image/png` (MCP), so the
+cap breaks nothing.
+
+**The earlier §1.9 write-up of this finding was wrong on the mechanism** and the
+correction changes the severity. It said "an uploaded SVG renamed past the
+allowlist would be served as `image/svg+xml`". It would not: storage-api stores
+and re-serves the **declared** type, so declaring `image/svg+xml` is rejected by
+the allowlist outright, and a renamed SVG declared `image/png` is served as
+`image/png`, which browsers render as a broken image. There is no
+`image/svg+xml` path into these buckets at all — the stored-XSS route that
+description implied does not exist.
+
+**Residual risk, accepted and stated:** storage-api validates the declared type
+and never inspects the bytes, so an authenticated user can still store HTML
+bytes labelled `image/png`. Current engines will not execute it; the exposure is
+legacy engines that sniff anyway, and it lands on the `supabase.co` origin,
+where the app's session cookie is not reachable (Supabase's own API authenticates
+by `Authorization` bearer header, not cookies).
+
+**Considered and rejected: proxying storage through a Next.js route handler** to
+attach the header. It would work, but it moves attacker-supplied bytes from a
+foreign origin onto the app's own — where a successful sniff *would* reach the
+session — while also paying egress for every image and giving up the CDN cache.
+That trades a low risk for a higher one. The cross-origin separation is doing
+real work here and is worth keeping.
+
+**Regression cover:** `storage-content-type.test.ts` asserts the invariant over
+`storage.buckets` for **every** bucket, not a named list, so a future bucket
+added without an allowlist fails `npm test` rather than silently reopening this.
+Both assertions guard against a vacuous pass (the row count is checked first).
+`npm test` 138/138, `npm run build` clean.
+
+## REALTIME-001 resolved — expired JWT is rejected by live Realtime, does not reproduce (2026-08-25)
+
+**Status:** ✅ — closes the last Realtime finding in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve). No
+code change: the platform already enforces the correct behaviour.
+
+The finding ("expired JWT accepted by the WebSocket", TEST.md 5.3.6) was only
+ever *reported, not source-verified* — JWT expiry on the Realtime socket is a
+hosted-service behaviour with nothing in this repo to grep against, so it had to
+be re-probed live. Re-ran it against the live endpoint
+(`wss://dtjmyqogeozrzzbdjokr.supabase.co/realtime/v1/websocket`) with a **real
+expired JWT** — the `JWT_TREKKER` captured during the Day-5 run (`sub
+662d9204…`, `exp 1787569565` = 2026-08-24 11:06 UTC), decoded and confirmed
+~20 h past expiry. Two probes, both rejected:
+
+- **Publishable key as `apikey`, expired JWT as the channel `access_token`** →
+  `phx_join` returns `phx_reply status=error`, `reason: "InvalidJWTToken: Token
+  has expired 72686 seconds ago"`. Join refused.
+- **Expired JWT itself as the connection `apikey`** → the WebSocket upgrade is
+  refused with **HTTP 401**; the socket never opens.
+
+`mcp__supabase__get_advisors(security)` flags nothing on Realtime either.
+
+**Why it looked like a bug.** A Realtime connection authorizes in two places
+with two different credentials: the **socket open** is gated by the *project
+publishable key* (`?apikey=`), not the user JWT — so the socket opening is
+expected and proves nothing about the token — while the **channel join**
+(`phx_join`) is where the *user's* `access_token` is actually validated for
+expiry and RLS. A probe that connects the socket, sees it stay open, and stops
+there will misread "socket up" as "expired JWT accepted." The token is rejected
+the moment it's actually evaluated (join), exactly as it should be. Same
+category as REALTIME-002/003: a phantom finding, not a live gap.
+
+## REALTIME-002/003 resolved — private channel authorization was already live in production, not in any migration (2026-08-25)
+
+**Status:** ✅ — closes the Medium/Low findings in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+
+Traced the pentest finding to its root cause: `messages/page.tsx` opens each
+conversation's presence/typing channel with `private: true`, which Supabase
+authorizes via RLS on `realtime.messages` — a table `grep -rn "realtime\."
+supabase/migrations/` had never touched, so the working theory was "RLS was
+never enabled, fails open."
+
+Wrote a migration to fix it (`0004_realtime-private-channel-authorization.sql`)
+and asked the user to paste it into the SQL Editor, which failed:
+`ERROR: 42501: must be owner of table messages`. Checked why over the
+read-only MCP instead of guessing: `realtime.messages` is owned by
+`supabase_realtime_admin`, and `postgres` (the SQL Editor's role) holds no
+membership in it (`pg_auth_members` — anon/authenticated/service_role and a
+few admin roles, not that one). `ALTER TABLE`/`CREATE POLICY` on this table
+can **never** succeed from the SQL Editor, on this or any Supabase project —
+it's a platform ownership boundary, not a grant this repo revoked. The
+supported path is Dashboard → Database → Realtime → Policies.
+
+That explained the error, but querying `pg_class`/`pg_policy` for
+`realtime.messages` turned up the real surprise: **`relrowsecurity = true`,
+and two policies already exist** — `chat members read conversation channel`
+(select) and `chat members write conversation channel` (insert), both
+`to authenticated`, both requiring `exists (select 1 from conversations c
+where 'conversation:' || c.id = realtime.topic() and is_chat_participant(c.id))`.
+Someone had already fixed this, almost certainly through the Dashboard's
+Realtime Policies screen — the one path capable of it — which is exactly why
+it left no trace in `supabase/migrations/`. The pentest's "join accepted for a
+conversation the caller isn't in" result must predate that fix. Supabase's
+own security advisor confirms nothing is flagged on this table.
+
+`0004_realtime-private-channel-authorization.sql` was rewritten to **document**
+the live policies verbatim (not invent different ones) rather than instruct
+anyone to paste it into the SQL Editor, since that will always fail here — the
+file exists so `tests/db/chat.test.ts` (`private channel authorization
+(realtime.messages)`, 6 cases) can replay the identical protection against
+PGlite, which connects as an actual superuser and isn't subject to the same
+ownership restriction, and so this state is recorded in version control
+instead of living only in the dashboard. `tests/db/harness/shim.sql` gained a
+minimal `realtime` schema (`messages` table + `topic()` GUC reader) so PGlite
+can load it. `npx vitest run --project db` 92/92, `npm test` 136/136,
+`npm run build` clean.
+
+**Ledger row recorded 2026-08-25 11:26:56+00.** Because the file is record-only,
+its ledger `INSERT` — the one statement in it meant to run in the SQL Editor —
+was initially skipped along with the rest, leaving the ledger at `0001, 0002,
+0003, 0005`. Caught while verifying `0005` and since inserted on its own; the
+ledger is now gap-free, and `realtime.messages` was re-read afterwards to
+confirm the insert disturbed nothing (RLS on, both policies present with their
+quals intact). ⚠️ Its `applied_at` therefore sorts *after* `0005`'s — order the
+ledger by `version`, never `applied_at`, same caveat as `0002`.
+
+Evidence, read over the read-only MCP server on 2026-08-25: `pg_class` shows
+`realtime.messages` owned by `supabase_realtime_admin` with
+`relrowsecurity = true`; `pg_policy` shows the two policies above, both
+`polroles = {authenticated}`; `pg_auth_members` shows `postgres` has no
+`supabase_realtime_admin` membership; `get_advisors('security')` has no
+finding naming `realtime.messages`. **Lesson for next time this comes up**:
+`realtime.messages`, like `auth.users` and `storage.objects`, is a
+platform-owned table this repo can document but — unlike `storage.objects`,
+whose policies this repo's migrations already manage fine via SQL Editor —
+cannot alter through the normal migrations workflow at all; check its live
+state via MCP before assuming an absence in `supabase/migrations/` means an
+absence in production.
+
+## EDGE-001 resolved — `trek-email-notification` was never deployed; nothing to restore or delete (2026-08-25)
+
+**Status:** ✅ — closes the Medium-severity finding in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+
+Checked `list_edge_functions` over the read-only Supabase MCP: only two
+functions are live on the project, `send-trek-notification` and
+`send-trek-leave-notification`. `trek-email-notification` is not in the list
+at all — nothing is deployed under that slug, so the empty
+`supabase/functions/trek-email-notification/` directory in the repo wasn't
+missing source for a live function, it was a leftover empty folder (no
+`index.ts`, not even git-tracked, since git doesn't track empty directories).
+The `404` from the pentest's live probe was correct: it's an unmatched route,
+not a broken deployment. Deleted the empty directory locally and removed the
+stale "edge function exists" mention of it in
+[§1.2](#12-features-to-add) — there was never anything to restore into source
+control or delete from Supabase.
+
+Evidence: `list_edge_functions` MCP call returned only `send-trek-notification`
+and `send-trek-leave-notification`, both `status: ACTIVE`.
+
+## EDGE-003 fix — unrate-limited webhook secret now capped at 10 emails per hour per recipient (shipped 2026-08-24)
+
+**Status:** ✅ — closes the High-severity finding in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+
+Past the `x-trek-webhook-secret` check, `user_id` in `send-trek-notification/index.ts`
+and `send-trek-leave-notification/index.ts` was caller-supplied with nothing else
+gating it — the DB's 10/hr join-email throttle (`enforce_join_rate_limit`) only
+fires on `trek_participants` INSERT via `join_trek_and_chat()`, so hitting either
+function's URL directly with the secret bypassed it entirely: a leaked secret was
+unbounded mail-bombing capacity against any `user_id`, from Trekker's own Resend
+domain. Added a rate-limit check to both functions, reusing the existing
+`rate_events` table (already used for the chat/invite/upload throttles in §13 of
+`0001_baseline.sql`) via the admin client both functions already hold — no
+migration needed, since the table already exists and the functions' SECRET-key
+client already bypasses its RLS the same way it already reads `profiles`. Before
+sending, each function counts rows where `actor = user_id` and
+`action = 'trek_email'` in the last hour and refuses at 10, inserting its own row
+on every attempt (not only successful sends) so a probe can't dodge the counter by
+erroring out. Both functions share the one `'trek_email'` action name so
+alternating between them can't double the effective rate — the cap is 10 total
+notification emails/hour per recipient, not 10 each.
+
+**Deployed and verified live 2026-08-26.** `get_edge_function` over the
+read-only MCP returns a `send-trek-notification` body byte-identical to this
+repo's, rate limit included (`send-trek-notification` v11, updated 2026-08-25).
+The earlier "not yet deployed" note here was stale — it outlived the deploy.
+
+Evidence: [`send-trek-notification/index.ts`](supabase/functions/send-trek-notification/index.ts),
+[`send-trek-leave-notification/index.ts`](supabase/functions/send-trek-leave-notification/index.ts).
+
+## EDGE-002 fix — HTML/XSS injection in trek notification emails escaped (shipped 2026-08-24)
+
+**Status:** ✅ — closes the High-severity finding in
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve).
+
+`send-trek-notification/index.ts` and `send-trek-leave-notification/index.ts`
+built `htmlContent` by interpolating `trekName`, `trekLocation` and `trekPhoto`
+straight into the template string with no escaping — `trekPhoto` landed inside
+`src="${trekPhoto}"` unescaped, and `trekName` appeared both in plain text and
+inside the `alt=` attribute, so a trek title or cover-photo URL crafted with
+`"><script>…</script>` or `x" onerror="…` would have rendered as live markup in
+the recipient's mail client. Added a local `escapeHtml()` helper to both
+functions (no shared `_shared/` module exists yet to put it in) and routed
+`trekName`/`trekLocation`/`trekPhoto` through it everywhere they land inside
+`htmlContent`; the plain-text `subject` line and the `console.log` line keep
+the raw value since neither is HTML.
+
+**Deployed and verified live 2026-08-26.** The deployed
+`send-trek-notification` body carries `escapeHtml()` and all four
+`…Safe` interpolations, confirmed byte-for-byte against this repo via
+`get_edge_function` over the read-only MCP. The earlier "not yet deployed"
+note here was stale. Edge Functions do still ship independently of
+`npm run build`, so a *future* source edit needs
+`supabase functions deploy <slug>` for both functions.
+
+Evidence: [`send-trek-notification/index.ts`](supabase/functions/send-trek-notification/index.ts),
+[`send-trek-leave-notification/index.ts`](supabase/functions/send-trek-leave-notification/index.ts).
 
 ## Real migrations — `schema.sql` demoted to a build artifact (shipped 2026-08-13)
 
@@ -745,7 +1404,7 @@ The Server Function disclosure and the image-optimization DoS both applied direc
 
 ### Security headers
 
-**Status:** 🟡 — headers enforced; CSP is report-only pending [§1.5](#promote-csp-from-report-only-to-enforcing).
+**Status:** ✅ — all six headers enforced; the CSP was promoted from report-only to enforcing on 2026-09-01 (see [§3](#csp-promoted-from-report-only-to-enforcing--2026-09-01)).
 
 [`next.config.mjs`](next.config.mjs) had **no `headers()` block at all** — every response shipped with zero browser-side policy. It now exports a `(phase) => config` function (phase, not `NODE_ENV`, because `NODE_ENV` is still `undefined` when Next loads the config — see Known Gotchas) serving six headers on `/:path*`.
 
@@ -759,14 +1418,15 @@ Enforced immediately, none of which can break a working page:
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | **No `preload`** — preload is effectively irreversible and binds every future subdomain |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` | Free — no code calls any of these APIs |
 
-**CSP — what it does and does not buy.** Served report-only. `script-src` keeps `'unsafe-inline'`, because Next's App Router emits inline hydration/flight scripts and [`JsonLd.tsx`](src/components/ui/JsonLd.tsx) inlines JSON-LD; the nonce alternative must run in middleware, which forces **every page dynamic** and would undo the server-rendered SEO work. So it does **not** meaningfully stop XSS — injected inline script still runs. What it does buy: `connect-src` caps where data can be *sent*, so injected script cannot POST the browser-held Supabase session to an attacker origin, plus `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`. `'unsafe-eval'` is added **only** in the dev phase (React Refresh); verified absent from the production policy.
+**CSP — what it does and does not buy.** Enforcing since 2026-09-01 (`CSP_ENFORCE=1` in Vercel, Production + Preview). `script-src` keeps `'unsafe-inline'`, because Next's App Router emits inline hydration/flight scripts and [`JsonLd.tsx`](src/components/ui/JsonLd.tsx) inlines JSON-LD; the nonce alternative must run in middleware, which forces **every page dynamic** and would undo the server-rendered SEO work. So it does **not** meaningfully stop XSS — injected inline script still runs. What it does buy: `connect-src` caps where data can be *sent*, so injected script cannot POST the browser-held Supabase session to an attacker origin, plus `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`. `'unsafe-eval'` is added **only** in the dev phase (React Refresh); verified absent from the production policy.
 
 **Allowed origins were enumerated from source, not guessed** — Supabase origin and the Sentry `report-uri` are both derived at build time from `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SENTRY_DSN` rather than hardcoded:
 
 - `connect-src` — Supabase `https://` **and** `wss://` (realtime chat is a separate origin to CSP), `api.pwnedpasswords.com` ([`src/lib/auth.ts`](src/lib/auth.ts) HIBP check), Sentry ingest
 - `img-src` — Supabase storage, `images.unsplash.com`, `www.transparenttextures.com` (chat background in [`messages/page.tsx`](src/app/(trekker)/messages/page.tsx)), plus `data:`/`blob:` for upload previews
-- `worker-src 'self' blob:` — load-bearing; see §1.5
+- `worker-src 'none'` — nothing in the app spawns a worker; see §1.5
 - `font-src 'self' data:` only — `next/font/google` self-hosts at build, so **no** Google Fonts origin is needed
+- `images.remotePatterns` — a separate allowlist from CSP, governing what `/_next/image` will fetch and cache server-side. Supabase is scoped to `/storage/v1/object/public/**` (2026-08-27) so the optimizer cannot be used as a proxy for the project's auth/REST/functions endpoints; `images.unsplash.com` stays `/**`
 
 **Verified** by curling a real `next start` server: all six headers present, `script-src` free of `'unsafe-eval'` in production and carrying it under `next dev`.
 
@@ -813,7 +1473,9 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **Don't set `output: 'standalone'` — this app deploys to Vercel, and it broke the deploy build (2026-08-26).** Vercel failed with `ENOENT … /vercel/path0/.next/next-server.js.nft.json`. That file is read in exactly one place — `copyTracedFiles()` ([node_modules/next/dist/build/utils.js:1106](node_modules/next/dist/build/utils.js#L1106)), reached only from `writeStandaloneDirectory()` under `if (config.output === 'standalone')` ([build/index.js:2815](node_modules/next/dist/build/index.js#L2815)) — so no standalone means no read and no ENOENT, whatever left the trace file absent in Vercel's builder. **It never bought anything here:** Vercel builds its own serverless output from the `.nft.json` traces directly, and CI's e2e job runs `npm run start` (`next start`), not `.next/standalone/server.js`, despite the artifact being named "standalone" in `.github/workflows/ci.yml` and the comment in `playwright.config.ts`. `standalone` is for self-hosting (Docker); there is no Dockerfile in this repo. **It does not reproduce locally** — a clean `next build` on macOS emits `next-server.js.nft.json` fine and writes `.next/standalone`, so a green local build is not evidence the Vercel build will pass.
 
-- **The `src/proxy.ts` matcher is an allowlist by omission — anything it matches and that isn't in `publicRoutes` gets 307'd to `/auth/login`, including non-page routes.** `robots.txt` and `sitemap.xml` are excluded there for exactly this reason (crawlers send no session cookie). Any future public, session-less route (`.well-known/*`, a feed) needs the same treatment — test it with `curl`, not a logged-in browser, or the breakage is invisible. `/trek/[id]/opengraph-image` is already covered: `publicRoutes` matches on prefix, so `/trek` carries it.
+- **The `src/proxy.ts` matcher is an allowlist by omission — anything it matches and that isn't in `publicRoutes` gets 307'd to `/auth/login`, including non-page routes.** `robots.txt`, `sitemap.xml` and (since 2026-08-21) `.well-known` are excluded there for exactly this reason (crawlers and browser probes send no session cookie). Any future public, session-less route (a feed, a webhook) needs the same treatment — test it with `curl`, not a logged-in browser, or the breakage is invisible. `/trek/[id]/opengraph-image` is already covered: `publicRoutes` matches on prefix, so `/trek` carries it.
+
+- **The matcher's `missing:` clause is the only place prefetch can be filtered — the middleware function cannot see the header.** Next 16 strips `next-router-prefetch` (and `rsc`, `next-router-state-tree`) from `request.headers` inside proxy, deliberately, so RSC and HTML requests can't be handled differently. The `has`/`missing` arrays are evaluated a layer earlier, by the router, and *can* see it. So an early `return` inside `updateSession()` on a prefetch header is dead code that will never fire, while the config-level `missing:` works — verify which one you're writing by reading `.next/server/functions-config-manifest.json` after a build, where the compiled matcher (regex + `missing`) is spelled out. **Corollary:** the auth redirect is deliberately skipped on prefetch (2026-08-21), so a signed-out user hovering a protected link fetches its payload without a 307. That is not a hole — every page under the guard is `'use client'` behind `useRequireAuth()`, the payload is a component shell, and the data is held by RLS. If a *server*-rendered page with real data in its payload is ever added under the guard, this exclusion has to be revisited.
 
 - **`src/lib/site.ts` is server-only.** It reads `VERCEL_PROJECT_PRODUCTION_URL`, which is not `NEXT_PUBLIC_*`, so importing it into a client component silently bakes in the `localhost:3000` fallback. Client components keep their own local `DEFAULT_IMAGE_URL` constant instead of importing `DEFAULT_TREK_IMAGE`.
 
@@ -849,7 +1511,7 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **`public_profiles` view is `security_definer`.** Supabase's advisor flags this as an error. It's intentional — it lets `full_name` and `avatar_url` be readable cross-user (for chat/reviews) without exposing PII from the `profiles` base table. Don't "fix" it by making the view `security_invoker`.
 
-- **Storage buckets are `public: true` (CDN delivery) but object listing requires auth.** The SELECT RLS policies on `storage.objects` are scoped to `authenticated` to block anonymous enumeration of UUID-keyed paths. `getPublicUrl()` bypasses RLS entirely — it always works regardless of policy.
+- **Storage buckets are `public: true` (CDN delivery) but object listing requires auth *and* your own prefix (`0006`, 2026-08-25).** The SELECT policies on `storage.objects` used to test only `bucket_id`, which blocked anon listing but let any signed-in account enumerate everyone else's folders (STORAGE-001). They are now scoped to the caller's own prefix — `{uid}` for `avatars`/`trek-reviews`, a company the caller belongs to for `company-logos`/`trek-images`. **`avatars` must keep matching both `{uid}/file` and the legacy flat `{uid}.ext`**: `foldername()` returns `{}` for a flat name, so a folder-only qual hides that object from its own owner *and* breaks their upsert, because `upload({ upsert: true })` inserts with `RETURNING` and `RETURNING` is checked against the SELECT policy. `getPublicUrl()` bypasses RLS entirely — it always works regardless of policy, which is why none of this touches image delivery. **Object *reads* have no authorization at all, on either route:** because the buckets are public, storage-api short-circuits auth, so even `/object/{bucket}/{key}` (the "authenticated" route) serves bytes with no token. Only key unguessability protects an object, which is what `0006` reinforced by removing listing. **This is the expected answer to any "I read another user's file" report** — before treating one as a finding, request the object directly with no credentials and no `../`; if that returns the same bytes, the reported trick did nothing (STORAGE-003, 2026-08-26).
 
 - **Two env vars only:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. The `SUPABASE_SERVICE_ROLE_KEY` slot exists in `.env.local.example` but is unused in app code and must never reach the browser.
 
@@ -865,12 +1527,268 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **The two Supabase browser clients do not share a session, and mixing them fails silently as "no rows".** `@supabase/ssr`'s `createBrowserClient` ([`src/utils/supabase/client.ts`](src/utils/supabase/client.ts)) keeps the session in **cookies** — that is what sign-in writes and what the proxy reads. The plain `createClient` singleton in [`src/lib/supabase.ts`](src/lib/supabase.ts) looks in **localStorage**, finds nothing, and runs every request as `anon`. Under RLS that is not an error: an own-rows-only SELECT just returns `[]`, so the UI renders its empty state and nothing reaches the console. This bit `useFavorites` ([`src/lib/queries.ts`](src/lib/queries.ts)) from 2026-06-20 (`33a202c`, which moved the page onto TanStack Query) to 2026-08-20 — `/favorites` showed "No Favorites Yet" while the rows sat in the table, because the hearts are written by `TrekDetailClient` on the *cookie* client and read back on the *localStorage* one. **Every client component uses the `utils/supabase` factory**; `src/lib/supabase.ts` is now only reachable from `opengraph-image.tsx` (server, anon reads by design) and its exported types. The tell for this class of bug is asymmetry — a write lands, the matching read comes back empty.
 
+- **A PostgREST embed (`?select=*,profiles(email,full_name)`) nulling out the joined `profiles` row for a stranger is RLS working, not a bug to "fix" by loosening a policy.** `trek_reviews` is intentionally public-read (`"Reviews are viewable by everyone"`), so the review row itself stays visible to any user, but `profiles` keeps its own own-row-only SELECT policy — PostgREST compiles the embed to a join, and RLS is evaluated per-row inside that join same as a top-level query, so the `profiles` side comes back `null` for anyone but the reviewer. Manually confirmed against production 2026-08-24 (pentest Day 2, `result.md`) across `trek_reviews`, `trek_participants`, `conversation_messages` and a 3-level nested embed — none leaked another user's email/phone through a join. Regression-tested at the SQL level (the identical join-time RLS mechanism PostgREST embedding relies on) in `tests/db/tenant-boundaries.test.ts` block 6. **If a future embed ever returns real PII for a row the requester doesn't own, the bug is in the `profiles` policy, not the join** — don't "fix" a null embed by widening `"Users can view own profile"`.
+
+- **A denied SELECT must return the identical zero-row shape whether the id doesn't exist or exists but isn't yours — any difference is a count/existence oracle.** PostgREST exposes this as the `Content-Range` header on `Prefer: count=exact` requests; at the SQL level it's just `select … where id = $1` returning `[]` either way, never an error. Manually confirmed against production 2026-08-24 (pentest Day 2) on `profiles` and `conversation_messages`; regression-tested in `tests/db/tenant-boundaries.test.ts` block 7 (`profiles`, real-other-id vs. nonexistent-id, same empty shape).
+
 ---
 
 # §3 — Changelog (newest first)
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## CSP promoted from report-only to enforcing  ·  2026-09-01
+
+`CSP_ENFORCE=1` is set in Vercel for **Production and Preview** (Config type, value
+`1`), and production was rebuilt, so the site now serves `Content-Security-Policy`
+instead of `Content-Security-Policy-Report-Only` — verified on the response headers
+and in DevTools. The `connect-src` cap is live: injected script can no longer POST
+the browser-held Supabase session to an attacker origin. This does **not** stop XSS
+(`script-src` still allows `'unsafe-inline'`) — it is exfiltration containment.
+
+No code changed. Two things that cost time and are worth knowing before touching
+this again:
+
+- **The header name is chosen at build time**, not per request — `next.config.mjs`
+  reads `process.env.CSP_ENFORCE` at module scope. Setting the env var does nothing
+  to deployments that are already built; production has to be redeployed.
+- **Verify on the alias, never on a hashed deploy URL.** `trekker-<hash>-….vercel.app`
+  is a frozen snapshot of one build and will serve the old header forever. Only
+  `trekker-tan.vercel.app` (and the other aliases) follow the current production build.
+
+Rollback stays env-only: delete `CSP_ENFORCE` and redeploy.
+
+**Known accepted breakage:** the Vercel preview toolbar (`vercel.live`) is blocked on
+preview deployments. Not worth loosening `script-src`/`connect-src` for a dev tool.
+
+## Image optimizer no longer proxies the whole Supabase host  ·  2026-08-27
+
+`images.remotePatterns` allowed the Supabase hostname at `pathname: '/**'`, so
+`/_next/image?url=…` would fetch and cache *any* path on the project host — auth,
+REST, functions — not just public storage objects. Not a leak: the optimizer
+forwards no headers, so a private object still needs a signed URL it will never
+send. The exposure is our own optimizer used as an open proxy/cache in front of
+arbitrary project endpoints. Narrowed to `/storage/v1/object/public/**`. Every
+Supabase image the app renders comes from `getPublicUrl()` (`trek-images`,
+`company-logos`, `avatars`, `trek-profile`), which always produces that prefix,
+and a query over prod confirmed no stored `cover_image_url` / `logo_url` sits
+outside it. The `images.unsplash.com` pattern is unchanged.
+
+## CSP upload path: the blob worker was fetching itself from jsdelivr  ·  2026-08-27
+
+`worker-src 'self' blob:` was documented as load-bearing for photo upload. It was
+not sufficient. `browser-image-compression@2.0.2` does not inline its worker: the
+blob shell's first act is
+`importScripts('https://cdn.jsdelivr.net/npm/browser-image-compression@2.0.2/…')`,
+and a `blob:` worker inherits the creating document's CSP — so `script-src 'self'
+'unsafe-inline'` blocks it. `blob:` got the worker created; it died on line one.
+The library already caught that and fell back to main-thread `compress()`, so the
+"fails silently, uploads the uncompressed original" claim was wrong twice over.
+What actually happened is an unpinned third-party script fetch on every
+compression, which report-only CSP has been dutifully reporting. `compressImage()`
+now sets `useWebWorker: false` — the same path the fallback reached, minus the CDN
+round trip — which leaves nothing in the app spawning a worker, so `worker-src` is
+now `'none'`. (The only other `new Worker` in the bundle is `realtime-js`'s opt-in
+heartbeat; the app never passes `worker: true`.) Found while working the
+pre-enforcement click-through list over MCP; the same pass confirmed prod, the
+`main` branch alias and the newest preview all still serve
+`Content-Security-Policy-Report-Only`, so §1 #4 is still open.
+
+## Last embedded key gone: `0008` deletes the `apikey` header from the notification trigger  ·  2026-08-26
+
+`notify_trek_participation()` held the publishable key as a literal and asked, in
+a comment, to be edited on rotation. Public key, so no disclosure — but a
+rotation trap: a stale key 401s at the gateway, the trigger swallows it, and trek
+emails stop silently. Probing the live gateway showed the header was never needed
+(`verify_jwt=false`; an *absent* `apikey` reaches the function, only an *invalid*
+one is rejected), so `0008` deletes it rather than moving it to Vault — nothing
+left to keep in sync. `tests/db/no-embedded-credentials.test.ts` now enforces
+what the comment asked for, across every function body. Also corrected
+`DATABASE.md` §10, which recorded `verify_jwt: true` for both functions.
+**Applied + verified live the same day** (ledger `0008` `10:04:57+00`; live
+`pg_proc` body carries no key literal and no `apikey`, and no function in
+`public` does). See
+[§2](#publishable-key-removed-from-notify_trek_participation--a-rotation-trap-not-a-leak-2026-08-26).
+
+## Day 5 pentest re-test — all findings re-verified live; EDGE-004 fixed  ·  2026-08-26
+
+Re-ran the storage/edge/realtime findings against production with fresh tokens
+for the three TEST.md accounts. **STORAGE-001 confirmed fixed live**: listing
+`avatars` as the plain trekker now returns only its own folder (previously three
+UIDs), and `company-logos`/`trek-images`/`trek-reviews` return empty. Migrations
+`0004`–`0007` confirmed in `supabase_migrations.schema_migrations`, with the live
+policies, bucket MIME caps and `realtime.messages` RLS all read back to match.
+**STORAGE-003 re-confirmed a non-issue**: the traversal URL and the plain
+no-credential URL return the identical 259,567 bytes, as does the "authenticated"
+route with no token — the buckets are public, so nothing was bypassed.
+**STORAGE-002 unchanged and accepted**: no `x-content-type-options` on the
+Supabase origin, `content-type: image/jpeg` concrete, all five buckets capped.
+
+Two documentation corrections and one code fix came out of it. EDGE-002 and
+EDGE-003 were still labelled "not yet deployed" in §2 — `get_edge_function` shows
+the deployed body is byte-identical to the repo, so both have been live since
+2026-08-25; the notes were stale and are corrected. The one genuinely open item,
+the non-constant-time webhook secret comparison, is fixed as **EDGE-004** and is
+the only thing here still awaiting `supabase functions deploy`.
+
+`npm run build` and `npm test` (150 tests, 12 files) pass. `deno check` reports 3
+pre-existing `TS2339` errors on `trek.title`/`cover_image_url`/`location` in
+`send-trek-notification` — `batchResult.data?.treks || {}` widens `trek` to `{}` —
+identical before and after this change, left alone as out of scope.
+
+## EDGE-001 follow-up — dead `notify_trek_join/remove` triggers dropped in `0007`  ·  2026-08-26
+
+EDGE-001 closed the "empty source" half on 2026-08-25 (`trek-email-notification`
+was never deployed). This closes the DB half that still referenced it: `0001`'s
+`trek_join_email_trigger` / `trek_remove_email_trigger` on `trek_participants`
+called `notify_trek_join()` / `notify_trek_remove()`, which `net.http_post` to
+`/functions/v1/trek-email-notification` — so every join and leave queued a pg_net
+request to a 404. `0007_drop-dead-trek-email-notification-triggers.sql` drops
+both triggers and both functions. Also removes a **legacy anon key hard-coded in
+the live function bodies** (that key class is DISABLED, so it is a dead
+credential rather than an exposure) and an `exception`-handler gap:
+`notify_trek_join()` has none, unlike `notify_trek_participation()`, so a raise
+from `net.http_post` would have aborted the enclosing INSERT and failed the join.
+No user-visible change — the real join/leave emails come from
+`trek-join-notification` / `trek-leave-notification` →
+`notify_trek_participation()`, untouched. Replay-tested (`--project db`,
+106/106), `schema.sql` regenerated, **applied to production 2026-08-26**.
+`DATABASE.md` §6/§7/§10/§11 and `CONTEXT.md` updated.
+
+## STORAGE-003 resolved — reported public-URL path traversal does not exist  ·  2026-08-26
+
+A re-test against the storage surface reported that
+`/object/public/avatars/{uid-A}/../{uid-B}/{file}` returns `200` with another
+user's image, and that URL-encoded `%2e%2e%2f` was "correctly blocked" at `400`.
+**Closed as a non-issue, no code or migration change.** The finding shipped
+without a control case: requesting the victim object **directly, no `../`, no
+credentials**, returns the identical `200` and identical `259567` bytes, so the
+traversal contributes nothing — all five buckets are `public: true` and
+`/object/public/…` is unauthenticated read of any key by design. `curl`'s
+`url_effective` shows the `../` was collapsed **client-side before the request
+was sent**; forcing it through with `--path-as-is` still resolves correctly
+server-side. The `400` was misread: its body is byte-identical to a request for
+an invented filename (`{"code":"NoSuchKey","message":"Object not found"}`) —
+*not found*, not *not permitted*, so no control fired. `sanitizeFileName()` is a
+write-path concern and has no bearing on read authorization, which is decided
+solely by `bucket.public`. Recorded in §2 with the full reproduction table so the
+next pass doesn't re-raise it.
+
+## STORAGE-002 mitigated — MIME allowlist stands in for the unsettable nosniff  ·  2026-08-25
+
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve)'s last
+open finding closed, and with it the whole Day 5 pentest section. Confirmed live
+by `curl` that Supabase Storage serves public objects with no
+`x-content-type-options` and offers no way to add one, so the fix targets the
+Content-Type instead: browsers only sniff a missing, generic or unknown type, so
+restricting every bucket to `image/jpeg|png|webp` produces nosniff's end state.
+Migration `0005` caps `trek-profile`, the one bucket deliberately left uncapped
+by the 2026-08-05 rate-limit work, making the invariant exception-free;
+`tests/db/storage-content-type.test.ts` asserts it over every row of
+`storage.buckets` so a new bucket cannot reopen it. Also corrects the earlier
+write-up's mechanism — a renamed SVG is served as its *declared* type, never as
+`image/svg+xml`, so the stored-XSS path it described does not exist. Rejected
+proxying storage through the app to attach the header: it would move
+attacker-supplied bytes onto the app's own origin, which is worse than the
+low-severity residual it removes. **Applied and verified live 11:18:08+00** —
+ledger row present, `5 buckets, 5 capped`. Verifying it also turned up a **gap
+at `0004` in the ledger** (its policies were live; only its ledger row had never
+been inserted) — since fixed at 11:26:56+00, ledger now `0001`–`0005` with no
+holes.
+
+## EDGE-001 resolved — `trek-email-notification` was never deployed  ·  2026-08-25
+
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve)'s
+Medium "empty source" finding closed as a non-issue: `list_edge_functions` over
+the read-only Supabase MCP shows only `send-trek-notification` and
+`send-trek-leave-notification` live on the project — `trek-email-notification`
+was never deployed, so the empty directory in the repo wasn't hiding a missing
+source file for a running function, and the pentest's `404` was just an
+unmatched route. Deleted the empty `supabase/functions/trek-email-notification/`
+directory (it wasn't git-tracked) and fixed the stale "edge function exists"
+line in §1.2. Three findings remain open in §1.9 (REALTIME-001/002/003, plus
+the STORAGE-002 callout).
+
+## EDGE-003 fixed — trek notification webhook now rate-limited per recipient  ·  2026-08-24
+
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve)'s High
+"spam relay" finding closed: `send-trek-notification/index.ts` and
+`send-trek-leave-notification/index.ts` now count the existing `rate_events`
+table before sending and refuse past 10 emails/hour per recipient (shared
+between the two functions via one `'trek_email'` action), closing the gap
+where a leaked webhook secret let a direct caller mail-bomb any user with no
+limit — the DB's 10/hr join-email throttle never ran on this path since it
+only fires through `join_trek_and_chat()`. No migration needed; reuses the
+`rate_events` table already used for other limits. Not yet deployed — needs
+`supabase functions deploy` for both functions before it's live. Four
+findings remain open in §1.9 (EDGE-001, REALTIME-001/002/003, plus the
+STORAGE-002 callout).
+
+## EDGE-002 fixed — trek notification emails now HTML-escape trek data  ·  2026-08-24
+
+[§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve)'s High
+XSS finding closed: `send-trek-notification/index.ts` and
+`send-trek-leave-notification/index.ts` now run `trekName`, `trekLocation` and
+`trekPhoto` through a local `escapeHtml()` before interpolating them into
+`htmlContent`, closing the attribute-breakout in `src="${trekPhoto}"` and the
+raw injection points around `trekName`. Not yet deployed — the fix needs
+`supabase functions deploy` for both functions before it's live. Five findings
+remained open in §1.9 at the time (EDGE-003, EDGE-001, REALTIME-001/002/003,
+plus the STORAGE-002 callout); EDGE-003 is now also fixed — see above.
+
+## Pentest Day 5 — storage/edge functions/realtime findings triaged into §1.9  ·  2026-08-24
+
+Six bugs opened in [§1.9](#19-day-5-pentest--storage--edge-functions--realtime-bugs-to-solve)
+from the Day 5 pass (`result.md`): HTML injection in the join-notification email
+template and an unrate-limited webhook secret (both High, both confirmed against
+`send-trek-notification/index.ts`); an edge function (`trek-email-notification`)
+deployed with an empty source directory in this checkout; Realtime private
+channels (`messages/page.tsx`) opened with `private: true` but **no RLS policy
+on `realtime.messages` exists anywhere in the migrations** — confirmed root
+cause for the presence-join and broadcast findings, not just a live-probe
+report; an expired-JWT-accepted-by-WebSocket finding carried as reported-only
+(platform-level, nothing in-repo to check it against); and missing `nosniff`
+on Supabase's own storage CDN responses (outside `next.config.mjs`'s reach).
+One reported item, storage-list cross-user enumeration, was **not** opened as a
+new bug — it's the exact tradeoff `0001_baseline.sql` §10 and an existing Known
+Gotcha both already document as deliberate (block anonymous listing, accept
+authenticated listing), so it's called out as a re-confirmation, not new work.
+
+## Latency pass: `/messages` waterfall, and the proxy matcher stops running on prefetch  ·  2026-08-21
+
+Four items, two of which touch shipped code. The two that don't: `NEXT_PUBLIC_SENTRY_DSN`
+is now commented out in `.env.local` (both init sites gate on the DSN, so the SDK goes
+inert locally while Vercel's own env keeps production reporting), and a 1.4 GB `.next`
+was deleted. Neither is in the tree.
+
+**`/messages` did four sequential round trips to build the sidebar.** The `load()` effect
+chained `conversation_participants` → `conversations` → `conversation_participants` (all)
+→ `public_profiles`. Only the first and last links are real dependencies: the two middle
+queries both need nothing but `convIds`, and `getUnreadCounts()` needs nothing at all yet
+sat at the *end* of the chain. The pair now shares a `Promise.all` and `getUnreadCounts()`
+fires first, taking the page to three round trips. The profiles fetch stays sequential
+because it genuinely needs `allParts`.
+
+**The proxy matcher ran on every `<Link>` prefetch.** `updateSession()` calls
+`auth.getUser()`, and that is not uniformly cheap: with no access token in the cookies
+`_useSession` throws locally and never hits the network — so anonymous traffic was already
+free, and the "exclude more static paths" instinct was aimed at the wrong thing. `public/`
+holds six images the pattern already excluded, and there are no route handlers. For a
+**signed-in** user, though, every match is a live round trip to Supabase Auth, and a
+viewport full of `<Link>`s fires one prefetch each. The matcher grew a `missing:` clause
+for `next-router-prefetch` / `purpose: prefetch`, which drops those; real navigations still
+match and stay guarded. Also added to the negative lookahead: `.well-known` (Chrome
+DevTools probes it every dev session, and the old pattern 307'd it to `/auth/login`) plus
+`avif`, `ico`, `woff2?` and `map`.
+
+Verified by replaying the *compiled* matcher out of
+`.next/server/functions-config-manifest.json` against 23 paths — all twelve real routes
+still match, and only assets and probes skip. Worth stating plainly: this was verified for
+**correctness, not speed**. No timings were taken, so the size of the win is still an
+estimate. Two new Known Gotchas (the header-stripping trap, and why the prefetch exclusion
+isn't a hole). `.gitignore` also grew `.env*.bak` — it covered `.env*.local` but not a
+backup made next to it.
 
 ## Two regressions: the card's Join skipped the date picker, `/favorites` read as anon  ·  2026-08-20
 
@@ -1157,7 +2075,7 @@ Deleted `src/lib/database.ts` (199 lines), `src/components/ui/Chat.tsx` (49), `s
 
 ## Security headers added — the app was serving none  ·  2026-08-12
 
-[`next.config.mjs`](next.config.mjs) had no `headers()` block at all, so every response carried zero browser-side policy. Six headers now ship on `/:path*`; CSP is report-only pending [§1.5](#promote-csp-from-report-only-to-enforcing). Full detail in [Security headers](#security-headers). App code untouched — config only.
+[`next.config.mjs`](next.config.mjs) had no `headers()` block at all, so every response carried zero browser-side policy. Six headers now ship on `/:path*`; CSP shipped report-only, promoted to enforcing 2026-09-01 (see [§3](#csp-promoted-from-report-only-to-enforcing--2026-09-01)). Full detail in [Security headers](#security-headers). App code untouched — config only.
 
 - **`Referrer-Policy` was the one real leak, not the CSP.** Without it, an outbound click sent the **full URL including query string** to the third party, and the recovery flow puts `token_hash` in the URL. The rest (`nosniff`, `X-Frame-Options: DENY`, HSTS without `preload`, `Permissions-Policy`) is defence-in-depth that costs nothing here — no `<iframe>` anywhere, and no code calls camera/mic/geolocation.
 - **Be honest about the CSP: it does not stop XSS.** `script-src` keeps `'unsafe-inline'`, because Next emits inline hydration/flight scripts and `JsonLd` inlines JSON-LD; nonces would have to be minted in middleware, forcing every page dynamic and undoing the server-rendered SEO work from the last three commits. The value is `connect-src` — an injected script cannot ship the browser-held Supabase session off-origin — plus `base-uri`/`form-action`/`object-src`.

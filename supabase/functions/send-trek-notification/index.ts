@@ -27,9 +27,39 @@ function getServiceKey(): string {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 }
 
+// trekName/trekLocation/trekPhoto come from trek data set by trek creators and
+// are interpolated into the HTML email body below — escape before use.
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Constant-time secret check. The `!==` this replaces short-circuits on the
+// first differing byte, so how far a guess matched is in principle observable.
+// Digesting both sides first makes the comparison run over fixed-length data
+// the caller cannot steer — neither the secret's length nor a partial match
+// leaks. (Network jitter already swamps the signal; this removes it anyway.)
+async function secretMatches(provided: string | null): Promise<boolean> {
+  if (provided === null) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(provided)),
+    crypto.subtle.digest("SHA-256", enc.encode(WEBHOOK_SECRET)),
+  ]);
+  const x = new Uint8Array(a);
+  const y = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
 serve(async (req: Request) => {
   // Authorize the DB trigger before doing anything else.
-  if (req.headers.get("x-trek-webhook-secret") !== WEBHOOK_SECRET) {
+  if (!(await secretMatches(req.headers.get("x-trek-webhook-secret")))) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -72,6 +102,26 @@ serve(async (req: Request) => {
       return new Response("No email", { status: 400 });
     }
 
+    // Rate-limit outbound notification emails per recipient. Past the webhook
+    // secret check, user_id is caller-chosen and this URL is reachable directly
+    // (skipping join_trek_and_chat()'s own 10/hr join throttle), so without this
+    // a leaked secret is unbounded mail-bombing capacity. Shared with
+    // send-trek-leave-notification via the same 'trek_email' action so
+    // alternating the two endpoints can't double the effective rate.
+    const { count: emailCount } = await supabase
+      .from("rate_events")
+      .select("*", { count: "exact", head: true })
+      .eq("actor", user_id)
+      .eq("action", "trek_email")
+      .gt("at", new Date(Date.now() - 60 * 60 * 1000).toISOString());
+
+    if ((emailCount ?? 0) >= 10) {
+      console.warn(`Rate limit hit for user ${user_id}, skipping notification email`);
+      return new Response("Rate limited", { status: 429 });
+    }
+
+    await supabase.from("rate_events").insert({ actor: user_id, action: "trek_email" });
+
     const trek = batchResult.data?.treks || {};
     const trekName = trek.title || "the trek";
     const trekPhoto = trek.cover_image_url || "";
@@ -87,6 +137,10 @@ serve(async (req: Request) => {
 
     const subject = `You joined ${trekName}! 🏔️`;
 
+    const trekNameSafe = escapeHtml(trekName);
+    const trekLocationSafe = escapeHtml(trekLocation);
+    const trekPhotoSafe = escapeHtml(trekPhoto);
+
     const htmlContent = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <table width="100%" cellpadding="0" cellspacing="0" role="presentation"
@@ -97,7 +151,7 @@ serve(async (req: Request) => {
               <h1 style="margin: 0 0 10px 0; font-size: 28px;">🎉 Congratulations!</h1>
 
               <h2 style="margin: 0 0 20px 0; font-size: 24px;">
-                You joined <strong>${trekName}</strong>
+                You joined <strong>${trekNameSafe}</strong>
               </h2>
 
               <p style="font-size: 18px; margin: 15px 0;">
@@ -106,13 +160,13 @@ serve(async (req: Request) => {
 
               ${trekLocation ? `
               <p style="font-size: 16px; margin: 10px 0;">
-                <strong>📍 Location:</strong> ${trekLocation}
+                <strong>📍 Location:</strong> ${trekLocationSafe}
               </p>` : ""}
 
               ${trekPhoto ? `
-              <img src="${trekPhoto}"
+              <img src="${trekPhotoSafe}"
                    style="max-width: 100%; height: auto; border-radius: 12px; margin: 20px 0;"
-                   alt="${trekName}">
+                   alt="${trekNameSafe}">
               ` : ""}
 
               <p style="font-size: 16px; line-height: 1.6;">

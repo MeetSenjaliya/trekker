@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState, Suspense } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { createClient } from '@/utils/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -66,9 +66,12 @@ type MessageRow = {
 type MessageRowRT = MessageRow & { conversation_id: string };
 
 function MessagesPageContent() {
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
   useRequireAuth();
   const { user, session } = useAuth();
+  // auth-js hands back a new User object on every tab focus and token refresh, so keying
+  // effects on `user` tears down and recreates the realtime channels. The id is stable.
+  const uid = user?.id ?? null;
   const searchParams = useSearchParams();
 
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -92,6 +95,7 @@ function MessagesPageContent() {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
   const [myName, setMyName] = useState('');
+  const myNameRef = useRef('');
 
   const selectedConvIdRef = useRef<string | null>(null);
   const profileCacheRef = useRef<Map<string, ProfileLite>>(new Map());
@@ -100,16 +104,28 @@ function MessagesPageContent() {
   const typingTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const lastTypingSentRef = useRef(0);
 
+  // supabase.removeChannel() only *starts* the leave: unsubscribe() flips the channel to
+  // 'leaving' synchronously and it stays registered under its topic until the server acks.
+  // A re-run of the effect gets that same dying channel back from channel(), where
+  // subscribe() is a silent no-op — it only acts on state 'closed'. The channel then never
+  // rejoins, and because send() falls back to HTTP the failure is invisible: outgoing works,
+  // incoming presence/broadcast is dead with no error. Chaining setup behind the previous
+  // teardown guarantees each run gets a genuinely new channel.
+  const messagesGateRef = useRef<Promise<unknown>>(Promise.resolve());
+  const presenceGateRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const convId = selectedConversation?.id ?? null;
+
   const startReply = (msg: Msg) => { setReplyTo(msg); setMenuOpen(null); };
 
   // --- KEEPING ALL ORIGINAL LOGIC & API CALLS ---
-  const fetchProfilesMap = async (ids: string[]) => {
+  const fetchProfilesMap = useCallback(async (ids: string[]) => {
     if (!ids || ids.length === 0) return new Map<string, ProfileLite>();
     // Reads only non-PII columns of OTHER users via the public_profiles view (profiles table is now own-row only).
     const { data: profiles, error } = await supabase.from('public_profiles').select('id, full_name, avatar_url').in('id', ids);
     if (error) return new Map<string, ProfileLite>();
     return new Map<string, ProfileLite>((profiles || []).map((p: ProfileLite) => [p.id, p]));
-  };
+  }, [supabase]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     messagesEndRef.current?.scrollIntoView({ behavior });
@@ -118,19 +134,22 @@ function MessagesPageContent() {
   useEffect(() => { scrollToBottom(); }, [messages, scrollToBottom]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!uid) return;
     const load = async () => {
       setLoading(true);
       try {
-        const { data: parts } = await supabase.from('conversation_participants').select('conversation_id').eq('user_id', user.id);
+        getUnreadCounts().then(setUnreadCounts);
+        const { data: parts } = await supabase.from('conversation_participants').select('conversation_id').eq('user_id', uid);
         const convIds = (parts || []).map((p) => p.conversation_id);
         if (convIds.length === 0) return;
-        const { data: convs } = await supabase.from('conversations').select('id, batch_id, name, created_at, trek_batches(trek_id)').in('id', convIds).order('created_at', { ascending: false });
-        const { data: allParts } = await supabase.from('conversation_participants').select('conversation_id, user_id').in('conversation_id', convIds);
+        // Both only need convIds, so they share a round trip; profiles below genuinely depends on allParts.
+        const [{ data: convs }, { data: allParts }] = await Promise.all([
+          supabase.from('conversations').select('id, batch_id, name, created_at, trek_batches(trek_id)').in('id', convIds).order('created_at', { ascending: false }),
+          supabase.from('conversation_participants').select('conversation_id, user_id').in('conversation_id', convIds),
+        ]);
         const participantIds = Array.from(new Set((allParts || []).map((p: ParticipantRow) => p.user_id)));
         const profileMap = await fetchProfilesMap(participantIds);
         profileMap.forEach((p, id) => profileCacheRef.current.set(id, p));
-        getUnreadCounts().then(setUnreadCounts);
         const convObjs = (convs || []).map((c: ConversationRow) => {
           const participantsForConv = (allParts || []).filter((p: ParticipantRow) => p.conversation_id === c.id);
           return {
@@ -144,10 +163,10 @@ function MessagesPageContent() {
       } finally { setLoading(false); }
     };
     load();
-  }, [user]);
+  }, [uid, supabase, fetchProfilesMap]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!uid) return;
     const conversationIdParam = searchParams.get('conversationId');
     const init = async () => {
       if (!conversationIdParam) return;
@@ -163,7 +182,7 @@ function MessagesPageContent() {
       }
     };
     init();
-  }, [searchParams, user, conversations]);
+  }, [uid, searchParams, conversations, supabase, fetchProfilesMap]);
 
   const fetchMessagesPage = async (conversationId: string, before?: string | null) => {
     let query = supabase.from('conversation_messages').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(30);
@@ -189,7 +208,7 @@ function MessagesPageContent() {
   // client subscribes to postgres_changes as anon and RLS silently drops every event.
   useEffect(() => {
     if (session?.access_token) supabase.realtime.setAuth(session.access_token);
-  }, [session?.access_token]);
+  }, [session?.access_token, supabase]);
 
   // Track the open conversation for the global channel callback, and mark it read on open.
   useEffect(() => {
@@ -207,19 +226,30 @@ function MessagesPageContent() {
     if (!user) return;
     fetchProfilesMap([user.id]).then(m => {
       const metaName = (user.user_metadata?.full_name as string | undefined);
-      setMyName(m.get(user.id)?.full_name || metaName || 'Hiker');
+      const name = m.get(user.id)?.full_name || metaName || 'Hiker';
+      // Mirrored into a ref so the presence effect can read it without depending on it.
+      myNameRef.current = name;
+      setMyName(name);
     });
-  }, [user]);
+  }, [user, fetchProfilesMap]);
+
+  // The name resolves after the presence channel is up, so re-track instead of resubscribing.
+  useEffect(() => {
+    if (!uid || !myName) return;
+    presenceChannelRef.current?.track({ user_id: uid, full_name: myName, online_at: new Date().toISOString() });
+  }, [uid, myName]);
 
   // Global channel: live INSERT/UPDATE/DELETE on messages across all my conversations.
   // RLS scopes delivery to conversations I belong to.
   useEffect(() => {
-    if (!user) return;
+    if (!uid) return;
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
     const upsertIncoming = async (row: MessageRowRT) => {
       const openId = selectedConvIdRef.current;
       if (row.conversation_id !== openId) {
-        if (row.user_id !== user.id && !row.is_deleted) {
+        if (row.user_id !== uid && !row.is_deleted) {
           setUnreadCounts(prev => {
             const next = new Map(prev);
             next.set(row.conversation_id, (next.get(row.conversation_id) || 0) + 1);
@@ -232,7 +262,7 @@ function MessagesPageContent() {
       if (reconciledIdsRef.current.has(row.id)) return;
 
       let profile = profileCacheRef.current.get(row.user_id);
-      if (!profile && row.user_id !== user.id) {
+      if (!profile && row.user_id !== uid) {
         profile = (await fetchProfilesMap([row.user_id])).get(row.user_id);
         if (profile) profileCacheRef.current.set(row.user_id, profile);
       }
@@ -244,8 +274,8 @@ function MessagesPageContent() {
       };
       setMessages(prev => {
         if (prev.some(m => m.id === row.id)) return prev;
-        if (row.user_id === user.id) {
-          const idx = prev.findIndex(m => m.isOptimistic && m.sender_id === user.id && m.content === row.message);
+        if (row.user_id === uid) {
+          const idx = prev.findIndex(m => m.isOptimistic && m.sender_id === uid && m.content === row.message);
           if (idx !== -1) {
             reconciledIdsRef.current.add(row.id);
             const copy = [...prev]; copy[idx] = incoming; return copy;
@@ -268,57 +298,79 @@ function MessagesPageContent() {
       setMessages(prev => prev.filter(m => m.id !== row.id));
     };
 
-    const channel = supabase
-      .channel(`messages:${user.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'conversation_messages' }, p => upsertIncoming(p.new as MessageRowRT))
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_messages' }, p => patchExisting(p.new as MessageRowRT))
-      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'conversation_messages' }, p => removeExisting(p.old as { id: string; conversation_id: string }))
-      .subscribe((status, err) => {
-        console.log('[realtime] messages channel:', status, err ?? '');
-      });
+    const started = messagesGateRef.current.then(() => {
+      if (cancelled) return;
+      channel = supabase
+        .channel(`messages:${uid}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'conversation_messages' }, p => upsertIncoming(p.new as MessageRowRT))
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'conversation_messages' }, p => patchExisting(p.new as MessageRowRT))
+        .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'conversation_messages' }, p => removeExisting(p.old as { id: string; conversation_id: string }))
+        .subscribe();
+    });
 
-    return () => { supabase.removeChannel(channel); };
-  }, [user]);
+    return () => {
+      cancelled = true;
+      messagesGateRef.current = started.then(() => channel ? supabase.removeChannel(channel) : undefined);
+    };
+  }, [uid, supabase, fetchProfilesMap]);
 
   // Per-conversation private channel: presence (who's online) + typing broadcast.
   useEffect(() => {
-    if (!user || !selectedConversation) return;
-    const channel = supabase.channel(`conversation:${selectedConversation.id}`, {
-      config: { private: true, presence: { key: user.id }, broadcast: { self: false } },
-    });
+    if (!uid || !convId) return;
+    const typingTimeouts = typingTimeoutsRef.current;
+    let cancelled = false;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    channel.on('presence', { event: 'sync' }, () => {
-      setOnlineUsers(new Set(Object.keys(channel.presenceState())));
-    });
+    const started = presenceGateRef.current.then(() => {
+      if (cancelled) return;
+      // Realtime made presence opt-in server-side, but realtime-js 2.11.15 (pinned by
+      // supabase-js 2.51.0) predates the flag and never sends `enabled`. The server then
+      // skips presence setup and never emits the initial `presence_state` frame — so
+      // RealtimePresence.joinRef stays null, inPendingSyncState() is permanently true, and
+      // every presence_diff is buffered instead of dispatched, with no error anywhere.
+      // subscribe() forwards this object to the server verbatim, so setting the flag here
+      // works ahead of the client upgrade. A variable (not an inline literal) keeps
+      // TypeScript's excess-property check off the older config type.
+      const presence = { key: uid, enabled: true };
+      const ch = supabase.channel(`conversation:${convId}`, {
+        config: { private: true, presence, broadcast: { self: false } },
+      });
+      channel = ch;
 
-    channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
-      const p = payload as { user_id: string; full_name?: string };
-      if (p.user_id === user.id) return;
-      setTypingUsers(prev => { const next = new Map(prev); next.set(p.user_id, p.full_name || 'Hiker'); return next; });
-      const existing = typingTimeoutsRef.current.get(p.user_id);
-      if (existing) clearTimeout(existing);
-      typingTimeoutsRef.current.set(p.user_id, setTimeout(() => {
-        setTypingUsers(prev => { const next = new Map(prev); next.delete(p.user_id); return next; });
-        typingTimeoutsRef.current.delete(p.user_id);
-      }, 3000));
-    });
+      ch.on('presence', { event: 'sync' }, () => {
+        setOnlineUsers(new Set(Object.keys(ch.presenceState())));
+      });
 
-    channel.subscribe(status => {
-      if (status === 'SUBSCRIBED') {
-        channel.track({ user_id: user.id, full_name: myName, online_at: new Date().toISOString() });
-      }
+      ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
+        const p = payload as { user_id: string; full_name?: string };
+        if (p.user_id === uid) return;
+        setTypingUsers(prev => { const next = new Map(prev); next.set(p.user_id, p.full_name || 'Hiker'); return next; });
+        const existing = typingTimeouts.get(p.user_id);
+        if (existing) clearTimeout(existing);
+        typingTimeouts.set(p.user_id, setTimeout(() => {
+          setTypingUsers(prev => { const next = new Map(prev); next.delete(p.user_id); return next; });
+          typingTimeouts.delete(p.user_id);
+        }, 3000));
+      });
+
+      ch.subscribe(status => {
+        if (status === 'SUBSCRIBED') {
+          ch.track({ user_id: uid, full_name: myNameRef.current, online_at: new Date().toISOString() });
+        }
+      });
+      presenceChannelRef.current = ch;
     });
-    presenceChannelRef.current = channel;
 
     return () => {
+      cancelled = true;
       presenceChannelRef.current = null;
-      supabase.removeChannel(channel);
       setOnlineUsers(new Set());
       setTypingUsers(new Map());
-      typingTimeoutsRef.current.forEach(clearTimeout);
-      typingTimeoutsRef.current.clear();
+      typingTimeouts.forEach(clearTimeout);
+      typingTimeouts.clear();
+      presenceGateRef.current = started.then(() => channel ? supabase.removeChannel(channel) : undefined);
     };
-  }, [user, selectedConversation?.id, myName]);
+  }, [uid, convId, supabase]);
 
   const notifyTyping = () => {
     const ch = presenceChannelRef.current;

@@ -1390,3 +1390,65 @@ using (
 -- anon/authenticated on SELECT and INSERT; RLS still on with zero policies;
 -- ledger records 0003. Folded into schema.sql; tests/db/acl.test.ts asserts it.
 -- ============================================================================
+
+
+-- ============================================================================
+-- CRIT-1 follow-up: remove the last embedded key from the notification trigger
+-- (0008_drop-embedded-publishable-key-from-notification-trigger.sql)
+-- ============================================================================
+-- WHY: CRIT-1 (above) pulled the service_role JWT out of the notification
+-- triggers and moved authorization to a Vault secret, but left ONE literal in
+-- notify_trek_participation()'s body: the project's publishable key, sent on
+-- `apikey`, with an inline comment asking whoever rotates the key to come back
+-- and edit the DDL.
+--
+-- This is NOT a disclosure. The publishable key is public by design — it ships
+-- in every browser bundle, and CRIT-1's own note recommended exactly this
+-- substitution. It is a ROTATION TRAP: nothing enforces the comment, so the day
+-- the key is rotated the literal becomes a *wrong* key. The gateway rejects a
+-- wrong key with 401 {"message":"Invalid API key"} BEFORE the function runs,
+-- and the trigger's `exception when others` swallows it — joins and leaves keep
+-- working and the emails silently stop. A stale key is strictly worse than no
+-- key.
+--
+-- KEY INSIGHT (measured, not assumed — live project, 2026-08-26): the header was
+-- never needed. Both functions run verify_jwt=false, and the Supabase gateway
+-- only validates an `apikey` when one is PRESENT:
+--   no apikey      -> request reaches the function (x-served-by:
+--                     supabase-edge-runtime, x-deno-execution-id present); its
+--                     own x-trek-webhook-secret check returns the 401
+--   valid apikey   -> identical
+--   invalid apikey -> gateway 401 "Invalid API key", no execution-id, function
+--                     never runs
+-- CRIT-1's "the header is only used to PASS the gateway" was true of the
+-- verify_jwt=true configuration it was written against; both functions are
+-- verify_jwt=false today.
+--
+-- FIX: drop the `apikey` header and the `v_apikey` declaration entirely. No key
+-- material of any kind remains in DDL, and there is nothing left to keep in
+-- sync on rotation. Authorization is unchanged — the Vault secret
+-- (`edge_function_token`) on `x-trek-webhook-secret`, which both functions
+-- compare in constant time (EDGE-004). Everything else is carried over
+-- verbatim: SECURITY DEFINER, pinned search_path, the skip-when-no-secret
+-- branch, and the exception handler.
+--
+-- Moving the key to Vault was the obvious alternative and is the worse one: it
+-- keeps a rotation step that nothing enforces, for a header that buys nothing.
+--
+-- Test: tests/db/no-embedded-credentials.test.ts — no function body in `public`
+-- may contain an `sb_publishable_…`/`sb_secret_…` or JWT-shaped literal, and
+-- notify_trek_participation() must still send x-trek-webhook-secret and no
+-- apikey. The comment was the control before; now the suite is.
+-- STATUS: APPLIED + VERIFIED LIVE 2026-08-26 10:04:57 UTC. Ledger records 0008
+-- (0001-0008, no gaps). Verified in pg_proc, not just the ledger:
+-- notify_trek_participation() is prosecdef with search_path=public,pg_temp,
+-- still reads edge_function_token and sends x-trek-webhook-secret, still has its
+-- exception handler, and matches neither the key-literal pattern nor 'apikey'.
+-- Widened to the schema: 0 functions in public hold a key or JWT literal. Both
+-- notification triggers on trek_participants present and enabled.
+-- NOT verified: that an email actually sent. net._http_response has no rows for
+-- 2026-08-26 (no join/leave since), and structural checks cannot tell a working
+-- trigger from an inert one -- the storage rate-limit trigger passed every
+-- structural check while recording nothing. Next real join should leave a 2xx in
+-- net._http_response.
+-- ============================================================================

@@ -19,6 +19,11 @@
 --   0001_baseline.sql
 --   0002_trek-returning-and-chat-policy-roles.sql
 --   0003_lock-platform-admins-grants.sql
+--   0004_realtime-private-channel-authorization.sql
+--   0005_cap-trek-profile-bucket-mime.sql
+--   0006_scope-storage-select-to-own-prefix.sql
+--   0007_drop-dead-trek-email-notification-triggers.sql
+--   0008_drop-embedded-publishable-key-from-notification-trigger.sql
 -- ============================================================================
 
 -- ##########################################################################
@@ -3537,4 +3542,422 @@ revoke all on public.platform_admins from anon, authenticated;
 -- ============================================================================
 insert into supabase_migrations.schema_migrations (version, name)
 values ('0003', 'lock-platform-admins-grants')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0004_realtime-private-channel-authorization.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0004 — realtime.messages: private chat channel authorization (record only)
+-- ============================================================================
+-- messages/page.tsx opens `conversation:${id}` with `{ private: true }` for two
+-- things: presence (who's online) and a `typing` broadcast. Supabase private
+-- channels are authorized by RLS on realtime.messages — a table this repo
+-- never touched, which is what REALTIME-002/003 (2026-08-24 pentest) flagged.
+--
+-- realtime.messages is owned by supabase_realtime_admin, not postgres. Verified
+-- live (read-only MCP, 2026-08-25): `postgres` holds no membership in
+-- supabase_realtime_admin (`select rolname from pg_auth_members ... where
+-- member = 'postgres'::regrole` — anon/authenticated/service_role and a few
+-- admin roles, no supabase_realtime_admin). That means `alter table
+-- realtime.messages enable row level security` and `create policy ... on
+-- realtime.messages` can NEVER be run from the SQL Editor on this — or any —
+-- Supabase project: it fails with `must be owner of table messages` by
+-- platform design, not a grant this repo revoked. The only supported path is
+-- the Dashboard: Database → Realtime → Policies.
+--
+-- That path was already used, before this migration existed: querying
+-- pg_class/pg_policy live shows realtime.messages already has RLS enabled and
+-- two policies — "chat members read conversation channel" (select) and "chat
+-- members write conversation channel" (insert) — both `to authenticated`,
+-- both gated on `('conversation:' || conversations.id) = realtime.topic() and
+-- is_chat_participant(conversations.id)`. REALTIME-002/003 is closed in
+-- production. This file exists only to:
+--
+--   1. Record that fact in version control (nothing else in the repo mentions
+--      realtime.messages, and CLAUDE.md is explicit that DB state undocumented
+--      here is state nobody can reason about).
+--   2. Let tests/db (PGlite, connected as an actual superuser — the ownership
+--      restriction above is a hosted-Supabase-only boundary) replay the same
+--      protection, so `tests/db/chat.test.ts` can assert it behaviourally
+--      instead of everyone trusting a comment.
+--
+-- Do NOT paste the ALTER TABLE / CREATE POLICY statements below into the SQL
+-- Editor against production — they will fail with "must be owner of table
+-- messages" exactly as they did the first time this was tried. Only the
+-- ledger INSERT at the bottom targets a table this repo actually owns
+-- (supabase_migrations.schema_migrations); running just that (optional —
+-- bookkeeping only, changes no access rules) records the version. To change
+-- these policies going forward, use the Dashboard, then update this file to
+-- match and re-record it the way 0002 documents an already-applied change.
+
+alter table realtime.messages enable row level security;
+
+drop policy if exists "chat members read conversation channel" on realtime.messages;
+create policy "chat members read conversation channel" on realtime.messages
+  for select to authenticated
+  using (exists (
+    select 1 from public.conversations c
+    where 'conversation:' || c.id::text = realtime.topic()
+      and public.is_chat_participant(c.id)
+  ));
+
+drop policy if exists "chat members write conversation channel" on realtime.messages;
+create policy "chat members write conversation channel" on realtime.messages
+  for insert to authenticated
+  with check (exists (
+    select 1 from public.conversations c
+    where 'conversation:' || c.id::text = realtime.topic()
+      and public.is_chat_participant(c.id)
+  ));
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0004', 'realtime-private-channel-authorization')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0005_cap-trek-profile-bucket-mime.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0005 — cap trek-profile: close the last bucket that can serve a sniffable
+--        Content-Type (STORAGE-002, 2026-08-24 pentest)
+-- ============================================================================
+-- STORAGE-002: public storage objects are served without
+-- `X-Content-Type-Options: nosniff`. Confirmed live 2026-08-25 —
+-- `curl -D - .../storage/v1/object/public/avatars/<uid>/<file>.jpeg` returns
+-- `content-type: image/jpeg`, `cache-control`, and nothing else. The app's own
+-- nosniff header is set in next.config.mjs and covers only the Next.js origin;
+-- every image the app renders resolves on dtjmyqogeozrzzbdjokr.supabase.co,
+-- which is storage-api behind Cloudflare. There is no header configuration for
+-- it, so nosniff CANNOT be added from this repo at all — not from
+-- next.config.mjs, not from a migration.
+--
+-- What IS controllable is what nosniff would be protecting: the Content-Type
+-- itself. A browser only sniffs when the declared type is absent, generic
+-- (application/octet-stream, text/plain) or unknown; a concrete `image/*` is
+-- taken at its word by every current engine, HTML bytes or not. So a bucket
+-- with `allowed_mime_types` restricted to real image types can never produce a
+-- sniffable response, which is the same end state nosniff would buy.
+--
+-- §9/§12.7 already set that on avatars, trek-reviews, company-logos and
+-- trek-images. trek-profile was deliberately left uncapped (14 legacy objects,
+-- no object policies, no client write path — see 0001 §9). That reasoning held
+-- for the rate-limit work it was written for, where the question was abuse
+-- volume. It does not hold here: an uncapped bucket is the one place a
+-- non-image Content-Type could ever be stored, and the exemption also means
+-- "every public bucket is capped" is not an invariant anyone can assert. Cap it
+-- to match the other four. Its 14 existing objects are already image/jpeg and
+-- image/png (verified live over MCP), so nothing in flight breaks; the cap
+-- applies to writes, and this bucket has no write path to break.
+--
+-- Residual risk after this, stated plainly: an authenticated user can still
+-- upload HTML bytes while DECLARING image/png, since storage-api validates the
+-- declared type and does not inspect the bytes. That object is then served as
+-- image/png, which Chrome, Firefox and Safari render as a broken image rather
+-- than a document. The remaining exposure is legacy engines that sniff anyway,
+-- and it lands on the supabase.co origin, not the app's — no app session
+-- cookie is reachable from there. Accepted; see FEATURES.md.
+
+update storage.buckets
+set file_size_limit    = 3145728,  -- 3 MiB, same ceiling and rationale as §9
+    allowed_mime_types = array['image/jpeg','image/png','image/webp']
+where id = 'trek-profile';
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0005', 'cap-trek-profile-bucket-mime')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0006_scope-storage-select-to-own-prefix.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0006 — scope storage SELECT to the caller's own prefix
+--        (public_bucket_allows_listing: avatars, trek-reviews, company-logos,
+--         trek-images)
+-- ============================================================================
+-- §9 and §12.7 gave every bucket a SELECT policy of the shape
+-- `using (bucket_id = '<bucket>')` for role `authenticated`. That was written to
+-- block ANON listing, and it does. What it does not block is listing by any
+-- signed-in user: storage-api's list endpoint is a SELECT over storage.objects,
+-- so one account with the publishable key could enumerate every other account's
+-- folder — i.e. every user UID, and every filename under it — in all four
+-- buckets. The 0001 §10 note calls that deliberate; it is being reversed here.
+-- The note's own reasoning is why it is safe to reverse: object URLs do not go
+-- through RLS at all. All five buckets are public, so the CDN path
+-- (/storage/v1/object/public/...) serves bytes with no session, which is how
+-- every image in the app actually resolves — getPublicUrl() builds a string and
+-- makes no request. The app has no list(), download() or createSignedUrl() call
+-- anywhere (src/, e2e/, supabase/functions/), so nothing reads these buckets
+-- through the authenticated path except the upload itself.
+--
+-- Uploads keep working: upload(..., { upsert: true }) inserts with RETURNING,
+-- and RETURNING is checked against the SELECT policy — but every write policy
+-- below already confines a writer to the prefix these SELECT policies grant, so
+-- a caller can always read back exactly what it was allowed to write.
+--
+-- Write policies are untouched. Only SELECT changes.
+
+-- ---- avatars ----------------------------------------------------------------
+-- Ownership must accept BOTH layouts the write policies accept — avatars/{uid}/file
+-- and the legacy flat avatars/{uid}.ext. foldername() drops the last segment, so
+-- for a flat name it returns {} and [1] is NULL; a folder-prefix-only policy
+-- would leave the 1 flat object live in production outside its own owner's
+-- SELECT, and break that owner's next upsert on the RETURNING check.
+drop policy if exists "Public can view avatars" on storage.objects;
+drop policy if exists "Authenticated users can view avatars" on storage.objects;
+drop policy if exists "Authenticated users can view own avatars" on storage.objects;
+drop policy if exists "Users can view own avatars" on storage.objects;
+create policy "Users can view own avatars" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'avatars'
+         and ((storage.foldername(name))[1] = auth.uid()::text
+              or name like auth.uid()::text || '.%'));
+
+-- ---- trek-reviews -----------------------------------------------------------
+-- Same key layout as avatars minus the flat variant: the write policies only
+-- ever accept trek-reviews/{uid}/file, and all 11 live objects match.
+drop policy if exists "Public Access" on storage.objects;
+drop policy if exists "Authenticated users can view review photos" on storage.objects;
+drop policy if exists "Users can view own review photos" on storage.objects;
+create policy "Users can view own review photos" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'trek-reviews'
+         and (storage.foldername(name))[1] = auth.uid()::text);
+
+-- ---- company-logos ----------------------------------------------------------
+-- Keyed by company_id, so "own prefix" is "a company I belong to".
+-- is_company_member, NOT is_company_writable/is_approved_company_member: the
+-- status tiers in §16 gate PUBLISHING, and a frozen company's staff still need
+-- to see their own branding in the dashboard. Reading back your own file is not
+-- the capability those tiers exist to withhold.
+drop policy if exists "Authenticated users can view company logos" on storage.objects;
+drop policy if exists "Company members can view own logo" on storage.objects;
+create policy "Company members can view own logo" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'company-logos'
+         and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+-- ---- trek-images ------------------------------------------------------------
+-- is_company_member for the same reason as company-logos; the approved-only gate
+-- stays where it belongs, on insert/update/delete.
+drop policy if exists "Authenticated users can view trek images" on storage.objects;
+drop policy if exists "Company members can view own trek images" on storage.objects;
+create policy "Company members can view own trek images" on storage.objects
+  for select to authenticated
+  using (bucket_id = 'trek-images'
+         and public.is_company_member(((storage.foldername(name))[1])::uuid));
+
+-- ---- trek-profile: nothing to do --------------------------------------------
+-- It has no object policies at all, so RLS already denies every authenticated
+-- SELECT on it. Its 14 objects are reachable by public URL only, which is the
+-- end state this migration puts the other four in.
+
+-- Known edge, stated rather than defended against: the two company buckets cast
+-- the first path segment to uuid. A non-uuid FOLDER name there would raise
+-- 22P02 on read instead of filtering the row out. Nothing can create one — the
+-- insert policies carry the same cast, so an authenticated write with a
+-- non-uuid prefix is rejected before the row exists (a flat name yields NULL,
+-- not an error, and is simply invisible). Only a service_role write, e.g. a
+-- manual dashboard upload into a folder like `temp/`, could introduce one.
+-- Live check at time of writing: 0 such objects in either bucket.
+
+-- ============================================================================
+-- SUPERSEDES the 0001 §10 advisor note
+-- ============================================================================
+-- `public_bucket_allows_listing` is no longer accepted for avatars,
+-- trek-reviews, company-logos or trek-images. All four now scope SELECT to the
+-- caller's own prefix; only trek-profile remains flagged, and it has no SELECT
+-- policy to widen. The 0001 text is history and stays as written.
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0006', 'scope-storage-select-to-own-prefix')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0007_drop-dead-trek-email-notification-triggers.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0007 — drop the dead notify_trek_join / notify_trek_remove path
+-- ============================================================================
+-- `0001` §"notify_trek_join / notify_trek_remove" installed two AFTER triggers
+-- on `trek_participants` that `net.http_post` to
+-- `/functions/v1/trek-email-notification`. That edge function has never
+-- existed: `list_edge_functions` over the read-only MCP (2026-08-25, EDGE-001)
+-- returns only `send-trek-notification` and `send-trek-leave-notification`.
+-- The pentest's `404` on that slug was an unmatched route, not a broken
+-- deployment.
+--
+-- So every join and every leave has been queuing a pg_net request to a URL that
+-- 404s, holding the response in `net._http_response` until pg_net's retention
+-- sweeps it. The emails users actually receive come from a different pair of
+-- triggers on the same table — `trek-join-notification` /
+-- `trek-leave-notification` → `notify_trek_participation()` → the two functions
+-- that do exist — which are untouched here.
+--
+-- Two reasons not to leave this in place as merely inert:
+--   * The live function bodies hard-code a legacy anon key (`0001` replaced it
+--     with a placeholder rather than reproducing it). That key class is now
+--     DISABLED on the project, so the header is a dead credential sitting in a
+--     function body — nothing to rotate, but nothing that should stay either.
+--   * `notify_trek_join()` has no exception handler, unlike
+--     `notify_trek_participation()`, whose `exception when others` comment
+--     spells out why a notification must not roll back the transaction. A
+--     `net.http_post` that raises here — pg_net absent after a restore, its
+--     queue table unavailable — aborts the enclosing INSERT, i.e. fails the
+--     join itself. It has not fired, but the shape is wrong.
+--
+-- Triggers first, then the functions they reference.
+drop trigger if exists trek_join_email_trigger on public.trek_participants;
+drop trigger if exists trek_remove_email_trigger on public.trek_participants;
+
+drop function if exists public.notify_trek_join();
+drop function if exists public.notify_trek_remove();
+
+-- ============================================================================
+-- SUPERSEDES the 0001 note on these two functions
+-- ============================================================================
+-- `0001`'s "these are effectively redundant/dead" is resolved rather than
+-- restated: the path is gone. `notify_trek_participation()` and its
+-- `trek-join-notification` / `trek-leave-notification` triggers remain the only
+-- notification path on `trek_participants`. The `0001` text is history and
+-- stays as written.
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0007', 'drop-dead-trek-email-notification-triggers')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0008_drop-embedded-publishable-key-from-notification-trigger.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0008 — drop the embedded publishable key from notify_trek_participation()
+-- ============================================================================
+-- `0001` §notify_trek_participation embeds the project's publishable key as a
+-- literal in the function body and sends it on `apikey`, with an inline comment
+-- telling whoever rotates the key to come back and edit the DDL. Nothing
+-- enforces that. The key is public by design (it ships in the browser bundle),
+-- so this was never a disclosure — it is a rotation trap: the day the key is
+-- rotated the literal becomes a *wrong* key, and a wrong key is strictly worse
+-- than none (see below). The trigger swallows every error, so the failure mode
+-- is silent — joins and leaves keep working and the emails just stop.
+--
+-- The premise behind the header was wrong. `0001`'s comment says the key "rides
+-- on `apikey` only for gateway routing"; measured against the live project
+-- (2026-08-26), routing does not need it. Both notification functions run
+-- `verify_jwt=false`, and the Supabase gateway only validates an `apikey` when
+-- one is present:
+--
+--   no apikey     -> 401 from the FUNCTION (x-served-by: supabase-edge-runtime,
+--                    x-deno-execution-id present) — the request reached the
+--                    function and its own x-trek-webhook-secret check rejected it
+--   valid apikey  -> same: reaches the function, same 401
+--   invalid apikey-> 401 {"message":"Invalid API key"} from the GATEWAY, no
+--                    execution-id header — the function never runs
+--
+-- So the header buys nothing and costs a silent outage on rotation. Dropping it
+-- leaves no key material of any kind in DDL and nothing to keep in sync.
+--
+-- Authorization is unchanged and was never the `apikey`: it is the shared secret
+-- read from Vault (`edge_function_token`) and sent on `x-trek-webhook-secret`,
+-- which both functions compare in constant time. Everything else about the
+-- function — SECURITY DEFINER (to read `vault.decrypted_secrets`), the pinned
+-- search_path, the skip-when-no-secret branch, and the `exception when others`
+-- that keeps a failed notification from rolling back a join or leave — is
+-- carried over verbatim.
+create or replace function public.notify_trek_participation()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_secret text;
+  v_base   text := 'https://dtjmyqogeozrzzbdjokr.supabase.co/functions/v1/';
+  v_url    text;
+  v_body   jsonb;
+begin
+  select decrypted_secret into v_secret
+  from vault.decrypted_secrets
+  where name = 'edge_function_token'
+  limit 1;
+
+  if v_secret is null or length(btrim(v_secret)) = 0 then
+    return coalesce(new, old);   -- no secret yet -> skip, never block join/leave
+  end if;
+
+  if tg_op = 'INSERT' then
+    v_url  := v_base || 'send-trek-notification';
+    v_body := jsonb_build_object(
+      'type','INSERT','table','trek_participants','schema','public',
+      'record', to_jsonb(new), 'old_record', null
+    );
+  elsif tg_op = 'DELETE' then
+    v_url  := v_base || 'send-trek-leave-notification';
+    v_body := jsonb_build_object(
+      'type','DELETE','table','trek_participants','schema','public',
+      'record', null, 'old_record', to_jsonb(old)
+    );
+  else
+    return coalesce(new, old);
+  end if;
+
+  -- No `apikey` header on purpose: the gateway routes verify_jwt=false
+  -- functions without one, and a stale literal here would 401 at the gateway
+  -- and be swallowed by the handler below. Do not re-add one.
+  perform net.http_post(
+    url := v_url,
+    body := v_body,
+    headers := jsonb_build_object(
+      'Content-Type','application/json',
+      'x-trek-webhook-secret', v_secret   -- the only credential; authorizes inside the fn
+    ),
+    timeout_milliseconds := 5000
+  );
+
+  return coalesce(new, old);
+exception when others then
+  return coalesce(new, old);     -- notification failure must not roll back the tx
+end;
+$$;
+
+-- `create or replace` preserves the ACL, and this function is reached only as a
+-- trigger (Postgres checks EXECUTE at CREATE TRIGGER time, not at fire time), so
+-- there is nothing to re-grant. The `trek-join-notification` /
+-- `trek-leave-notification` triggers on `trek_participants` are untouched and
+-- pick up the new body on their next fire.
+
+-- ============================================================================
+-- SUPERSEDES the 0001 note on notify_trek_participation
+-- ============================================================================
+-- `0001`'s "the PUBLIC publishable key rides on `apikey` only for gateway
+-- routing" and the two inline "routing only" comments no longer describe the
+-- function. The `0001` text is history and stays as written.
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0008', 'drop-embedded-publishable-key-from-notification-trigger')
 on conflict (version) do nothing;
