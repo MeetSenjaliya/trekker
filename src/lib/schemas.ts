@@ -1,5 +1,12 @@
 import { z } from 'zod'
 
+// Zod feature-detects its JIT validator with `new Function('')`. The throw is
+// caught, but the enforced production CSP has no 'unsafe-eval', so the browser
+// still reports a securitypolicyviolation on every page that loads this module.
+// jitless skips the probe and keeps the (already used) interpreted path.
+// Must run before any schema below is constructed.
+z.config({ jitless: true })
+
 // Shared input validation. This module is framework-agnostic (only depends on
 // zod) so the same schemas can be reused client-side in forms and server-side
 // once Route Handlers / Server Actions land. Keep it free of React, Next, or

@@ -1529,6 +1529,8 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **A PostgREST embed (`?select=*,profiles(email,full_name)`) nulling out the joined `profiles` row for a stranger is RLS working, not a bug to "fix" by loosening a policy.** `trek_reviews` is intentionally public-read (`"Reviews are viewable by everyone"`), so the review row itself stays visible to any user, but `profiles` keeps its own own-row-only SELECT policy — PostgREST compiles the embed to a join, and RLS is evaluated per-row inside that join same as a top-level query, so the `profiles` side comes back `null` for anyone but the reviewer. Manually confirmed against production 2026-08-24 (pentest Day 2, `result.md`) across `trek_reviews`, `trek_participants`, `conversation_messages` and a 3-level nested embed — none leaked another user's email/phone through a join. Regression-tested at the SQL level (the identical join-time RLS mechanism PostgREST embedding relies on) in `tests/db/tenant-boundaries.test.ts` block 6. **If a future embed ever returns real PII for a row the requester doesn't own, the bug is in the `profiles` policy, not the join** — don't "fix" a null embed by widening `"Users can view own profile"`.
 
+- **`z.config({ jitless: true })` at the top of [`src/lib/schemas.ts`](src/lib/schemas.ts) is load-bearing for the CSP, not a performance knob.** Zod feature-detects its JIT validator with `new Function("")` at schema-construction time; the throw is caught, but an enforced `script-src` without `'unsafe-eval'` reports the violation first — one per page load, on any route whose chunk pulls (or merely prefetches) the schemas module. Removing the call, or moving it below the first schema definition in that file, brings the noise back. Its only functional effect is keeping the interpreted parse path, which is what the app got under the CSP anyway.
+
 - **A denied SELECT must return the identical zero-row shape whether the id doesn't exist or exists but isn't yours — any difference is a count/existence oracle.** PostgREST exposes this as the `Content-Range` header on `Prefer: count=exact` requests; at the SQL level it's just `select … where id = $1` returning `[]` either way, never an error. Manually confirmed against production 2026-08-24 (pentest Day 2) on `profiles` and `conversation_messages`; regression-tested in `tests/db/tenant-boundaries.test.ts` block 7 (`profiles`, real-other-id vs. nonexistent-id, same empty shape).
 
 ---
@@ -1537,6 +1539,34 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## Zod's eval probe was the only thing tripping the enforced CSP  ·  2026-09-01
+
+Sentry `JAVASCRIPT-NEXTJS-8` ("Blocked 'script' from 'eval:'") has been firing on
+every page load since the CSP was promoted — across HeadlessChrome, Safari and
+Chrome from different IPs, on `/`, `/explore`, `/messages` and
+`/auth/reset-password`, so **not** a browser extension (headless Chrome runs
+none), and reproducible in a clean headless Chromium against production.
+
+The source is zod 4.4.3: `util.allowsEval` feature-detects the JIT validator with
+`new Function("")` when a schema is constructed. The throw is caught and zod falls
+back to the interpreted path — nothing was broken — but the browser reports the
+violation *before* the catch, so it fired on every route whose chunk pulls
+[`src/lib/schemas.ts`](src/lib/schemas.ts), including routes that only prefetch
+one (`<Link>` to `/auth/login` from the homepage). Signal-to-noise on the CSP
+report endpoint was the actual cost.
+
+Fix is zod's own documented escape hatch, one call at the top of `schemas.ts`
+before any schema is constructed:
+
+```ts
+z.config({ jitless: true })
+```
+
+`jitless` both skips the probe and keeps the interpreted parse path the app was
+already getting. Verified with a temporary test that proxied `globalThis.Function`
+while importing the module: it trips without the call and is clean with it. No
+CSP change — `'unsafe-eval'` stays out of the production policy.
 
 ## CSP promoted from report-only to enforcing  ·  2026-09-01
 
