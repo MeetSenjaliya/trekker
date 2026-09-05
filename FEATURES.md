@@ -39,12 +39,11 @@ _Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newe
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
 | 1 | **Apply [`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql)** in the SQL editor | `companies.website` is rendered into an `href` on the public storefront **and** on the platform-admin review page, and `z.url()` accepted `javascript:` / `data:` / `vbscript:`. The Zod half is fixed in this change; until the migration is applied, a caller skipping the form still writes an executable scheme straight over PostgREST | [§3](#company-website-urls-are-pinned-to-https--2026-09-05) |
-| 2 | **Push.** `a1` is 20 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **the migrations, the 124-test suite, the chat indexes, the security headers and now the CVE bumps** — exists only on one branch. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
-| 3 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
-| 4 | **After** #3 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 5 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-| 6 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
-| 7 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
+| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
+| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
+| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
+| 6 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
 > **The DB backlog has one item again as of 2026-09-05.**
 > `0014_pin-company-website-to-an-http-scheme` is written, tested (58 cases in
 > `tests/db/input-constraints.test.ts`, migrations replay clean) and **not yet
@@ -1747,7 +1746,16 @@ page errors, hydration confirmed and the JSON-LD block present.
 `'unsafe-inline'`/`'unsafe-eval'` out of `script-src`. 201 tests green, lint
 clean at its usual 15 warnings.
 
-**Deploy note:** `CSP_ENFORCE=1` is already set in Vercel, so this ships
+**Live in production since 2026-09-05** (commit `d28f895`, deploy
+`dpl_FvPML7NDFuDKB3xrpQY313Nb2XCc`). Re-verified against the deployed origin
+rather than `next start`: the header is `Content-Security-Policy`, not
+report-only; `script-src` reads `'self' 'nonce-<32 hex>' 'strict-dynamic'` with
+no `'unsafe-inline'`; three consecutive requests returned three different
+nonces; and every `<script>` on `/`, `/about`, `/explore` and a real
+`/trek/[id]` carries the nonce the response header names — 16, 18 and 20 tags
+respectively, none without, the `application/ld+json` block included.
+
+**Deploy note:** `CSP_ENFORCE=1` was already set in Vercel, so this shipped
 *enforcing* on the first deploy — there is no report-only lap unless the var is
 removed for one. The authenticated routes (`/dashboard`, `/messages`,
 `/profile`) could not be exercised locally without credentials; they render the
