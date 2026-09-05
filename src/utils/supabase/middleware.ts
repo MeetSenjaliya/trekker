@@ -1,9 +1,25 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-export async function updateSession(request: NextRequest) {
+export async function updateSession(
+  request: NextRequest,
+  extraRequestHeaders: Record<string, string> = {},
+) {
+  // Headers the render pass should see that the browser did not send — the CSP
+  // nonce, and the policy Next reads it back out of. Snapshotted at every
+  // NextResponse.next() rather than once, because request.cookies.set() below
+  // writes through to the same headers and a stale copy would forward a
+  // pre-refresh session cookie.
+  const forwardedRequest = () => {
+    const headers = new Headers(request.headers)
+    for (const [key, value] of Object.entries(extraRequestHeaders)) {
+      headers.set(key, value)
+    }
+    return { headers }
+  }
+
   let supabaseResponse = NextResponse.next({
-    request,
+    request: forwardedRequest(),
   })
 
   const supabase = createServerClient(
@@ -17,7 +33,7 @@ export async function updateSession(request: NextRequest) {
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
           supabaseResponse = NextResponse.next({
-            request,
+            request: forwardedRequest(),
           })
           cookiesToSet.forEach(({ name, value, options }) =>//remove options if not needed
             supabaseResponse.cookies.set(name, value, options)

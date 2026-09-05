@@ -1,8 +1,23 @@
 import { type NextRequest } from 'next/server'
 import { updateSession } from '@/utils/supabase/middleware'
+import { buildCsp, cspHeaderName } from '@/utils/csp'
 
 export async function proxy(request: NextRequest) {
-  return await updateSession(request)
+  // 128 bits of unguessable, and already base64-value-safe characters.
+  const nonce = crypto.randomUUID().replace(/-/g, '')
+  const csp = buildCsp(nonce)
+
+  // Next mints the nonce onto its own script tags by re-reading the policy off
+  // the *request*; `x-nonce` is for our own markup (JsonLd) to pick up through
+  // headers(). Report-only and enforcing are both read, so the request copy
+  // carries whichever name the response is about to use.
+  const response = await updateSession(request, {
+    'x-nonce': nonce,
+    [cspHeaderName.toLowerCase()]: csp,
+  })
+  response.headers.set(cspHeaderName, csp)
+
+  return response
 }
 
 export const config = {
@@ -16,6 +31,10 @@ export const config = {
      *   so the auth guard below would 307 every bot to /auth/login)
      * - .well-known (Chrome DevTools probes this on every dev session)
      * Feel free to modify this pattern to include more paths.
+     *
+     * Everything excluded here is a subresource or a text file, so none of it
+     * needs the CSP the proxy now also mints — a policy only means anything on
+     * the document that loads them.
      *
      * `missing` drops prefetch requests: updateSession() calls auth.getUser(),
      * which for a signed-in user is a network round trip to Supabase Auth, and

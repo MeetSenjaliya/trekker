@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { connection } from 'next/server';
 import './globals.css';
 import Header from '@/components/layout/Header';
 import Footer from '@/components/layout/Footer';
@@ -30,11 +31,19 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Every page has to render at request time, because the CSP nonce the proxy
+  // mints only exists once there is a request: a prerendered page would carry
+  // no nonce on its script tags and hydrate into nothing under the policy.
+  // Costs less than it reads — the proxy's auth.getUser() already made every
+  // document request a round trip, so what is given up is the React render of
+  // four auth screens and /about, not a CDN hit.
+  await connection();
+
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="antialiased bg-slate-50 min-h-screen flex flex-col font-sans">
