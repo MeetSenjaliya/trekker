@@ -113,12 +113,15 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid | **PK** |
-| `name` | text | **NOT NULL**, CHECK non-blank |
+| `name` | text | **NOT NULL**, CHECK non-blank, ≤ 100 chars (`companies_name_len`, 0015) |
 | `slug` | text | **NOT NULL, UNIQUE**, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$`, ≤ 60 chars. Public URL `/company/[slug]`; **immutable** — pinned to OLD by `trg_protect_company_admin_fields` for non-platform-admins (blocks slug hijack of old links). No rename path in v1 |
-| `description` / `logo_url` / `cover_image_url` / `contact_email` / `contact_phone` | text | storefront profile, editable by company owner/admin. `description`, `contact_email` and `contact_phone` are bounded in `src/lib/schemas.ts` and nowhere else — `0009`/`0011` never reached this table |
+| `description` | text | ≤ 1000 chars (`companies_description_len`, 0015) |
+| `contact_email` | text | ≤ 254 chars (`companies_contact_email_len`, 0015 — RFC 5321's forward-path limit, added to Zod in the same change because `z.email()` imposes no length at all) and one `@` with no whitespace either side (`companies_contact_email_format`, 0015 — deliberately coarser than Zod, which already refuses `a@localhost`). `''` and NULL pass both |
+| `contact_phone` | text | ≤ 20 chars (`companies_contact_phone_len`, 0015) and digits/whitespace/`+`/`(`/`)`/`-` only (`companies_contact_phone_format`, 0015 — the same class 0013 put on `profiles`). `''` and NULL pass both |
+| `logo_url` / `cover_image_url` | text | storefront art, written by the app from a storage upload path. **Still uncapped** — no Zod rule to mirror, so 0015 left them alone |
 | `website` | text | storefront profile. CHECK `^https?://` case-insensitive (`companies_website_scheme`, 0014) — it is rendered into an `href` on the public storefront and on the admin review page, and bare `z.url()` accepted `javascript:`/`data:`/`vbscript:`. NULL passes (blank field: both writers send `website \|\| null`); `''` does not |
 | `status` | `company_status` | **NOT NULL** default `'pending'`, indexed. Only platform admins can change it (trigger-pinned) |
-| `rejection_reason` | text | set by `reject_company()` / `suspend_company()` |
+| `rejection_reason` | text | set by `reject_company()` / `suspend_company()`. **Uncapped on purpose** — no Zod counterpart, and `trg_protect_company_admin_fields` pins it to OLD for non-platform-admins, so it has no untrusted writer |
 | `created_by` | uuid | **NOT NULL**, FK → `auth.users(id)`. Partial unique index `companies_one_pending_per_creator`: **one pending application per user** (spam guard; rejected users can reapply) |
 | `approved_by` / `approved_at` | uuid / timestamptz | audit trail, set by `approve_company()` |
 | `created_at` | timestamptz | `now()` |

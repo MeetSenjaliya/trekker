@@ -38,16 +38,17 @@ _Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | **Apply [`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql)** in the SQL editor | `companies.website` is rendered into an `href` on the public storefront **and** on the platform-admin review page, and `z.url()` accepted `javascript:` / `data:` / `vbscript:`. The Zod half is fixed in this change; until the migration is applied, a caller skipping the form still writes an executable scheme straight over PostgREST | [§3](#company-website-urls-are-pinned-to-https--2026-09-05) |
+| 1 | **Apply [`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql) then [`0015_cap-the-companies-table.sql`](supabase/migrations/0015_cap-the-companies-table.sql)** in the SQL editor | `0014` is the one with an abuse story: `companies.website` is rendered into an `href` on the public storefront **and** on the platform-admin review page, and `z.url()` accepted `javascript:` / `data:` / `vbscript:`. `0015` is the tail — `name`, `description`, `contact_email` and `contact_phone` on the same table are still bounded in `src/lib/schemas.ts` and nowhere else, because `0009`/`0011` never reached `companies`. Both Zod halves are already deployed | [§3](#company-website-urls-are-pinned-to-https--2026-09-05) · [§3](#the-companies-table-gets-the-caps-0009-and-0011-skipped--2026-09-05) |
 | 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
 | 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
 | 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
 | 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
 | 6 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
-> **The DB backlog has one item again as of 2026-09-05.**
-> `0014_pin-company-website-to-an-http-scheme` is written, tested (58 cases in
-> `tests/db/input-constraints.test.ts`, migrations replay clean) and **not yet
-> applied** — the ledger still reads `0001`–`0013`. It is #1 in §1.0 above.
+> **The DB backlog has two items again as of 2026-09-05.**
+> `0014_pin-company-website-to-an-http-scheme` and `0015_cap-the-companies-table`
+> are written, tested (69 cases in `tests/db/input-constraints.test.ts`,
+> migrations replay clean) and **not yet applied** — the ledger still reads
+> `0001`–`0013`. They are #1 in §1.0 above, in that order.
 >
 > **The DB backlog was empty as of 2026-09-05.** `0013_format-checks-on-profile-phone-columns`
 > is **applied and verified live** — ledger row `0013` at `06:51:12+00`, `0001`–`0013`
@@ -1647,6 +1648,54 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## The companies table gets the caps 0009 and 0011 skipped  ·  2026-09-05
+
+`0009` took the six columns the Day 7 pentest named and `0011` swept up the
+rest — except that neither touched `public.companies` at all. `0014` found the
+gap while pinning `website` to an http(s) scheme and recorded it rather than
+widening itself;
+[`0015_cap-the-companies-table.sql`](supabase/migrations/0015_cap-the-companies-table.sql)
+is that follow-up. Same class as `0011`: no abuse story, just a rule living in
+`src/lib/schemas.ts` and nowhere else, on a table any signed-up user reaches
+over PostgREST by calling `apply_for_company()` and then updating their own row.
+
+Every bound is the existing Zod value — `name` 100, `description` 1000,
+`contact_phone` 20 — plus the phone character class `0013` put on
+`profiles.phone_no` / `profiles.emergency_no`, which both company schemas have
+carried in Zod since validation landed.
+
+**`contact_email` had to have its rule finished before it could be mirrored.**
+`z.email()` validates shape and imposes no length whatsoever — a 300-character
+local part parses, verified against the pinned `zod@4.5.4` — so there was no
+number to copy, and inventing one in the database alone would have made it
+stricter than the form and bounced a value the user had just been told was
+fine. So the cap lands in both places at once, as `0014` did with the scheme
+rule: `contactEmailField` now carries `.max(254)`, RFC 5321's forward-path
+limit, and `companies_contact_email_len` mirrors it. The format CHECK is
+deliberately coarser than Zod's — one `@`, no whitespace, something either side
+— because Zod already refuses `a@localhost`, a quoted local part and a unicode
+address, so the constraint can only fire on a value that never went near the
+form. Writing Zod's own email regex into a CHECK would be re-implementing a
+validity spec in a second language, which is how the two quietly stop agreeing.
+
+`''` passes both new contact checks, as it does in Zod — a deliberate difference
+from `companies_website_scheme`, which rejects it: that column is an `href` sink
+and its rule is about what a browser would execute, so "not a URL at all" is the
+whole point.
+
+**Deliberately still uncapped:** `rejection_reason` (no Zod counterpart, and
+`protect_company_admin_fields()` pins it to `OLD` for anyone who is not a
+platform admin, so `reject_company()` / `suspend_company()` are the only
+writers), and `logo_url` / `cover_image_url` (written by the app from a storage
+upload path, never typed into a form — directly writable and worth their own
+look, but a cap picked here would be a guess about a path format).
+
+Live data checked over the read-only MCP first: 5 companies, longest name 17,
+description 31, `contact_email` 27, `contact_phone` 13, `rejection_reason` null
+on every row, 0 rows failing any of the five rules. No backfill. Eleven cases
+added to `tests/db/input-constraints.test.ts` and two to
+`src/lib/schemas.test.ts`; 229 tests green.
 
 ## Company website URLs are pinned to `http(s)`  ·  2026-09-05
 

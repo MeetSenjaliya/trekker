@@ -253,6 +253,67 @@ describe('input validation CHECK constraints', () => {
     })
   })
 
+  describe('companies (0015)', () => {
+    // 0009/0011 never reached this table. Every bound here is the Zod one, and
+    // the phone character class is the same one 0013 put on profiles.
+    const setCompany = (col: string, value: string | null) =>
+      asSuperuser(db, (tx) =>
+        tx.query(`update public.companies set ${col} = $1 where id = $2`, [
+          value,
+          ids.company.approved,
+        ]),
+      )
+
+    const caps: [string, number][] = [
+      ['name', 100],
+      ['description', 1000],
+      ['contact_phone', 20],
+      ['contact_email', 254],
+    ]
+
+    for (const [col, cap] of caps) {
+      // contact_email/contact_phone also carry a format rule, so pad with a
+      // value that satisfies it rather than with 'x'.
+      const fill = (n: number) =>
+        col === 'contact_email'
+          ? 'a'.repeat(n - '@ex.co'.length) + '@ex.co'
+          : col === 'contact_phone'
+            ? '9'.repeat(n)
+            : 'x'.repeat(n)
+
+      it(`rejects a ${col} one character over ${cap}`, async () => {
+        await expect(setCompany(col, fill(cap + 1))).rejects.toThrow(/violates check constraint/i)
+      })
+
+      it(`accepts a ${col} of exactly ${cap}`, async () => {
+        await expect(setCompany(col, fill(cap))).resolves.toBeDefined()
+      })
+    }
+
+    it('rejects a contact_phone that is not a phone number', async () => {
+      await expect(setCompany('contact_phone', 'call me maybe')).rejects.toThrow(
+        /violates check constraint/i,
+      )
+      await expect(setCompany('contact_phone', '+91 (987) 654-3210')).resolves.toBeDefined()
+    })
+
+    it('rejects a contact_email that is not an address', async () => {
+      for (const bad of ['not an email', 'https://example.com', 'a@b@c', 'a b@example.com']) {
+        await expect(setCompany('contact_email', bad)).rejects.toThrow(
+          /violates check constraint/i,
+        )
+      }
+      await expect(setCompany('contact_email', 'ops@himalayan-trails.example')).resolves.toBeDefined()
+    })
+
+    it("still accepts '' and null on both optional contact columns, as Zod does", async () => {
+      for (const col of ['contact_email', 'contact_phone']) {
+        await expect(setCompany(col, '')).resolves.toBeDefined()
+        await expect(setCompany(col, null)).resolves.toBeDefined()
+      }
+    })
+  })
+
   describe('trek text columns', () => {
     const insertTrekText = (col: string, value: string) =>
       asSuperuser(db, (tx) =>

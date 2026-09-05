@@ -94,6 +94,17 @@ export const announcementSchema = z
   .min(1, 'Announcement cannot be empty')
   .max(2000, 'Announcement is too long (2000 characters max)')
 
+// z.email() enforces shape and no length at all — a 300-character local part
+// passes — so on its own it leaves the column with a format rule and no size,
+// the storage-amplification shape the DB caps exist to close. 254 is RFC 5321's
+// limit on a forward path, so it rejects nothing a mail server would deliver to.
+// `companies_contact_email_len` in migration 0015 is the same bound in the
+// database.
+const contactEmailField = z.union([
+  z.literal(''),
+  z.email('Please enter a valid email').max(254, 'Email must be 254 characters or fewer'),
+])
+
 // Both company screens render this value straight into an `href`, and React does
 // not sanitize one. Bare `z.url()` accepts any scheme, so `javascript:`/`data:`
 // would pass the form and become a click-to-execute link on the public
@@ -121,7 +132,7 @@ export const companyApplicationSchema = z.object({
     .max(60, 'Must be 60 characters or fewer')
     .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, 'Lowercase letters, numbers and hyphens only (e.g. himalayan-trails)'),
   description: optionalText(1000),
-  contactEmail: z.union([z.literal(''), z.email('Please enter a valid email')]),
+  contactEmail: contactEmailField,
   contactPhone: z
     .string()
     .trim()
@@ -135,7 +146,7 @@ export const companyApplicationSchema = z.object({
 export const companyProfileSchema = z.object({
   name: z.string().trim().min(1, 'Company name is required').max(100, 'Must be 100 characters or fewer'),
   description: optionalText(1000),
-  contactEmail: z.union([z.literal(''), z.email('Please enter a valid email')]),
+  contactEmail: contactEmailField,
   contactPhone: z
     .string()
     .trim()

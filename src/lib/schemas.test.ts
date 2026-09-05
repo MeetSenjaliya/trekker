@@ -137,6 +137,32 @@ describe('company website', () => {
   )
 })
 
+describe('company contact email', () => {
+  const base = {
+    name: 'Himalayan Trails',
+    slug: 'himalayan-trails',
+    description: '',
+    contactPhone: '',
+    website: '',
+  }
+  const parse = (contactEmail: string) =>
+    companyApplicationSchema.safeParse({ ...base, contactEmail }).success
+
+  // z.email() imposes no length of its own, so without .max(254) the column has
+  // a shape rule and no size. 254 is RFC 5321's forward-path limit.
+  const address = (len: number) => 'a'.repeat(len - '@ex.co'.length) + '@ex.co'
+
+  it('accepts blank, a normal address, and exactly 254 characters', () => {
+    expect(parse('')).toBe(true)
+    expect(parse('ops@himalayan-trails.com')).toBe(true)
+    expect(parse(address(254))).toBe(true)
+  })
+
+  it('rejects 255 characters', () => {
+    expect(parse(address(255))).toBe(false)
+  })
+})
+
 describe('messageSchema', () => {
   it('rejects empty / whitespace messages', () => {
     expect(messageSchema.safeParse('   ').success).toBe(false)

@@ -1782,3 +1782,64 @@ using (
 -- '^https?://' uses no ARE extensions, unlike 0013's `\d`/`\s`, so this one
 -- should be a formality, but check it rather than assume it.
 -- ============================================================================
+
+-- ============================================================================
+-- 0015 — the companies table, which 0009/0011 never reached (2026-09-05)
+-- ============================================================================
+-- FINDING: 0009 capped the six columns the Day 7 pentest named and 0011 swept
+-- up the rest, but neither touched public.companies. name, description,
+-- contact_email and contact_phone were bounded in src/lib/schemas.ts and
+-- nowhere else, on a table any signed-up user reaches over PostgREST with the
+-- publishable key -- apply_for_company(), then update your own row. Found while
+-- writing 0014, which recorded the gap rather than widening itself.
+--
+-- FIX: the existing Zod values, not new judgements -- name <= 100,
+-- description <= 1000, contact_phone <= 20 -- plus the phone character class
+-- 0013 put on profiles.phone_no/emergency_no, which both company schemas have
+-- carried in Zod all along. `*` not `+`, so '' passes as it does in Zod.
+--
+-- contact_email had to have its rule finished before it could be mirrored.
+-- z.email() validates shape and imposes no length at all (a 300-character local
+-- part parses -- verified against the pinned zod@4.5.4), so there was no number
+-- to copy, and inventing one in the database alone would have made it stricter
+-- than the form and bounced a value the user had just been told was fine. The
+-- cap therefore lands in both places at once, as 0014 did with the scheme rule:
+-- contactEmailField now carries .max(254) -- RFC 5321's forward-path limit, so
+-- it rejects nothing a mail server would deliver to -- and
+-- companies_contact_email_len mirrors it.
+--
+-- The email format CHECK is deliberately coarser than Zod's: one @, no
+-- whitespace, something either side. Zod already refuses a bare a@localhost, a
+-- quoted local part and a unicode address, so everything the form accepts
+-- passes this and the constraint can only fire on a value that never went near
+-- the form. Writing Zod's own email regex into a CHECK would be
+-- re-implementing a validity spec in a second language, which is how the two
+-- quietly stop agreeing.
+--
+-- '' passes both new contact checks, as it does in Zod. Deliberately unlike
+-- companies_website_scheme (0014), which rejects '': that column is an href
+-- sink and its rule is about what a browser would execute.
+--
+-- Deliberately not here:
+--   rejection_reason  no Zod counterpart, and protect_company_admin_fields()
+--                     pins it to OLD for anyone who is not a platform admin, so
+--                     reject_company()/suspend_company() are the only writers.
+--   logo_url,         written by the app from a storage upload path, never
+--   cover_image_url   typed into a form. Directly writable and worth their own
+--                     look, but a cap picked here would be a guess about a path
+--                     format.
+--
+-- Existing data checked over the read-only MCP immediately before writing:
+-- 5 companies, longest name 17, description 31, contact_email 27,
+-- contact_phone 13, rejection_reason null on every row, 0 rows failing any of
+-- the five rules. No backfill, no NOT VALID staging.
+--
+-- Test: tests/db/input-constraints.test.ts -- eleven cases through asSuperuser,
+-- each length bound asserted on both sides. Plus two in src/lib/schemas.test.ts
+-- for the new Zod cap.
+-- STATUS: NOT YET APPLIED. Ledger reads 0001-0013; apply after 0014. Then
+-- confirm all six constraints read convalidated in pg_constraint and
+-- re-evaluate both regexes on the live server (PGlite 18 vs production 17) --
+-- the phone class uses the same `\d`/`\s` ARE extensions 0013 had to check,
+-- and [:space:] in the email pattern is a POSIX class worth confirming too.
+-- ============================================================================
