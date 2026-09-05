@@ -24,6 +24,12 @@
 --   0006_scope-storage-select-to-own-prefix.sql
 --   0007_drop-dead-trek-email-notification-triggers.sql
 --   0008_drop-embedded-publishable-key-from-notification-trigger.sql
+--   0009_add-input-validation-check-constraints.sql
+--   0010_close-blank-message-bypass-and-clamp-signup-name.sql
+--   0011_cap-remaining-zod-only-text-columns.sql
+--   0012_enforce-trek-email-rate-limit-in-postgres.sql
+--   0013_format-checks-on-profile-phone-columns.sql
+--   0014_pin-company-website-to-an-http-scheme.sql
 -- ============================================================================
 
 -- ##########################################################################
@@ -3960,4 +3966,574 @@ $$;
 -- ============================================================================
 insert into supabase_migrations.schema_migrations (version, name)
 values ('0008', 'drop-embedded-publishable-key-from-notification-trigger')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0009_add-input-validation-check-constraints.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0009 — teach the database the length and range caps the forms already enforce
+-- ============================================================================
+-- Six columns are validated in `src/lib/schemas.ts` and nowhere else. Zod runs
+-- in the browser, so every one of these caps is advisory: the app talks to
+-- PostgREST with the publishable key, and a caller who skips the form — curl,
+-- the browser console, any REST client — writes whatever it likes. The 2026-08
+-- Day 7 pentest pass recorded all six (`strix-prompts/day 7 results.md`, and
+-- `TEST.md` §7.2.1 for the message case, which is the one with a real abuse
+-- story: an unbounded `message` is a storage and render-cost amplifier against
+-- every other member of a batch chat).
+--
+-- `post_batch_announcement()` already restates the 2000-char cap, but only for
+-- announcements, and only because that RPC happens to be the one write path
+-- that goes through a function. A direct insert into `conversation_messages`
+-- has never had a server-side bound. That is the bypass this closes.
+--
+-- Range, not just length: `estimated_cost` accepted negatives (a trek that pays
+-- you to attend) and both `max_participants` columns accepted zero and negative
+-- capacity. Zero is rejected rather than merely negatives — a departure with
+-- zero seats is not a state the product has any meaning for, and NULL already
+-- carries "no limit". `src/lib/schemas.ts` moves to a `>= 1` floor in the same
+-- change so the form still answers with an inline message instead of letting a
+-- constraint violation surface raw.
+--
+-- NULL is deliberately still accepted on all five nullable columns: a CHECK
+-- evaluates to unknown on NULL and passes. `full_name` NULL is the intended
+-- "unset" (`handle_new_user()` inserts `nullif(trim(...), '')`), and
+-- `max_participants` NULL is "uncapped". Nothing about the unset case changes.
+--
+-- Only upper bounds on the two text columns. `length(message) >= 1` would look
+-- symmetrical with `messageSchema` and would break message deletion: the client
+-- soft-deletes by setting `is_deleted = true, message = ''`
+-- (`src/app/(trekker)/messages/page.tsx:444`), so the empty string is a
+-- load-bearing value, not a gap.
+--
+-- Safe to apply with no backfill and no NOT VALID staging. Checked against the
+-- live project over the read-only MCP on 2026-09-02, immediately before writing
+-- this: 0 rows violate any of the six. Widest values seen were an 811-char
+-- message, an 18-char full_name and a 6-char bio, against caps of 2000/100/500.
+--
+-- `drop constraint if exists` before each `add constraint` because Postgres has
+-- no `add constraint if not exists` and this file has to survive being run
+-- twice in the SQL Editor. No earlier migration needed this — the idempotence
+-- elsewhere comes free from `create or replace` / `if not exists`.
+
+-- ---- conversation_messages -------------------------------------------------
+alter table public.conversation_messages
+  drop constraint if exists conversation_messages_message_len;
+alter table public.conversation_messages
+  add constraint conversation_messages_message_len check (length(message) <= 2000);
+
+-- ---- treks -----------------------------------------------------------------
+alter table public.treks
+  drop constraint if exists treks_estimated_cost_nonneg;
+alter table public.treks
+  add constraint treks_estimated_cost_nonneg check (estimated_cost >= 0);
+
+alter table public.treks
+  drop constraint if exists treks_max_participants_positive;
+alter table public.treks
+  add constraint treks_max_participants_positive check (max_participants > 0);
+
+-- ---- trek_batches ----------------------------------------------------------
+alter table public.trek_batches
+  drop constraint if exists trek_batches_max_participants_positive;
+alter table public.trek_batches
+  add constraint trek_batches_max_participants_positive check (max_participants > 0);
+
+-- ---- profiles --------------------------------------------------------------
+-- Mirrors profileUpdateSchema / accountNameSchema (100) and the bio cap (500).
+-- signUpSchema.fullName had no cap at all until this change; without the
+-- matching Zod `.max(100)` a long signup name would fail inside
+-- handle_new_user(), after auth.users already had the row.
+alter table public.profiles
+  drop constraint if exists profiles_full_name_len;
+alter table public.profiles
+  add constraint profiles_full_name_len check (length(full_name) <= 100);
+
+alter table public.profiles
+  drop constraint if exists profiles_bio_len;
+alter table public.profiles
+  add constraint profiles_bio_len check (length(bio) <= 500);
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0009', 'add-input-validation-check-constraints')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0010_close-blank-message-bypass-and-clamp-signup-name.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0010 — finish the message bypass 0009 half-closed, and stop a long signup
+--        name from failing the signup outright
+-- ============================================================================
+-- Two follow-ons from 0009, found by re-reading it against the live database on
+-- 2026-09-02 rather than against the finding list it was written from.
+--
+-- ---------------------------------------------------------------------------
+-- 1. `conversation_messages.message` had a ceiling and no floor
+-- ---------------------------------------------------------------------------
+-- `0009` added `length(message) <= 2000` and stopped there, so a direct
+-- PostgREST insert could still write `''` or `'   '`. `messageSchema` requires
+-- at least one character after trimming; the database did not. That is the same
+-- skip-the-form bypass `0009` set out to close, left open on the other side.
+--
+-- The floor cannot be unconditional. Soft-delete is an UPDATE setting
+-- `is_deleted = true, message = ''` (`src/app/(trekker)/messages/page.tsx:444`),
+-- so the empty string is load-bearing for exactly one row shape. The constraint
+-- therefore allows blank only on a row that is marked deleted — which is why
+-- `0009` deliberately shipped no floor at all rather than a wrong one.
+--
+-- The constraint alone would be close to decorative. Nothing pinned
+-- `is_deleted` on insert: the `Send messages` policy checks `user_id`, chat
+-- participation and `is_announcement = false`, so a client could insert a blank
+-- row with `is_deleted = true` and satisfy the new CHECK on the way past. The
+-- policy is replaced here to pin `is_deleted` the same way it already pins
+-- `is_announcement`. A message can only be *born* live and non-blank; deletion
+-- stays an UPDATE, which is the only thing that could ever have blanked it.
+--
+-- `coalesce(is_deleted, false)` in both, not a bare `= false`: the column is
+-- nullable, and an explicit null would otherwise make the policy's comparison
+-- null and reject a write the app never intended to send. The app's insert
+-- (`page.tsx:398`) omits the column entirely and takes the `false` default, so
+-- this changes nothing for it either way — it is the unknown client that the
+-- coalesce protects.
+--
+-- `Edit own messages` (UPDATE) is deliberately untouched. It is the delete
+-- path: pinning `is_deleted` there would make deletion impossible. Blanking a
+-- message *without* deleting it is already refused by the new CHECK.
+--
+-- ---------------------------------------------------------------------------
+-- 2. `handle_new_user()` had no clamp, so `0009` made it a failure path
+-- ---------------------------------------------------------------------------
+-- The trigger copies `raw_user_meta_data->>'full_name'` into `profiles`
+-- unbounded. Before `0009` a long name was simply stored. Since `0009` it hits
+-- `profiles_full_name_len` and raises.
+--
+-- The blast radius is smaller than it first looks and worth stating precisely,
+-- because the earlier note on this was wrong: `on_auth_user_created` is an
+-- AFTER INSERT trigger with no exception handler, running in the same
+-- transaction as the `auth.users` insert. A CHECK violation therefore aborts
+-- the whole transaction and the `auth.users` row rolls back with it. There is
+-- no half-created account — the signup fails cleanly, with an opaque 500.
+--
+-- Today that is reachable only by calling the GoTrue signup API directly, since
+-- `signUpSchema.fullName` gained a matching `.max(100)` in `0009`'s change. It
+-- becomes reachable by ordinary users the day a social provider is added:
+-- provider display names are unbounded and not ours to validate. `email` is the
+-- only provider on the project right now (5 identities, longest metadata name
+-- 15 chars), so this is pre-emptive.
+--
+-- Clamping rather than raising is the right trade for a cosmetic field. A name
+-- that is too long is not a reason to refuse someone an account, and a 500 from
+-- inside a trigger is the least debuggable way to tell them. `left()` is
+-- null-safe and runs after the existing `nullif(trim(...), '')`, so the "unset"
+-- null is unchanged.
+--
+-- Everything else about the function is carried over verbatim: SECURITY
+-- DEFINER, the pinned search_path, the account_type branch and its
+-- anything-but-'company' fallback, and `on conflict (id) do nothing`.
+--
+-- ---------------------------------------------------------------------------
+-- Existing data: checked over the read-only MCP on 2026-09-02 immediately
+-- before writing. 76 messages, 0 blank, 0 blank-and-not-deleted, 0 deleted rows
+-- carrying text. No backfill.
+
+-- ---- 1a. the floor -----------------------------------------------------------
+alter table public.conversation_messages
+  drop constraint if exists conversation_messages_message_not_blank;
+alter table public.conversation_messages
+  add constraint conversation_messages_message_not_blank
+  check (coalesce(is_deleted, false) or length(btrim(message)) > 0);
+
+-- ---- 1b. pin is_deleted on insert -------------------------------------------
+-- Reproduces the `0001` policy verbatim plus the final clause. Roles
+-- (`authenticated`) and permissiveness are unchanged.
+drop policy if exists "Send messages" on public.conversation_messages;
+create policy "Send messages" on public.conversation_messages
+  for insert to authenticated
+  with check (
+    user_id = auth.uid()
+    and is_chat_participant(conversation_id)
+    and is_announcement = false
+    and coalesce(is_deleted, false) = false
+  );
+
+-- ---- 2. clamp the signup name -----------------------------------------------
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  insert into public.profiles (id, email, full_name, account_type)
+  values (
+    new.id,
+    new.email,
+    -- Clamped, not validated: profiles_full_name_len (0009) would otherwise
+    -- raise here and abort the enclosing auth.users insert.
+    left(nullif(trim(new.raw_user_meta_data->>'full_name'), ''), 100),
+    case
+      when new.raw_user_meta_data->>'account_type' = 'company'
+        then 'company'::public.account_type
+      else 'trekker'::public.account_type
+    end
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+-- `create or replace` preserves the ACL, and the function is reached only as a
+-- trigger, so there is nothing to re-grant. `on_auth_user_created` on
+-- auth.users is untouched and picks up the new body on its next fire.
+
+-- ============================================================================
+-- SUPERSEDES the 0009 note on the message floor
+-- ============================================================================
+-- `0009`'s "Only upper bounds on the two text columns" explained why an
+-- unconditional `length(message) >= 1` was wrong. That reasoning stands; the
+-- conditional floor added here is what it was missing. The `0009` text is
+-- history and stays as written.
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0010', 'close-blank-message-bypass-and-clamp-signup-name')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0011_cap-remaining-zod-only-text-columns.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0011 — cap the text columns still bounded only by Zod
+-- ============================================================================
+-- The tail of `0009`. That migration took the six columns the Day 7 pentest
+-- pass named; these eight are the rest of the same class — a cap that exists in
+-- `src/lib/schemas.ts` and nowhere else, so a caller who skips the form skips
+-- the cap. No abuse story attached to any of them, which is why they were not
+-- in the finding list: unlike `conversation_messages.message`, nothing here
+-- fans out to other users' render cost. They are storage-side sloppiness rather
+-- than a lever, and the reason to close them is that a rule enforced in one
+-- place is a rule that quietly stops being true in the other.
+--
+-- Every bound below is the existing Zod value, not a new judgement:
+--
+--   treks.title             150   trekFormSchema.title
+--   treks.description      2000   optionalText(2000)
+--   treks.location          200   optionalText(200)
+--   treks.meeting_point     300   optionalText(300)
+--   treks.meeting_point2    300   optionalText(300)
+--   treks.gear_checklist   2000   see below
+--   profiles.emergency_contact 100   profileUpdateSchema.emergencyContactName
+--   profiles.emergency_no       20   profileUpdateSchema.emergencyContactPhone
+--
+-- `gear_checklist` is text[], and its Zod cap is on the raw textarea before the
+-- split: 2000 characters including the newlines. `array_to_string(..., E'\n')`
+-- reconstructs exactly that string, so the constraint is the same bound on the
+-- same value rather than an approximation of it (a per-element or array-length
+-- cap would be a different rule wearing the same number).
+--
+-- Deliberately not capped:
+--
+--   profiles.phone_no   No Zod counterpart — profileUpdateSchema carries the
+--                       emergency contact's phone, not the user's own. Capping
+--                       it would be inventing a limit rather than mirroring
+--                       one. It is also unclear anything still writes it; the
+--                       profile editor writes emergency_contact/emergency_no
+--                       only.
+--   treks.plan          Not on the trek form at all.
+--   treks.rating        Legacy static column, no longer surfaced.
+--
+-- Also noticed while mapping these, and NOT addressed here because it is a
+-- client bug rather than a schema one: `emergencyContactRelationship` is
+-- collected and validated at 60 chars and then written to no column —
+-- `src/app/(trekker)/profile/edit/page.tsx:176-177` persists the name and phone
+-- and drops it. There is no column to constrain.
+--
+-- NULL passes every one of these, as in `0009`. `treks.title` is NOT NULL and
+-- keeps its own constraint for that.
+--
+-- Existing data: checked over the read-only MCP on 2026-09-02 immediately
+-- before writing. 0 rows exceed any bound; widest values were title 27/150,
+-- description 93/2000, location 23/200, both meeting points 89/300,
+-- gear_checklist 46/2000 across at most 3 items, emergency_contact 7/100 and
+-- emergency_no 10/20. No backfill, no NOT VALID staging.
+--
+-- `drop constraint if exists` before each `add constraint`, as in `0009` — the
+-- file has to survive a second run in the SQL Editor.
+
+-- ---- treks -----------------------------------------------------------------
+alter table public.treks drop constraint if exists treks_title_len;
+alter table public.treks
+  add constraint treks_title_len check (length(title) <= 150);
+
+alter table public.treks drop constraint if exists treks_description_len;
+alter table public.treks
+  add constraint treks_description_len check (length(description) <= 2000);
+
+alter table public.treks drop constraint if exists treks_location_len;
+alter table public.treks
+  add constraint treks_location_len check (length(location) <= 200);
+
+alter table public.treks drop constraint if exists treks_meeting_point_len;
+alter table public.treks
+  add constraint treks_meeting_point_len check (length(meeting_point) <= 300);
+
+alter table public.treks drop constraint if exists treks_meeting_point2_len;
+alter table public.treks
+  add constraint treks_meeting_point2_len check (length(meeting_point2) <= 300);
+
+alter table public.treks drop constraint if exists treks_gear_checklist_len;
+alter table public.treks
+  add constraint treks_gear_checklist_len
+  check (length(array_to_string(gear_checklist, E'\n')) <= 2000);
+
+-- ---- profiles --------------------------------------------------------------
+alter table public.profiles drop constraint if exists profiles_emergency_contact_len;
+alter table public.profiles
+  add constraint profiles_emergency_contact_len check (length(emergency_contact) <= 100);
+
+alter table public.profiles drop constraint if exists profiles_emergency_no_len;
+alter table public.profiles
+  add constraint profiles_emergency_no_len check (length(emergency_no) <= 20);
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0011', 'cap-remaining-zod-only-text-columns')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0012_enforce-trek-email-rate-limit-in-postgres.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0012 — move the 10/hour notification-email cap out of the edge functions
+--        and into Postgres
+-- ============================================================================
+-- `send-trek-notification` and `send-trek-leave-notification` cap outbound mail
+-- at 10/hour per recipient (EDGE-003). Until now that cap lived entirely in
+-- TypeScript: both functions counted `rate_events` rows themselves and decided
+-- whether to send. Two holes in that shape:
+--
+--   * It is a policy the caller enforces on itself. Both functions hold the
+--     SECRET key, which bypasses RLS on `rate_events`, so the count is advisory
+--     — anything holding that key (a future revision of either function, a
+--     leaked secret used against PostgREST directly) can mail without counting.
+--   * Check-then-insert is not atomic. Ten concurrent webhook calls each read
+--     a count of 9 and each send; the real cap was "10 + concurrency".
+--
+-- A BEFORE INSERT trigger on the log table closes both: the insert IS the
+-- gate, so no send can be recorded without being counted, and an advisory lock
+-- keyed on the recipient serialises the read-modify-write so concurrent callers
+-- queue instead of racing.
+--
+-- The log table is `rate_events` rather than a new one: it already is the
+-- dedicated rate-limit log (0001 §13.1 — zero policies, zero client grants,
+-- pruned hourly by pg_cron), and both functions already share the one
+-- 'trek_email' action so alternating endpoints cannot double the rate. A second
+-- table would need its own index, RLS, prune job and would split that counter
+-- in two. The trigger is scoped with WHEN so the other actions ('join',
+-- 'invite', 'avatar', …) are untouched.
+--
+-- The functions still count: 0012 does not replace their check, it makes the
+-- insert the authority. The deployed functions insert AFTER deciding to send,
+-- which under this trigger would let the 10th email through and raise on the
+-- 11th attempt; they are updated in the same change to insert first and treat
+-- P0001 as their 429.
+
+create or replace function public.enforce_trek_email_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_count int;
+begin
+  -- Serialise per recipient. Without this two concurrent inserts both read the
+  -- same pre-cap count and both succeed; the lock is held to end of transaction
+  -- and only ever contends with another email for the same user.
+  perform pg_advisory_xact_lock(hashtextextended('trek_email:' || new.actor::text, 0));
+
+  select count(*) into v_count
+  from public.rate_events
+  where actor = new.actor
+    and action = 'trek_email'
+    and at > now() - interval '1 hour';
+
+  if v_count >= 10 then
+    raise exception 'Too many trek notification emails for this recipient in the last hour.'
+      using errcode = 'P0001';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists rate_events_trek_email_rate_limit on public.rate_events;
+create trigger rate_events_trek_email_rate_limit
+  before insert on public.rate_events
+  for each row
+  when (new.action = 'trek_email')
+  execute function public.enforce_trek_email_rate_limit();
+
+-- Mirror §17.4 of 0001: Postgres checks EXECUTE at CREATE TRIGGER time, not when
+-- the trigger fires, so no caller needs the grant. The default PUBLIC grant is
+-- what would otherwise put a new SECURITY DEFINER function on anon's list.
+revoke execute on function public.enforce_trek_email_rate_limit() from public, anon;
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0012', 'enforce-trek-email-rate-limit-in-postgres')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0013_format-checks-on-profile-phone-columns.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0013 — phone columns must look like phone numbers
+-- ============================================================================
+-- `0009`/`0011` mirrored the Zod *length* caps into the database. This mirrors
+-- the other half of the same rule: `profileUpdateSchema.emergencyContactPhone`
+-- has carried `.regex(/^[\d\s+()-]*$/, 'Enter a valid phone number')` since Zod
+-- validation landed, and like every other browser-side rule it is advisory —
+-- the app writes through PostgREST with the publishable key, so a caller who
+-- skips the form writes a paragraph into `emergency_no`.
+--
+-- The character class is the Zod one, unchanged: digits, whitespace, `+`, `(`,
+-- `)`, `-`. `\d` and `\s` mean the same thing in a Postgres ARE as in the JS
+-- regex, so this is the same rule and not a re-interpretation of it. `*` and
+-- not `+`: the empty string passes in Zod (the field is optional), and NULL
+-- passes any CHECK, so "unset" stays unset in both spellings.
+--
+-- Deliberately not a validity rule. `+91 (987) 654-3210`, `9876543210` and
+-- `((((` all pass; the constraint rejects the class of value that is not a
+-- phone number *at all* — an email, a URL, a sentence, a script tag — which is
+-- what an unconstrained free-text column collects. Anything narrower would be
+-- inventing a national format the form has never asked for.
+--
+-- ---- phone_no ---------------------------------------------------------------
+-- `0011` left this column alone, reasoning that a cap with no Zod counterpart
+-- would be invented rather than mirrored. That still holds for the *length*
+-- taken on its own, but it stops holding once the column has a format: every
+-- other phone field in the app (`emergencyContactPhone`, `contactPhone` on both
+-- company schemas) is capped at 20, and a format rule with no bound still
+-- accepts a megabyte of digits — the storage-amplification shape the length
+-- caps exist to close. So the two land together, and 20 is the app's own
+-- number rather than a new judgement.
+--
+-- `phone_no` has no writer in the app today (the profile editor persists
+-- `emergency_contact`/`emergency_no` only; `get_company_batch_participants`
+-- reads it into the roster). It is still directly writable over PostgREST by
+-- the profile's owner, which is the only reason to constrain it.
+--
+-- Existing data: checked over the read-only MCP immediately before writing.
+-- 5 profiles; `phone_no` set on 1, `emergency_no` on 3, longest value 10 chars
+-- on both, 0 rows failing either regex. No backfill, no NOT VALID staging.
+--
+-- `drop constraint if exists` before each `add constraint`, as in `0009`/`0011`.
+
+alter table public.profiles drop constraint if exists profiles_phone_no_len;
+alter table public.profiles
+  add constraint profiles_phone_no_len check (length(phone_no) <= 20);
+
+alter table public.profiles drop constraint if exists profiles_phone_no_format;
+alter table public.profiles
+  add constraint profiles_phone_no_format check (phone_no ~ '^[\d\s+()-]*$');
+
+alter table public.profiles drop constraint if exists profiles_emergency_no_format;
+alter table public.profiles
+  add constraint profiles_emergency_no_format check (emergency_no ~ '^[\d\s+()-]*$');
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0013', 'format-checks-on-profile-phone-columns')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0014_pin-company-website-to-an-http-scheme.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0014 — companies.website must carry an http(s) scheme
+-- ============================================================================
+-- The same shape as `0009`/`0011`/`0013` — a rule that lived only in
+-- `src/lib/schemas.ts` gets its twin in the database — but this one is a live
+-- XSS sink rather than storage sloppiness, and the Zod rule it mirrors did not
+-- exist until now either.
+--
+-- `companyApplicationSchema.website` and `companyProfileSchema.website` were
+-- `z.url()`, which validates *URL syntax* and says nothing about the scheme:
+-- `javascript:alert(1)`, `data:text/html,…` and `vbscript:…` all parse and all
+-- passed. Both values are rendered straight into an `href` that React does not
+-- sanitize —
+--
+--   src/app/company/[slug]/page.tsx        public storefront, target=_blank
+--   src/app/admin/companies/[id]/page.tsx  platform-admin review page, same tab
+--
+-- so the reachable chain is: anyone signs up, applies for a company with a
+-- `javascript:` website, and the platform admin runs it in their own session by
+-- clicking the link on the page where they decide whether to approve. Approval
+-- then ships it to every visitor of the storefront.
+--
+-- Nothing in the database stopped it: before this migration `public.companies`
+-- carried `companies_name_check` and `companies_slug_check` and no bound on
+-- `website` at all, so the value reached the column whether it came through the
+-- form or straight over PostgREST with the publishable key.
+--
+-- The scheme is the whole rule. `^https?://` is not a URL validity check — the
+-- Zod side does that, and this is deliberately the coarser twin, in the spirit
+-- of `0013`: it rejects the class of value that cannot be a website link at
+-- all, which here means anything the browser would execute rather than fetch.
+-- `~*` and not `~` because `new URL()` lowercases the scheme before Zod's
+-- `protocol` regex sees it, so `HTTPS://example.com` passes the form and has to
+-- pass here too.
+--
+-- The empty string fails this check, and that is intentional: both writers
+-- (`applyForCompany`, `updateCompanyProfile` in `src/lib/company.ts`) already
+-- send `website || null`, so a blank field is NULL and NULL passes any CHECK.
+-- Only a caller bypassing the app can produce `''`, and `''` is not a website.
+--
+-- Deliberately not here: a length cap. `0009`/`0011` never reached this table —
+-- `companies.name`, `description`, `contact_email` and `contact_phone` are all
+-- still Zod-only — and `website` has no Zod cap to mirror, so a number picked
+-- here would be invented (`0011`'s stated reason for leaving `phone_no` alone).
+-- Capping the table is its own migration, not a thing this one does by halves.
+--
+-- Existing data: checked over the read-only MCP immediately before writing.
+-- 5 companies, `website` set on 4, longest 18 chars, 0 rows failing the regex.
+-- No backfill, no NOT VALID staging.
+--
+-- `drop constraint if exists` before the `add constraint`, as in `0009`/`0011`.
+
+alter table public.companies drop constraint if exists companies_website_scheme;
+alter table public.companies
+  add constraint companies_website_scheme check (website ~* '^https?://');
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0014', 'pin-company-website-to-an-http-scheme')
 on conflict (version) do nothing;

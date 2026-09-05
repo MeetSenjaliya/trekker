@@ -84,10 +84,12 @@ describe('trekRow', () => {
     // The text fields use `|| null`, which would turn 0 into null. The numeric
     // fields deliberately do not, so a free trek stays free rather than
     // becoming "price unknown". This pins that asymmetry.
-    const row = trekRow({ ...baseTrek, estimatedCost: 0, distanceKm: 0, maxParticipants: 0 })
+    // maxParticipants is not in this set: 0 seats is rejected by both
+    // optionalInt and the max_participants > 0 CHECK (0009), so the mapper can
+    // never be handed one.
+    const row = trekRow({ ...baseTrek, estimatedCost: 0, distanceKm: 0 })
     expect(row.estimated_cost).toBe(0)
     expect(row.distance_km).toBe(0)
-    expect(row.max_participants).toBe(0)
   })
 
   it('passes explicit nulls through for numeric fields', () => {

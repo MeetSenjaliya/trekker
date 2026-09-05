@@ -24,7 +24,7 @@ const newPassword = z.string().min(8, 'Password must be at least 8 characters')
 
 export const signUpSchema = z
   .object({
-    fullName: z.string().trim().min(1, 'Full name is required'),
+    fullName: z.string().trim().min(1, 'Full name is required').max(100, 'Must be 100 characters or fewer'),
     email: emailField,
     password: newPassword,
     confirmPassword: z.string().min(1, 'Please confirm your password'),
@@ -94,6 +94,21 @@ export const announcementSchema = z
   .min(1, 'Announcement cannot be empty')
   .max(2000, 'Announcement is too long (2000 characters max)')
 
+// Both company screens render this value straight into an `href`, and React does
+// not sanitize one. Bare `z.url()` accepts any scheme, so `javascript:`/`data:`
+// would pass the form and become a click-to-execute link on the public
+// storefront and on the admin's review page. `companies_website_scheme` in
+// migration 0014 is the same rule in the database, for callers that skip the
+// form entirely.
+const websiteField = z.union([
+  z.literal(''),
+  z.url({
+    protocol: /^https?$/,
+    hostname: z.regexes.domain,
+    error: 'Please enter a valid URL (include https://)',
+  }),
+])
+
 // Company application (multi-tenant Phase B). Slug rule and 60-char cap match
 // the CHECK constraints on public.companies / the apply_for_company() RPC, so
 // anything that passes here won't bounce off the database.
@@ -112,7 +127,7 @@ export const companyApplicationSchema = z.object({
     .trim()
     .max(20, 'Phone must be 20 characters or fewer')
     .regex(/^[\d\s+()-]*$/, 'Enter a valid phone number'),
-  website: z.union([z.literal(''), z.url('Please enter a valid URL (include https://)')]),
+  website: websiteField,
 })
 
 // Company profile edit (dashboard settings). Same fields as the application
@@ -126,7 +141,7 @@ export const companyProfileSchema = z.object({
     .trim()
     .max(20, 'Phone must be 20 characters or fewer')
     .regex(/^[\d\s+()-]*$/, 'Enter a valid phone number'),
-  website: z.union([z.literal(''), z.url('Please enter a valid URL (include https://)')]),
+  website: websiteField,
 })
 
 // '' -> null, otherwise a non-negative number. Trek form numeric fields arrive
@@ -138,11 +153,18 @@ const optionalNumber = (label: string) =>
     .refine((v) => v === '' || (!Number.isNaN(Number(v)) && Number(v) >= 0), `${label} must be a non-negative number`)
     .transform((v) => (v === '' ? null : Number(v)))
 
+// Capacity fields. '' -> null, which the DB reads as "no limit"; anything else
+// must be a whole number of 1 or more, matching the max_participants > 0 CHECK
+// on treks and trek_batches (0009). Zero would otherwise reach the DB and come
+// back as a raw constraint violation.
 const optionalInt = (label: string) =>
   z
     .string()
     .trim()
-    .refine((v) => v === '' || (/^\d+$/.test(v) && Number(v) >= 0), `${label} must be a whole number`)
+    .refine(
+      (v) => v === '' || (/^\d+$/.test(v) && Number(v) >= 1),
+      `${label} must be a whole number of 1 or more`,
+    )
     .transform((v) => (v === '' ? null : Number(v)))
 
 export const difficultyValues = ['Easy', 'Moderate', 'Hard', 'Expert'] as const

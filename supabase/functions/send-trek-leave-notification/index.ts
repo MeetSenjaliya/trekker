@@ -103,19 +103,24 @@ serve(async (req: Request) => {
     // a leaked secret is unbounded mail-bombing capacity. Shared with
     // send-trek-notification via the same 'trek_email' action so alternating
     // the two endpoints can't double the effective rate.
-    const { count: emailCount } = await supabase
+    //
+    // The cap itself is a trigger on rate_events (migration 0012), not this
+    // code: the client here holds the SECRET key and bypasses RLS, so a check
+    // made here would be one the caller enforces on itself. Log first and let
+    // the insert be the gate — a P0001 back from it means the 10/hour cap is
+    // already spent, and logging before sending is what stops a probe dodging
+    // the counter by erroring out later.
+    const { error: rateError } = await supabase
       .from("rate_events")
-      .select("*", { count: "exact", head: true })
-      .eq("actor", user_id)
-      .eq("action", "trek_email")
-      .gt("at", new Date(Date.now() - 60 * 60 * 1000).toISOString());
+      .insert({ actor: user_id, action: "trek_email" });
 
-    if ((emailCount ?? 0) >= 10) {
+    if (rateError?.code === "P0001") {
       console.warn(`Rate limit hit for user ${user_id}, skipping notification email`);
       return new Response("Rate limited", { status: 429 });
     }
-
-    await supabase.from("rate_events").insert({ actor: user_id, action: "trek_email" });
+    if (rateError) {
+      console.error("Rate-limit log insert failed:", rateError.message);
+    }
 
     const trek = batchResult.data?.treks || {};
     const trekName = trek.title || "the trek";

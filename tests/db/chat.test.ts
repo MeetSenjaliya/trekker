@@ -145,6 +145,43 @@ describe('chat isolation', () => {
       ).rejects.toThrow(/row-level security/i)
     })
 
+    it('refuses a message that arrives already soft-deleted', async () => {
+      // is_deleted is pinned on insert the same way is_announcement is (0010).
+      // Without it the conversation_messages_message_not_blank CHECK is close to
+      // decorative: its only escape hatch is a deleted row, so a blank flood
+      // just sets the flag on the way past. Deletion stays an UPDATE.
+      await expect(
+        asUser(db, ids.user.trekkerA, (tx) =>
+          tx.query(
+            `insert into public.conversation_messages (conversation_id, user_id, message, is_deleted)
+             values ($1, $2, '', true)`,
+            [conv, ids.user.trekkerA],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/i)
+    })
+
+    it('still lets a member soft-delete their own message', async () => {
+      // The other side of the pin: blanking is legal as an UPDATE, which is the
+      // only path that could ever have blanked a message. If this breaks, the
+      // delete button in /messages is broken.
+      const rows = await asUser(db, ids.user.trekkerA, async (tx) => {
+        const ins = await tx.query<{ id: string; created_at: string }>(
+          `insert into public.conversation_messages (conversation_id, user_id, message)
+           values ($1, $2, 'to be deleted') returning id, created_at`,
+          [conv, ids.user.trekkerA],
+        )
+        return (
+          await tx.query<{ id: string }>(
+            `update public.conversation_messages set is_deleted = true, message = ''
+              where id = $1 and created_at = $2 returning id`,
+            [ins.rows[0].id, ins.rows[0].created_at],
+          )
+        ).rows
+      })
+      expect(rows).toHaveLength(1)
+    })
+
     it("cannot edit another user's message", async () => {
       const updated = await asUser(db, ids.user.trekkerB, async (tx) =>
         (await tx.query(

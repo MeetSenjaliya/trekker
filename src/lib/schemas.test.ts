@@ -6,6 +6,8 @@ import {
   resetPasswordSchema,
   profileUpdateSchema,
   messageSchema,
+  companyApplicationSchema,
+  companyProfileSchema,
   fieldErrors,
 } from '@/lib/schemas'
 
@@ -105,6 +107,34 @@ describe('profileUpdateSchema', () => {
     const r = profileUpdateSchema.safeParse({ ...valid, bio: 'a'.repeat(501) })
     expect(r.success).toBe(false)
   })
+})
+
+describe('company website', () => {
+  const application = {
+    name: 'Himalayan Trails',
+    slug: 'himalayan-trails',
+    description: '',
+    contactEmail: '',
+    contactPhone: '',
+  }
+  const profile = { name: application.name, description: '', contactEmail: '', contactPhone: '' }
+
+  const parse = (website: string) => [
+    companyApplicationSchema.safeParse({ ...application, website }).success,
+    companyProfileSchema.safeParse({ ...profile, website }).success,
+  ]
+
+  it.each(['', 'https://himalayan-trails.com', 'http://example.co.uk/about?a=b'])(
+    'accepts %j',
+    (website) => expect(parse(website)).toEqual([true, true]),
+  )
+
+  // Both screens render this into an href, so a scheme that executes is a
+  // stored XSS on the storefront and on the admin review page.
+  it.each(['javascript:alert(1)', 'JavaScript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'vbscript:msgbox(1)'])(
+    'rejects %j',
+    (website) => expect(parse(website)).toEqual([false, false]),
+  )
 })
 
 describe('messageSchema', () => {
