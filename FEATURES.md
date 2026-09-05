@@ -38,17 +38,20 @@ _Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | **Apply [`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql) then [`0015_cap-the-companies-table.sql`](supabase/migrations/0015_cap-the-companies-table.sql)** in the SQL editor | `0014` is the one with an abuse story: `companies.website` is rendered into an `href` on the public storefront **and** on the platform-admin review page, and `z.url()` accepted `javascript:` / `data:` / `vbscript:`. `0015` is the tail — `name`, `description`, `contact_email` and `contact_phone` on the same table are still bounded in `src/lib/schemas.ts` and nowhere else, because `0009`/`0011` never reached `companies`. Both Zod halves are already deployed | [§3](#company-website-urls-are-pinned-to-https--2026-09-05) · [§3](#the-companies-table-gets-the-caps-0009-and-0011-skipped--2026-09-05) |
-| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
-| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
-| 6 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
-> **The DB backlog has two items again as of 2026-09-05.**
-> `0014_pin-company-website-to-an-http-scheme` and `0015_cap-the-companies-table`
-> are written, tested (69 cases in `tests/db/input-constraints.test.ts`,
-> migrations replay clean) and **not yet applied** — the ledger still reads
-> `0001`–`0013`. They are #1 in §1.0 above, in that order.
+| 1 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
+| 2 | **After** #1 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
+| 3 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 4 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
+| 5 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
+> **The DB backlog is empty again as of 2026-09-05.** `0014` (11:50:34+00) and
+> `0015` (12:01:25+00) are **applied and verified live** — ledger `0001`–`0015`,
+> no gaps. All seven new constraints read back from `pg_constraint`,
+> all `convalidated`, all matching the migration text. Both regexes were
+> re-evaluated on the live server rather than trusted from PGlite, and the
+> `\d`/`\s` ARE trap `0013` found is absent: `'dsdsds'` fails the phone rule,
+> so the classes are being read as classes. See
+> [§3](#company-website-urls-are-pinned-to-https--2026-09-05) and
+> [§3](#the-companies-table-gets-the-caps-0009-and-0011-skipped--2026-09-05).
 >
 > **The DB backlog was empty as of 2026-09-05.** `0013_format-checks-on-profile-phone-columns`
 > is **applied and verified live** — ledger row `0013` at `06:51:12+00`, `0001`–`0013`
@@ -1656,7 +1659,11 @@ rest — except that neither touched `public.companies` at all. `0014` found the
 gap while pinning `website` to an http(s) scheme and recorded it rather than
 widening itself;
 [`0015_cap-the-companies-table.sql`](supabase/migrations/0015_cap-the-companies-table.sql)
-is that follow-up. Same class as `0011`: no abuse story, just a rule living in
+is that follow-up — **applied and verified live 2026-09-05 12:01:25+00** (ledger
+`0001`–`0015`; all six constraints `convalidated`; both regexes re-evaluated on
+the live server, including the `\d`/`\s` ARE check `0013` made mandatory —
+`'dsdsds'` and `'\d\s'` both fail the phone rule, and `[:space:]` catches
+`'a b@example.com'` in the email one). Same class as `0011`: no abuse story, just a rule living in
 `src/lib/schemas.ts` and nowhere else, on a table any signed-up user reaches
 over PostgREST by calling `apply_for_company()` and then updating their own row.
 
@@ -1698,6 +1705,12 @@ added to `tests/db/input-constraints.test.ts` and two to
 `src/lib/schemas.test.ts`; 229 tests green.
 
 ## Company website URLs are pinned to `http(s)`  ·  2026-09-05
+
+`0014_pin-company-website-to-an-http-scheme.sql` — **applied and verified live
+2026-09-05 11:50:34+00** (ledger `0001`–`0014`, no gaps; `companies_website_scheme`
+read back from `pg_constraint`, `convalidated`; the pattern re-evaluated on the
+live server, where `javascript:`, `data:`, `vbscript:`, `//evil.example`, `ftp://`
+and `''` are rejected and `https://`, `http://` and `HTTPS://` accepted).
 
 Both company forms validated `website` with bare `z.url()`, which checks URL
 *syntax* and says nothing about the scheme — `javascript:alert(1)`,

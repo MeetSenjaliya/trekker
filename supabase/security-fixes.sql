@@ -1776,11 +1776,12 @@ using (
 -- Test: tests/db/input-constraints.test.ts -- eleven cases through asSuperuser,
 -- so a rejected write can only have been rejected by the CHECK and not by RLS.
 -- Plus seven in src/lib/schemas.test.ts for the Zod half.
--- STATUS: NOT YET APPLIED. Ledger reads 0001-0013. Apply in the SQL editor,
--- then confirm companies_website_scheme in pg_constraint reads convalidated and
--- re-evaluate the pattern on the live server (PGlite 18 vs production 17) --
--- '^https?://' uses no ARE extensions, unlike 0013's `\d`/`\s`, so this one
--- should be a formality, but check it rather than assume it.
+-- STATUS: APPLIED + VERIFIED LIVE 2026-09-05 11:50:34+00. Ledger records 0014
+-- (0001-0014, no gaps). companies_website_scheme reads back from pg_constraint,
+-- convalidated -- checked against the existing rows, not staged NOT VALID. The
+-- pattern was re-evaluated on the live server rather than trusted from PGlite:
+-- javascript:, data:, vbscript:, //evil.example, ftp:// and '' rejected;
+-- https://, http:// and HTTPS://example.com accepted.
 -- ============================================================================
 
 -- ============================================================================
@@ -1837,9 +1838,14 @@ using (
 -- Test: tests/db/input-constraints.test.ts -- eleven cases through asSuperuser,
 -- each length bound asserted on both sides. Plus two in src/lib/schemas.test.ts
 -- for the new Zod cap.
--- STATUS: NOT YET APPLIED. Ledger reads 0001-0013; apply after 0014. Then
--- confirm all six constraints read convalidated in pg_constraint and
--- re-evaluate both regexes on the live server (PGlite 18 vs production 17) --
--- the phone class uses the same `\d`/`\s` ARE extensions 0013 had to check,
--- and [:space:] in the email pattern is a POSIX class worth confirming too.
+-- STATUS: APPLIED + VERIFIED LIVE 2026-09-05 12:01:25+00, after 0014. Ledger
+-- records 0015 (0001-0015, no gaps). All six constraints read back from
+-- pg_constraint, all convalidated, all matching the text above. Both regexes
+-- re-evaluated on the live server (PGlite 18 vs production 17): the ARE check
+-- 0013 made mandatory passes -- 'dsdsds' and '\d\s' both fail the phone rule,
+-- so the classes are classes and not literal d/s -- 'call me maybe' and
+-- 'a@b.com' rejected, '+91 (987) 654-3210' and '' accepted; and on the email
+-- rule [:space:] catches 'a b@example.com', with 'not an email',
+-- 'https://example.com', 'a@b@c' and '<script>alert(1)</script>' rejected,
+-- 'ops@himalayan-trails.com' and '' accepted.
 -- ============================================================================
