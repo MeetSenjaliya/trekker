@@ -339,10 +339,12 @@ irreversible, and it binds every future subdomain). Details in [FEATURES.md](FEA
 
 **The CSP is now `Content-Security-Policy` — it blocks.** Promoted 2026-09-01; the header
 name is resolved at build time, so the env var only lands on a rebuild, and hashed per-deploy
-URLs keep serving the header they were built with. Two things worth knowing: `script-src` keeps
-`'unsafe-inline'` (Next's App Router emits inline hydration scripts, and the nonce alternative
-forces every page dynamic, undoing the SSR/SEO work), so this is exfiltration containment via
-`connect-src`, not injection defence. And the photo-upload breakage expected
+URLs keep serving the header they were built with. Two things worth knowing: `script-src` no
+longer allows `'unsafe-inline'` — since 2026-09-05 it is `'self' 'nonce-<random>'
+'strict-dynamic'`, minted per request in [src/utils/csp.ts](src/utils/csp.ts), so this is
+injection defence *and* exfiltration containment via `connect-src`. The dynamic-rendering price
+that argument was priced against had already been paid: 24 of 31 routes were server-rendered on
+demand before the change. `style-src` still allows inline. And the photo-upload breakage expected
 here is **already fixed** (2026-08-27): the library's blob worker `importScripts`-ed itself
 from jsdelivr, which `script-src 'self'` blocks, so `compressImage()` now compresses on the
 main thread (`useWebWorker: false`) and `worker-src` is `'none'`. See

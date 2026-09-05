@@ -12,7 +12,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-09-01 — full history in [§3 Changelog](#3--changelog-newest-first)._
+_Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newest-first)._
 
 ## Contents
 
@@ -38,12 +38,27 @@ _Last updated: 2026-09-01 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | **Push.** `a1` is 20 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **the migrations, the 124-test suite, the chat indexes, the security headers and now the CVE bumps** — exists only on one branch. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
-| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
-| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
-> **The DB backlog is empty again as of 2026-08-26.** `0008_drop-embedded-publishable-key-from-notification-trigger`
+| 1 | **Apply [`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql)** in the SQL editor | `companies.website` is rendered into an `href` on the public storefront **and** on the platform-admin review page, and `z.url()` accepted `javascript:` / `data:` / `vbscript:`. The Zod half is fixed in this change; until the migration is applied, a caller skipping the form still writes an executable scheme straight over PostgREST | [§3](#company-website-urls-are-pinned-to-https--2026-09-05) |
+| 2 | **Push.** `a1` is 20 commits ahead of `main` | Everything below the line in §2 — multi-tenant, account split, batch announcements, both hardening applies, **the migrations, the 124-test suite, the chat indexes, the security headers and now the CVE bumps** — exists only on one branch. Prod deploys `main` (`git push origin a1:main`) | `CODE_REVIEW.md` §1.1 |
+| 3 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | Without it, canonical + OG URLs fall through to `VERCEL_PROJECT_PRODUCTION_URL` (the `*.vercel.app` domain), and to `localhost:3000` off-Vercel | [§1.3](#seo) |
+| 4 | **After** #3 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
+| 5 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 6 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
+| 7 | **`supabase functions deploy send-trek-notification` and `send-trek-leave-notification`** | `0012` is applied and verified live (2026-09-02 13:06 UTC), but both functions are still the 2026-08-25 builds (v11 / v6). The trigger refuses the over-cap log row; the old code ignores that error and sends anyway, so a concurrent burst still leaks — and now leaks *uncounted*, because the refused row is the one that would have metered it. The deploy also lands EDGE-004, undeployed since 2026-08-26 | [§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02) |
+> **The DB backlog has one item again as of 2026-09-05.**
+> `0014_pin-company-website-to-an-http-scheme` is written, tested (58 cases in
+> `tests/db/input-constraints.test.ts`, migrations replay clean) and **not yet
+> applied** — the ledger still reads `0001`–`0013`. It is #1 in §1.0 above.
+>
+> **The DB backlog was empty as of 2026-09-05.** `0013_format-checks-on-profile-phone-columns`
+> is **applied and verified live** — ledger row `0013` at `06:51:12+00`, `0001`–`0013`
+> with no gaps. `pg_constraint` reads `profiles_phone_no_format`,
+> `profiles_emergency_no_format` and `profiles_phone_no_len`, all three
+> `convalidated`, and the live regex answers the same as PGlite did (a sentence
+> and an email rejected, `+91 (987) 654-3210` and `''` accepted, 0 violating
+> rows). See [§3](#phone-columns-have-to-look-like-phone-numbers--2026-09-05).
+>
+> **The DB backlog was empty as of 2026-08-26.** `0008_drop-embedded-publishable-key-from-notification-trigger`
 > is **applied and verified live** — ledger row `0008` at `10:04:57+00`, and the
 > live `pg_proc` body read back over MCP holds no key literal and sends no
 > `apikey`. Ledger reads `0001`–`0008` with no gaps. See
@@ -394,6 +409,79 @@ reproduction and control cases in
 ---
 
 # §2 — Done (shipped features & changes)
+
+## Dependency upgrade — Tailwind 4, Next 16.3.4, lucide 1, ESLint flat config (2026-09-05)
+
+**Status:** ✅ — every direct dependency is on its latest release except
+`typescript` (see below). `npm run build`, `npx tsc --noEmit`, `npm test`
+(190 passing) and `npm run lint` (0 errors) are all green.
+
+| Package | From | To | Notes |
+|---|---|---|---|
+| `@supabase/supabase-js` | 2.51.0 | 2.115.0 | drop-in |
+| `@supabase/ssr` | 0.6.1 | 0.12.6 | drop-in — the three clients already used the modern `getAll`/`setAll` cookie API |
+| `next` | 16.3.1 | 16.3.4 | patch |
+| `zod` | 4.4.3 | 4.5.4 | drop-in |
+| `tailwindcss` | 3.4.17 | 4.3.3 | see the two new Known Gotchas |
+| `lucide-react` | 0.525.0 | 1.41.0 | v1 **removed the brand icons**; `Twitter`/`Instagram`/`Github` are now inlined as local SVGs in [src/components/layout/Footer.tsx](src/components/layout/Footer.tsx) |
+| `framer-motion` | 12.23.26 | 13.2.0 | drop-in (2 files use it) |
+| `eslint-config-next` | 15.3.5 | 16.3.4 | now ships **native flat config**; `eslint.config.mjs` no longer wraps it in `FlatCompat` |
+| `typescript` | 5.8.3 | **6.0.3** | **not 7.x** — see below |
+| `@types/node` | 20.19.4 | 24.13.3 | 24 (not 26) to stay near the deployed Node runtime |
+| `@testing-library/jest-dom` | 6.9.1 | 7.0.1 | drop-in |
+| `@sentry/nextjs`, `@tanstack/react-query`, `@playwright/test`, `eslint`, `vitest`, `jsdom`, `@electric-sql/pglite`, `postcss`, `sonner`, `react`, `react-dom`, `@types/react(-dom)`, `@vitejs/plugin-react`, `@eslint/eslintrc`, `@testing-library/react`, `@testing-library/user-event` | — | latest | in-range `npm update` |
+
+**TypeScript stops at 6.0.3, not 7.0.2.** TS 7 (the Go rewrite) type-checks this
+repo cleanly, but `typescript-eslint` **refuses to load against the TS 7 API** —
+`npm run lint` dies at startup with "typescript-eslint does not support TS 7.0"
+before linting a single file. Support is tracked in
+[typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940)
+and targets TS ≥ 7.1. TS 6.0.3 is the newest release that keeps both `tsc` and
+lint working; bump to 7 once that issue closes.
+
+**`withSentryConfig` moved import path.** The `@sentry/nextjs` bump deprecated
+importing it from the package root (it stops working in v11); `next.config.mjs`
+now imports it from `@sentry/nextjs/config`. The warning was printed at server
+boot, not at build time — `npm run build` never showed it.
+
+**`eslint` stays on 9.x too, and for the same class of reason.** npm marks
+9.39.5 deprecated ("no longer supported") and 10.10.0 is latest, but ESLint 10
+crashes inside `eslint-plugin-react` — which `eslint-config-next` 16 bundles —
+partway through the first file. The preset's peer range says `eslint: >=9.0.0`;
+that range is wrong. Re-test both this and the TypeScript pin whenever
+`eslint-config-next` bumps.
+
+**`autoprefixer` was dropped** — Tailwind v4 prefixes via Lightning CSS, so
+`postcss.config.js` now lists `@tailwindcss/postcss` alone. **`@eslint/eslintrc`
+was dropped** — it existed only for the `FlatCompat` shim that v16 made
+unnecessary.
+
+**The 17 new lint errors were fixed, not silenced.** `eslint-config-next` 16
+turns on the React Compiler rules `react-hooks/purity` and
+`react-hooks/set-state-in-effect`, which flagged 17 pre-existing sites:
+
+- **`purity` (8)** — `Math.random()` called during render in `RainEffect` /
+  `SnowEffect`. Both now roll their drop/flake positions **once** in a
+  `useState` lazy initializer. This also fixes a real bug: the particles used to
+  teleport on every re-render.
+- **`set-state-in-effect` (9)** — all deliberate SSR-hydration patterns, none of
+  which could simply be deleted. Rewritten per site: `useSyncExternalStore` for
+  the "am I mounted / what's in web storage" reads
+  ([RainEffect](src/components/ui/RainEffect.tsx),
+  [SnowEffect](src/components/ui/SnowEffect.tsx),
+  [ExploreClient](src/app/explore/ExploreClient.tsx),
+  [DashboardShell](src/components/admin/DashboardShell.tsx)); derive-during-render
+  for defaults ([participants](src/app/dashboard/treks/[id]/participants/page.tsx),
+  [profile](src/app/(trekker)/profile/page.tsx)); adjust-during-render for
+  re-syncing on a prop change
+  ([TrekDetailClient](src/app/trek/[id]/TrekDetailClient.tsx),
+  [settings](src/app/dashboard/settings/page.tsx)); and in
+  [messages](src/app/(trekker)/messages/page.tsx) the unread-badge clear moved
+  out of an effect into an `openConversation()` helper shared by all three
+  places that open a conversation.
+
+The warning backlog is **unchanged at 15** (12× `no-img-element`, 3×
+`exhaustive-deps`) — no new warnings were introduced.
 
 ## Password-reset failures stopped surfacing raw auth errors (2026-08-29)
 
@@ -926,6 +1014,11 @@ erroring out. Both functions share the one `'trek_email'` action name so
 alternating between them can't double the effective rate — the cap is 10 total
 notification emails/hour per recipient, not 10 each.
 
+**Superseded in part on 2026-09-02:** the cap is now enforced by a trigger on
+`rate_events` (`0012`), not by the count in these two functions — a check made
+with the SECRET key is one the caller applies to itself. See
+[§3](#the-notification-email-cap-moved-out-of-the-edge-functions--2026-09-02).
+
 **Deployed and verified live 2026-08-26.** `get_edge_function` over the
 read-only MCP returns a `send-trek-notification` body byte-identical to this
 repo's, rate limit included (`send-trek-notification` v11, updated 2026-08-25).
@@ -1327,6 +1420,14 @@ All four removed from `package.json`; only Tailwind remains. Last MUI use (`Trek
 
 Closes M4. Shared, framework-agnostic schemas in `src/lib/schemas.ts` (`zod ^4`): sign-up/in, forgot/reset password, profile update, chat message + `fieldErrors()` helper. Wired into all 4 auth pages (`src/app/auth/*`), both profile editors (`src/app/profile/edit/page.tsx`, `src/app/edits/page.tsx`), and chat send (`src/app/messages/page.tsx`). New-password min unified to 8 chars (was 6 on sign-up). Module is React/Next/Supabase-free so the future Server layer can reuse it server-side
 
+### Input validation — database CHECK constraints
+
+**Status:** ✅
+
+The server-side half of the Zod schemas above. Migration `0009` puts six bounds in the database, so a caller that skips the form — curl, the browser console, any REST client holding the publishable key — hits the same limits: `conversation_messages.message` ≤ 2000, `profiles.full_name` ≤ 100, `profiles.bio` ≤ 500, `treks.estimated_cost` ≥ 0, and `max_participants > 0` on both `treks` and `trek_batches`. NULL stays valid everywhere it was (unset name, uncapped departure). Closes the Day 7 pentest findings, including `TEST.md` §7.2.1 — an unbounded chat `message` was the one with a real abuse story. `optionalInt` in `src/lib/schemas.ts` moved to a `>= 1` floor in the same change so the capacity forms answer inline instead of surfacing a raw constraint violation, and `signUpSchema.fullName` picked up the `.max(100)` it never had. Covered by `tests/db/input-constraints.test.ts` (each bound tested on both sides). See `schema.sql` §0009
+
+`0010` finishes the job: `0009` gave `message` a ceiling but no floor, so `''` and `'   '` still went in through a direct insert. The floor is conditional — `check (coalesce(is_deleted, false) or length(btrim(message)) > 0)` — because soft-delete blanks the text, and the `Send messages` policy now pins `is_deleted = false` on INSERT so the deleted-row escape hatch can't be self-served. `0010` also clamps `handle_new_user()` to `left(…, 100)`: `profiles_full_name_len` had turned an over-long provider or API-supplied name into a failed signup. `0011` mirrors the last eight Zod-only caps (`treks.title`/`description`/`location`/`meeting_point`(2)/`gear_checklist`, `profiles.emergency_contact`/`emergency_no`), leaving `phone_no` uncapped on purpose — it has no Zod counterpart to mirror. `0013` mirrors the other half of the phone rule: `profileUpdateSchema.emergencyContactPhone` has always carried `.regex(/^[\d\s+()-]*$/)` and the database never did, so `emergency_no` and `phone_no` now have to look like phone numbers (digits, whitespace, `+`, `(`, `)`, `-`) rather than merely be short. `phone_no` is capped at 20 in the same migration — a format with no length still accepts a megabyte of digits, and 20 is the number every other phone field in the app already uses. Empty and NULL still pass both, as they do in Zod
+
 ### TanStack Query
 
 **Status:** 🟡
@@ -1404,9 +1505,9 @@ The Server Function disclosure and the image-optimization DoS both applied direc
 
 ### Security headers
 
-**Status:** ✅ — all six headers enforced; the CSP was promoted from report-only to enforcing on 2026-09-01 (see [§3](#csp-promoted-from-report-only-to-enforcing--2026-09-01)).
+**Status:** ✅ — all six headers enforced; the CSP was promoted from report-only to enforcing on 2026-09-01 (see [§3](#csp-promoted-from-report-only-to-enforcing--2026-09-01)) and moved to per-request nonces on 2026-09-05, which dropped `'unsafe-inline'` from `script-src`.
 
-[`next.config.mjs`](next.config.mjs) had **no `headers()` block at all** — every response shipped with zero browser-side policy. It now exports a `(phase) => config` function (phase, not `NODE_ENV`, because `NODE_ENV` is still `undefined` when Next loads the config — see Known Gotchas) serving six headers on `/:path*`.
+[`next.config.mjs`](next.config.mjs) had **no `headers()` block at all** — every response shipped with zero browser-side policy. Five of the six are still served from there on `/:path*`; the CSP moved to [`src/utils/csp.ts`](src/utils/csp.ts) + [`src/proxy.ts`](src/proxy.ts) on 2026-09-05, because a policy carrying a nonce cannot be a constant. The config no longer needs its `(phase) => config` shape for that reason — `NODE_ENV` is reliable in the proxy, unlike at config load (see Known Gotchas).
 
 Enforced immediately, none of which can break a working page:
 
@@ -1418,7 +1519,11 @@ Enforced immediately, none of which can break a working page:
 | `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | **No `preload`** — preload is effectively irreversible and binds every future subdomain |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=()` | Free — no code calls any of these APIs |
 
-**CSP — what it does and does not buy.** Enforcing since 2026-09-01 (`CSP_ENFORCE=1` in Vercel, Production + Preview). `script-src` keeps `'unsafe-inline'`, because Next's App Router emits inline hydration/flight scripts and [`JsonLd.tsx`](src/components/ui/JsonLd.tsx) inlines JSON-LD; the nonce alternative must run in middleware, which forces **every page dynamic** and would undo the server-rendered SEO work. So it does **not** meaningfully stop XSS — injected inline script still runs. What it does buy: `connect-src` caps where data can be *sent*, so injected script cannot POST the browser-held Supabase session to an attacker origin, plus `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`. `'unsafe-eval'` is added **only** in the dev phase (React Refresh); verified absent from the production policy.
+**CSP — what it buys, now that it is nonce-based.** Enforcing since 2026-09-01 (`CSP_ENFORCE=1` in Vercel, Production + Preview); `script-src` reads `'self' 'nonce-<128 bits>' 'strict-dynamic'` since 2026-09-05. Injected inline script no longer runs, which is the thing the old policy could not claim — an attacker would have to guess a per-request nonce. `connect-src` still caps where data can be *sent*, so even a bypass cannot POST the browser-held Supabase session to an attacker origin, and `object-src 'none'`, `base-uri 'self'`, `form-action 'self'` are unchanged. `'unsafe-eval'` is added **only** under `next dev` (React Refresh); verified absent from the production policy.
+
+**`style-src` keeps `'unsafe-inline'` and that is not going away.** Emotion/MUI inject `<style>` at runtime and Framer Motion writes `style` attributes — and a nonce cannot cover a style *attribute* at all, at any price. Dropping it means finishing the "one UI system" migration in §2 first.
+
+**The cost was static rendering, and it was already spent.** Nonces only exist once there is a request, so every route now renders at request time — [`layout.tsx`](src/app/layout.tsx) calls `connection()` once for the whole tree rather than eight pages doing it individually. Before the change 24 of 31 routes were already `ƒ`; the eight that were prerendered were `/about`, the four auth screens, `/company/apply`, `/invites` and `/_not-found`, none of which the SEO work depends on — and every one of their document requests already blocked on the proxy's `auth.getUser()` round trip, so what was actually given up is a React render, not a CDN hit. **This is why the 2026-08 rationale for keeping `'unsafe-inline'` ("nonces would undo the server-rendered SEO work") no longer holds: `/`, `/explore`, `/trek/[id]` and `/company/[slug]` are all request-time rendered anyway.**
 
 **Allowed origins were enumerated from source, not guessed** — Supabase origin and the Sentry `report-uri` are both derived at build time from `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SENTRY_DSN` rather than hardcoded:
 
@@ -1428,7 +1533,7 @@ Enforced immediately, none of which can break a working page:
 - `font-src 'self' data:` only — `next/font/google` self-hosts at build, so **no** Google Fonts origin is needed
 - `images.remotePatterns` — a separate allowlist from CSP, governing what `/_next/image` will fetch and cache server-side. Supabase is scoped to `/storage/v1/object/public/**` (2026-08-27) so the optimizer cannot be used as a proxy for the project's auth/REST/functions endpoints; `images.unsplash.com` stays `/**`
 
-**Verified** by curling a real `next start` server: all six headers present, `script-src` free of `'unsafe-eval'` in production and carrying it under `next dev`.
+**Verified** by curling a real `next start` server: all six headers present, `script-src` free of `'unsafe-eval'` in production and carrying it under `next dev`. Re-verified for the nonce (2026-09-05, `CSP_ENFORCE=1`, `next start`): every `<script>` on `/`, `/about`, `/auth/login` and `/explore` carries the same nonce the header names — 16–18 tags per page, none without — and headless Chromium loads `/`, `/about`, `/explore`, `/auth/login`, `/auth/forgot-password` and a real `/trek/[id]` with **zero CSP violations and zero page errors**, hydration included, JSON-LD present in the DOM.
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -1469,7 +1574,9 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 - **`grant execute … to authenticated` does not remove the default PUBLIC grant, so `schema.sql` can silently describe a more permissive database than production.** Postgres attaches `EXECUTE` to `PUBLIC` at `CREATE FUNCTION`; a later `grant` to `authenticated` adds nothing and revokes nothing. The 2026-08-08 revokes were applied live but never encoded in the generated schema, so from then until 2026-08-14 `schema.sql` said "anon may call all 15 multi-tenant RPCs" while production said otherwise — including a §10 comment asserting it as fact. Nothing was exposed, but the file that the DB suite builds its Postgres *from* was wrong, so the suite was testing a database that does not exist. Caught only when the roster test asserted `permission denied` and got an empty set; both the revokes and the test landed 2026-08-14. **Pair the revoke with the grant in the same migration** (as the note above already requires), and treat a green DB suite as evidence about `schema.sql`, **not** about production — the migration ledger and `has_function_privilege()` are what speak for production. The suite proves the two agree only if the revoke is written down.
 - **A trekker could forge an operator announcement if `is_announcement` is ever left out of a `conversation_messages` write policy.** The publishable key ships in the client bundle, so `POST /rest/v1/conversation_messages` with `is_announcement:true` is one request away; the INSERT and UPDATE `with check` clauses both pin it to `false`, and `post_batch_announcement()` (SECURITY DEFINER, owned by `postgres`, table not `FORCE ROW LEVEL SECURITY`) is the only writer that can set it. If either policy is ever rewritten, carry the conjunct — the badge is a trust signal in a chat full of strangers. Consequence to expect, not a bug: announcements are immutable through the table API, soft-delete included.
 
-- **`process.env.NODE_ENV` is `undefined` while `next.config.mjs` is being loaded — don't branch on it there.** A `NODE_ENV !== 'production'` check in the config reads as *dev in every phase*, so a dev-only relaxation silently ships to production. This bit the CSP on 2026-08-12: `'unsafe-eval'` landed in the production policy. Branch on the `phase` argument Next passes to a function-style config (`export default function config(phase)`, compared against `PHASE_DEVELOPMENT_SERVER` from `next/constants.js`) — `withSentryConfig` still wraps the returned object fine. **Related trap while verifying this:** `headers()` results are baked into `.next/routes-manifest.json` at **build** time, and `next start` silently exits with `EADDRINUSE` if a stale server holds the port — so `curl` cheerfully returns the *old* server's headers and the fix looks like it failed. Check `lsof -ti:3000` and read the manifest (`.next/routes-manifest.json`) before believing a header didn't change.
+- **Every `<script>` the app renders itself needs the nonce passed to it by hand — Next only tags its own.** Next mints the nonce onto the framework bundles and its inline hydration/flight scripts by re-reading the policy off the *request* headers ([app-render.js:209](node_modules/next/dist/server/app-render/app-render.js#L209) reads `content-security-policy` **or** `content-security-policy-report-only`, which is why [`src/proxy.ts`](src/proxy.ts) sets whichever name it is about to send). Markup of ours is not covered: [`JsonLd.tsx`](src/components/ui/JsonLd.tsx) reads `x-nonce` through `headers()` and sets `nonce` itself. `script-src` applies to **every** `<script>` element regardless of `type`, so an un-nonced `application/ld+json` block is a blocked tag and a violation report on every page view — the same page-load noise the Zod eval probe made. Any `next/script` or third-party embed added later has the same obligation.
+- **A prerendered page cannot carry a nonce, so the whole app renders at request time.** `connection()` in [`src/app/layout.tsx`](src/app/layout.tsx) is load-bearing, not a leftover: remove it and any page Next can prerender ships script tags with no nonce and hydrates into nothing under the enforced policy. It is one call in the root layout rather than per-page on purpose — a new page must not be able to opt itself back into prerendering by omission.
+- **`process.env.NODE_ENV` is `undefined` while `next.config.mjs` is being loaded — don't branch on it there.** A `NODE_ENV !== 'production'` check in the config reads as *dev in every phase*, so a dev-only relaxation silently ships to production. This bit the CSP on 2026-08-12: `'unsafe-eval'` landed in the production policy. Branch on the `phase` argument Next passes to a function-style config (`export default function config(phase)`, compared against `PHASE_DEVELOPMENT_SERVER` from `next/constants.js`) — `withSentryConfig` still wraps the returned object fine. The one branch that needed it has since moved out: the CSP is built in [`src/utils/csp.ts`](src/utils/csp.ts), which runs per request in the proxy where `NODE_ENV` is set normally, so the config is a plain object again. **Related trap while verifying this:** `headers()` results are baked into `.next/routes-manifest.json` at **build** time, and `next start` silently exits with `EADDRINUSE` if a stale server holds the port — so `curl` cheerfully returns the *old* server's headers and the fix looks like it failed. Check `lsof -ti:3000` and read the manifest (`.next/routes-manifest.json`) before believing a header didn't change.
 
 - **Don't set `output: 'standalone'` — this app deploys to Vercel, and it broke the deploy build (2026-08-26).** Vercel failed with `ENOENT … /vercel/path0/.next/next-server.js.nft.json`. That file is read in exactly one place — `copyTracedFiles()` ([node_modules/next/dist/build/utils.js:1106](node_modules/next/dist/build/utils.js#L1106)), reached only from `writeStandaloneDirectory()` under `if (config.output === 'standalone')` ([build/index.js:2815](node_modules/next/dist/build/index.js#L2815)) — so no standalone means no read and no ENOENT, whatever left the trace file absent in Vercel's builder. **It never bought anything here:** Vercel builds its own serverless output from the `.nft.json` traces directly, and CI's e2e job runs `npm run start` (`next start`), not `.next/standalone/server.js`, despite the artifact being named "standalone" in `.github/workflows/ci.yml` and the comment in `playwright.config.ts`. `standalone` is for self-hosting (Docker); there is no Dockerfile in this repo. **It does not reproduce locally** — a clean `next build` on macOS emits `next-server.js.nft.json` fine and writes `.next/standalone`, so a green local build is not evidence the Vercel build will pass.
 
@@ -1501,7 +1608,9 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **Rate limits are Postgres triggers, and `rate_events` is invisible to every client** (applied 2026-08-05, `supabase/schema.sql` §13). Three things not to break: (1) the chat guard is `AFTER INSERT … FOR EACH STATEMENT` — do **not** "simplify" it into an RLS `WITH CHECK` or a row trigger, because a per-row check reads a count of 0 for every row of a PostgREST array insert; (2) both trigger functions no-op when `auth.uid()` is null — that's what keeps waitlist promotion and service-role writes from being blocked, so keep the null guard if you edit them; (3) `invite_company_member` must **return** its "not found" answer, never `raise` — an exception rolls back the `rate_events` row that recorded the probe, and the limit silently counts nothing. `rate_events` has RLS on with zero policies *and* grants revoked, so it is unreachable from the client by design — don't add a policy to "let users see their limit". Testing note: 10 joins/hour/user is easy to trip while clicking around; the counter is only clearable from the SQL Editor.
 
-- **`postcss.config.js` is the live PostCSS config — keep it.** The duplicate `postcss.config.mjs` was deleted 2026-08-12; it held Tailwind **v4** syntax (`@tailwindcss/postcss`) while this repo runs `tailwindcss ^3.4.17` + `autoprefixer`. `postcss-load-config` resolves `.js` first, which is the only reason styling ever worked. If a Tailwind v4 upgrade happens, the config must change in place — don't reintroduce a second file, since whichever one loses the resolution order is silently ignored.
+- **`postcss.config.js` is the live PostCSS config — keep it, and keep it the only one.** A duplicate `postcss.config.mjs` was deleted 2026-08-12; back then it held Tailwind **v4** syntax while the repo ran `tailwindcss ^3.4.17` + `autoprefixer`, and `postcss-load-config` resolving `.js` first is the only reason styling ever worked. The v4 upgrade landed 2026-09-05 and changed `postcss.config.js` **in place** — its single plugin is now `@tailwindcss/postcss`, and `autoprefixer` is gone (v4 prefixes via Lightning CSS). Don't reintroduce a second config file: whichever one loses the resolution order is silently ignored.
+
+- **Tailwind v4 has no `tailwind.config.js` — theme lives in `@theme` inside [src/app/globals.css](src/app/globals.css), and content detection is automatic.** Don't recreate the JS config to "extend" something; add a `--color-*` / `--spacing-*` token to the `@theme` block instead. Two v4 defaults are papered over deliberately: the `@layer base` block restoring `border-color: gray-200` (v4 defaults borders to `currentcolor`, which would repaint every unqualified `border` in the app), and the fact that **v3's shadow/blur/outline scale shifted by one step** — v3 `shadow-sm` is v4 `shadow-xs`, v3 `backdrop-blur-sm` is v4 `backdrop-blur-xs`, v3 `outline-none` is v4 `outline-hidden`. The official codemod reported "0 files changed" for templates and **silently missed all 58 of these**; they were found by diffing the generated CSS, not by trusting the tool. If you ever re-run a Tailwind codemod, verify its template pass the same way.
 
 - **`trg_initial_trek_message` was dropped 2026-07-02** (multi-tenant migration): it called `create_trek_initial_message()`, which inserts into a `trek_messages` table that doesn't exist, so every trek INSERT errored. Trek creation works now. The broken function is still in the DB (unused, kept per convention) — don't reattach it to a trigger.
 
@@ -1539,6 +1648,309 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## Company website URLs are pinned to `http(s)`  ·  2026-09-05
+
+Both company forms validated `website` with bare `z.url()`, which checks URL
+*syntax* and says nothing about the scheme — `javascript:alert(1)`,
+`data:text/html,…` and `vbscript:…` all parsed and all passed, confirmed against
+the pinned `zod@4.5.4`. Both render sites put the value straight into an `href`,
+which React does not sanitize:
+
+- [`src/app/company/[slug]/page.tsx`](src/app/company/[slug]/page.tsx) — public storefront
+- [`src/app/admin/companies/[id]/page.tsx`](src/app/admin/companies/[id]/page.tsx) — platform-admin review page, same tab
+
+so the chain is: anyone signs up, applies for a company with a `javascript:`
+website, and the platform admin runs it **in their own session** by clicking the
+link on the page where they decide whether to approve the application. Approval
+then ships it to every storefront visitor. `pg_constraint` on `public.companies`
+held only `companies_name_check` and `companies_slug_check`, so nothing stopped
+the value at the database either. Live data was clean — 5 companies, `website`
+set on 4, all `https://`.
+
+**Fix, both halves.** `websiteField` in [`src/lib/schemas.ts`](src/lib/schemas.ts)
+is now `z.url({ protocol: /^https?$/, hostname: z.regexes.domain })`, shared by
+`companyApplicationSchema` and `companyProfileSchema`.
+[`0014_pin-company-website-to-an-http-scheme.sql`](supabase/migrations/0014_pin-company-website-to-an-http-scheme.sql)
+adds `companies_website_scheme check (website ~* '^https?://')` — the coarser
+twin, in the spirit of `0013`: it rejects the class of value the browser would
+*execute* rather than fetch, and leaves URL validity to Zod. `~*` and not `~`
+because `new URL()` lowercases the scheme before Zod's `protocol` regex sees it,
+so `HTTPS://example.com` has to pass in both places. `''` fails the CHECK on
+purpose — both writers in `src/lib/company.ts` already send `website || null`,
+so a blank field is NULL and NULL passes any CHECK.
+
+**No length cap, deliberately.** `0009`/`0011` never reached this table at all —
+`companies.name`, `description`, `contact_email` and `contact_phone` are still
+Zod-only — and `website` has no Zod cap to mirror, so a number picked here would
+be invented (`0011`'s own reason for leaving `phone_no` alone). Capping the
+`companies` table is its own migration, not something this one does by halves.
+
+Covered on both sides: seven cases in [`src/lib/schemas.test.ts`](src/lib/schemas.test.ts)
+and eleven in [`tests/db/input-constraints.test.ts`](tests/db/input-constraints.test.ts),
+the latter through `asSuperuser` so a rejected write can only have been rejected
+by the CHECK and not by RLS.
+
+**Why it was reachable at all right now:** production is still serving the old
+static `script-src 'self' 'unsafe-inline'` from `next.config.mjs`, and
+`'unsafe-inline'` permits `javascript:` URL navigation. The nonce CSP below
+blocks it, and ships in the same change.
+
+## CSP nonces — `script-src 'unsafe-inline'` is gone  ·  2026-09-05
+
+The policy said, in this file and in `TEST.md`, that it was "deliberately not an
+XSS control": inline script was allowed because Next emits inline hydration and
+flight scripts, and the nonce alternative "forces every page dynamic, undoing
+the SSR/SEO work". **The second half of that stopped being true and nobody
+re-checked.** The build's route table says 24 of 31 routes were already `ƒ`
+(server-rendered on demand) — including every page the SEO work is about: `/`,
+`/explore`, `/trek/[id]`, `/company/[slug]`. The trade the policy was priced
+against no longer existed.
+
+`script-src` is now `'self' 'nonce-<128 bits>' 'strict-dynamic'` (plus
+`'unsafe-eval'` under `next dev` only). What moved:
+
+- **[`src/utils/csp.ts`](src/utils/csp.ts)** — the whole policy, built per
+  request, one copy. It left `next.config.mjs` because a nonce cannot be a
+  constant; the config keeps the five static headers and the
+  `Reporting-Endpoints` declaration, and goes back to being a plain object
+  rather than the `(phase) => config` function it needed to detect dev.
+  `NODE_ENV` is trustworthy in the proxy, which is what that shape existed to
+  work around.
+- **[`src/proxy.ts`](src/proxy.ts)** — mints `crypto.randomUUID()` per request,
+  sets the policy on the response and forwards it plus `x-nonce` on the request
+  for Next and for `JsonLd`.
+- **[`src/utils/supabase/middleware.ts`](src/utils/supabase/middleware.ts)** —
+  `updateSession()` takes extra request headers and re-snapshots them at each
+  `NextResponse.next()`. The re-snapshot is the part to not "simplify": a copy
+  taken once, before the `setAll` callback runs `request.cookies.set()`, would
+  forward a pre-refresh session cookie to the render — the failure mode the file
+  warns about in capitals.
+- **[`src/app/layout.tsx`](src/app/layout.tsx)** — `await connection()`, once,
+  for the whole tree. Eight routes lost prerendering (`/about`, four auth
+  screens, `/company/apply`, `/invites`, `/_not-found`); all eight already paid
+  for a proxy `auth.getUser()` round trip on every document request, so the
+  saving they gave up was a React render.
+- **[`src/components/ui/JsonLd.tsx`](src/components/ui/JsonLd.tsx)** — reads
+  `x-nonce` and sets `nonce` on the tag. `script-src` covers
+  `application/ld+json` like any other script element.
+
+`style-src 'unsafe-inline'` stays: Emotion/MUI inject `<style>` at runtime and
+Framer Motion writes `style` attributes, and no nonce can cover an attribute.
+
+**Verified before believing it.** `CSP_ENFORCE=1 next start`, then: every
+`<script>` tag on `/`, `/about`, `/auth/login`, `/explore` carries the header's
+nonce (16–18 per page, zero without); headless Chromium loads those plus
+`/auth/forgot-password` and a real `/trek/[id]` with zero CSP violations, zero
+page errors, hydration confirmed and the JSON-LD block present.
+`src/utils/csp.test.ts` pins the two properties worth pinning — nonce in,
+`'unsafe-inline'`/`'unsafe-eval'` out of `script-src`. 201 tests green, lint
+clean at its usual 15 warnings.
+
+**Deploy note:** `CSP_ENFORCE=1` is already set in Vercel, so this ships
+*enforcing* on the first deploy — there is no report-only lap unless the var is
+removed for one. The authenticated routes (`/dashboard`, `/messages`,
+`/profile`) could not be exercised locally without credentials; they render the
+same script set and no page in the repo has an inline `<script>` other than
+`JsonLd`, but Sentry `report-uri` is the thing to watch for an hour after the
+deploy.
+
+## Phone columns have to look like phone numbers  ·  2026-09-05
+
+`0013_format-checks-on-profile-phone-columns.sql` — **applied and verified live
+2026-09-05 06:51:12+00** (ledger `0001`–`0013`, no gaps; all three constraints
+read back from `pg_constraint`, `convalidated`).
+`profileUpdateSchema.emergencyContactPhone` has always carried
+`.regex(/^[\d\s+()-]*$/)`; `0011` mirrored its *length* into the database and
+left the format in the browser, where it means nothing against a direct
+PostgREST write. `profiles.emergency_no` and `profiles.phone_no` now take digits,
+whitespace, `+`, `(`, `)` and `-` only.
+
+`phone_no` also picks up the 20-char cap `0011` deliberately declined to invent.
+The reasoning that kept it out was that no Zod rule existed to mirror — true of
+the length alone, and it stops applying once the column has a format: a format
+with no bound still accepts a megabyte of digits, which is the exact shape the
+length caps exist to close. 20 is the app's own number for every other phone
+field, not a new judgement.
+
+Deliberately *not* a validity rule: `+91 (987) 654-3210`, `9876543210` and
+`((((` all pass. What it rejects is the class of value that is not a phone
+number at all — an email, a URL, a sentence — which is what an unconstrained
+free-text column collects.
+
+Live data checked over the read-only MCP first: 5 profiles, `phone_no` set on 1,
+`emergency_no` on 3, longest 10 chars, 0 rows failing either regex. No backfill.
+Nine cases added to `tests/db/input-constraints.test.ts` (letters rejected,
+formatted number accepted, empty and NULL still meaning unset on both columns,
+20/21 on either side of the cap); 201 tests green.
+
+**Post-apply check worth repeating for any regex CHECK:** the DB suite runs on
+PGlite (Postgres 18) and production is 17, so the pattern was re-evaluated on the
+live server rather than assumed — `\d` and `\s` inside a bracket expression are
+ARE extensions, and a version that read them literally would have built a
+constraint that silently accepts `d`, `s` and backslashes. It does not:
+`'call me maybe'` and `'a@b.com'` are rejected, `'+91 (987) 654-3210'` and `''`
+accepted, 0 violating rows.
+
+## Dependency upgrade — Tailwind 4, Next 16.3.4, ESLint flat config  ·  2026-09-05
+
+Every direct dependency moved to its latest release except `typescript`, which
+stops at 6.0.3 because `typescript-eslint` cannot load against the TS 7 API and
+`npm run lint` dies at startup. Tailwind 3 → 4 (CSS-first config, no
+`tailwind.config.js`), `lucide-react` 0.525 → 1 (brand icons removed, inlined in
+the footer), and `eslint-config-next` 15 → 16 (native flat config). The v4
+codemod claimed "0 template files changed" and had in fact missed 58 renamed
+utilities — caught by diffing the generated CSS. The 17 lint errors from
+`eslint-config-next` 16's new React Compiler rules were fixed rather than
+downgraded. Full table in
+[§2](#dependency-upgrade--tailwind-4-next-1634-lucide-1-eslint-flat-config-2026-09-05).
+
+## The notification-email cap moved out of the edge functions  ·  2026-09-02
+
+EDGE-003 capped trek notification mail at **10/hour per recipient**, but the cap
+lived in `send-trek-notification` and `send-trek-leave-notification` — both of
+which hold the SECRET key and bypass RLS on `rate_events`. The count was
+therefore a policy the caller applied to itself: the leaked secret the cap exists
+for could write to `rate_events` and mail without ever reading it, and any future
+revision of either function could drop the check silently. Check-then-insert was
+not atomic either — ten concurrent webhook calls each read a count of 9 and each
+sent, so the enforced cap was "10 + concurrency".
+
+`0012` makes the log write the gate. `enforce_trek_email_rate_limit()` is a
+BEFORE INSERT row trigger on `rate_events`, scoped `WHEN (new.action =
+'trek_email')`, and takes a `pg_advisory_xact_lock` on the recipient before
+counting — so a send cannot be recorded without being counted, and concurrent
+callers queue instead of racing. Kept on `rate_events` rather than a new table:
+it already is the dedicated rate-limit log (zero policies, zero client grants,
+pruned hourly by pg_cron) and both functions already share the one `'trek_email'`
+action, so alternating endpoints cannot double the rate; a second table would
+fragment the counter and need its own index, RLS and prune job. BEFORE, not
+AFTER, or the row being inserted would count against itself and the cap would be
+nine.
+
+Both functions changed with it: they now insert first and turn the trigger's
+`P0001` into their 429, so **the migration and the deploy have to land together**
+— with the trigger live and the deployed code unchanged, the insert still happens
+after the decision to send. `tests/db/email-rate-limit.test.ts` runs every case as
+`service_role` (BYPASSRLS — the role the SECRET key gets), which is the whole
+point: the cap holds against the role the leaked secret would be using.
+[`supabase/migrations/0012_enforce-trek-email-rate-limit-in-postgres.sql`](supabase/migrations/0012_enforce-trek-email-rate-limit-in-postgres.sql)
+— **applied and verified live 2026-09-02 13:06:20+00** (ledger `0001`–`0012`, no
+gaps; `pg_trigger` reads BEFORE INSERT … WHEN `new.action = 'trek_email'`,
+enabled, definer, `search_path` pinned, anon EXECUTE false). `npm test` 190
+passing, `npm run build` clean.
+
+**The functions are still undeployed** — `list_edge_functions` returns
+`send-trek-notification` v11 and `send-trek-leave-notification` v6, both stamped
+2026-08-25, and the deployed body still counts before inserting and compares the
+secret with `!==`. So the half that is live is the hard floor: nothing can write
+an 11th `trek_email` row in an hour, which is the guarantee a leaked secret hits
+when it talks to PostgREST directly. The half that is not is the send path — the
+old code ignores the rejected insert and mails regardless, so the concurrent
+burst is still open until the deploy.
+
+## The blank-message half of the bypass, and the signup name 0009 broke  ·  2026-09-02
+
+`0009` is applied and verified live (ledger `0001`–`0009`, all six constraints
+`convalidated`). Re-reading it against the live database rather than against the
+finding list it was written from turned up two follow-ons, shipped as `0010`,
+plus a tail of the same class as `0011`.
+
+**The message bypass was only half closed.** `0009` added a ceiling and no floor,
+so a direct PostgREST insert could still write `''` or `'   '` — the same
+skip-the-form bypass, left open on the other side. The floor has to be
+conditional, which is exactly why `0009` shipped none rather than a wrong one:
+soft-delete is an UPDATE setting `is_deleted = true, message = ''`, so blank is a
+legal row shape for one case. Hence
+`check (coalesce(is_deleted, false) or length(btrim(message)) > 0)`.
+
+**That constraint alone would have been close to decorative.** Nothing pinned
+`is_deleted` on INSERT — `Send messages` checked `user_id`, chat participation
+and `is_announcement = false` only — so a blank row with `is_deleted = true`
+satisfied the new CHECK on the way past. The policy now pins it the same way it
+pins `is_announcement`. A message can only be *born* live and non-blank; deletion
+stays an UPDATE, and `Edit own messages` is deliberately left alone or nothing
+could ever be deleted.
+
+**`0009` turned a long name into a failed signup.** `handle_new_user()` copies
+`raw_user_meta_data->>'full_name'` unbounded; once `profiles_full_name_len`
+existed, it raised. Worth stating precisely, because the first note on this was
+wrong: the trigger is AFTER INSERT with no exception handler, in the same
+transaction as the `auth.users` insert, so a violation rolls that row back too —
+**no half-created account**, just a clean failure with an opaque 500. Reachable
+today only through the GoTrue API directly (the form gained `.max(100)` in
+`0009`), but reachable by ordinary users the day a social provider is added,
+since provider display names are unbounded and not ours to validate. `email` is
+the only provider today (5 identities, longest metadata name 15 chars), so the
+`left(…, 100)` clamp is pre-emptive. Clamping beats raising for a cosmetic
+field: a long name is not a reason to refuse someone an account.
+
+**`0011`** mirrors the last eight Zod-only caps — `treks.title` (150),
+`description` (2000), `location` (200), `meeting_point`/`meeting_point2` (300),
+`gear_checklist` (2000), `profiles.emergency_contact` (100), `emergency_no` (20).
+No abuse story on any of them, which is why they weren't in the Day 7 list;
+they're storage-side sloppiness rather than a lever, and the reason to close them
+is that a rule enforced in one place quietly stops being true in the other.
+`gear_checklist` is `text[]` and its Zod cap is on the raw textarea, so the CHECK
+bounds `array_to_string(…, E'\n')` — the same string, not an element count.
+`phone_no` is left uncapped on purpose: no Zod counterpart to mirror, and it's
+unclear anything still writes it.
+
+Noticed while mapping those and **not** fixed, being a client bug rather than a
+schema one: `emergencyContactRelationship` is collected and validated at 60 chars
+and then written to no column at all
+([profile/edit/page.tsx:176-177](src/app/(trekker)/profile/edit/page.tsx#L176-L177)
+persists name and phone and drops it).
+
+185 tests green. New coverage in `tests/db/input-constraints.test.ts` (blank and
+whitespace-only rejected, the soft-delete shape accepted, a 150-char name
+truncated to 100 rather than raising, `gear_checklist` over by exactly the
+newline separator) and `tests/db/chat.test.ts` (the `is_deleted` INSERT pin, and
+the soft-delete path it must not break).
+
+## Input caps moved from the form into the database  ·  2026-09-02
+
+`0009_add-input-validation-check-constraints.sql` adds six CHECK constraints:
+`conversation_messages.message` ≤ 2000, `profiles.full_name` ≤ 100, `profiles.bio`
+≤ 500, `treks.estimated_cost` ≥ 0, and `max_participants > 0` on `treks` and
+`trek_batches`.
+
+These bounds already existed in `src/lib/schemas.ts` — in the browser. The app
+talks to PostgREST with the publishable key, so every one of them was advisory:
+skip the form and you wrote whatever you liked. The 2026-08 Day 7 pentest pass
+recorded all six (`strix-prompts/day 7 results.md`; `TEST.md` §7.2.1 for the
+message case, the one with a real abuse story — an unbounded `message` is a
+storage and render-cost amplifier against every other member of a batch chat).
+`post_batch_announcement()` restated the 2000-char cap, but only for
+announcements; a direct insert had never had a bound.
+
+**These findings were never triaged into §1**, unlike the Day 5 pass which became
+§1.9 — so there is no §1 row to move, only the new §2 entry.
+
+Three things worth keeping:
+
+- **Zero capacity is rejected, not just negatives.** A departure with zero seats
+  is not a state the product means anything by, and NULL already carries "no
+  limit". `optionalInt` in `schemas.ts` moved from `>= 0` to `>= 1` in the same
+  change, so the trek and batch forms answer with an inline message rather than
+  letting the violation surface raw. The `company.test.ts` case that pinned
+  `max_participants: 0` through the mapper dropped that field — `estimatedCost:
+  0` / `distanceKm: 0` still pin the free-trek asymmetry it was written for.
+- **`signUpSchema.fullName` had no cap at all** — only `.min(1)`. Without the
+  matching `.max(100)` added here, a long signup name would have failed *inside*
+  `handle_new_user()`, after `auth.users` already had the row. This is the kind
+  of break that only appears once the DB constraint lands.
+- **Only upper bounds on the text columns.** `length(message) >= 1` would mirror
+  `messageSchema` and would break deletion: the client soft-deletes by setting
+  `is_deleted = true, message = ''`
+  (`src/app/(trekker)/messages/page.tsx:444`), so the empty string is
+  load-bearing.
+
+Applied with no backfill and no `NOT VALID` staging — checked over the read-only
+MCP first, 0 violating rows, widest values 811 / 18 / 6 chars against caps of
+2000 / 100 / 500. New `tests/db/input-constraints.test.ts` asserts each bound on
+both sides (2000 accepted, 2001 rejected) via `asSuperuser`, so RLS cannot mask a
+dropped constraint; 124 db tests green.
 
 ## Zod's eval probe was the only thing tripping the enforced CSP  ·  2026-09-01
 

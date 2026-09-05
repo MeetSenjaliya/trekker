@@ -66,17 +66,17 @@ Holds **PII**. Public reads are blocked at the table; cross-user display data is
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid | **PK**, FK → `auth.users(id)` |
-| `full_name` | text | |
+| `full_name` | text | ≤ 100 chars (`profiles_full_name_len`, 0009). NULL = unset — `handle_new_user()` writes `left(nullif(trim(…), ''), 100)`, **clamping** since 0010: it is an AFTER INSERT trigger with no exception handler, so raising here would abort the `auth.users` insert and fail the signup outright |
 | `avatar_url` | text | |
-| `bio` | text | |
-| `emergency_contact` | text | PII |
+| `bio` | text | ≤ 500 chars (`profiles_bio_len`, 0009) |
+| `emergency_contact` | text | PII. ≤ 100 chars (`profiles_emergency_contact_len`, 0011) |
 | `created_at` | timestamptz | `now()` |
 | `email` | text | **NOT NULL, UNIQUE** (PII) |
 | `age` | integer | PII |
 | `"Gender"` | `gender` | quoted/capitalised column name |
 | `experience_level` | `experience_level` | |
-| `phone_no` | varchar | PII |
-| `emergency_no` | varchar | PII |
+| `phone_no` | varchar | PII. ≤ 20 chars (`profiles_phone_no_len`, 0013) and digits/whitespace/`+`/`(`/`)`/`-` only (`profiles_phone_no_format`, 0013). Both arrived with the format rule: no Zod counterpart writes this column (the profile schema carries the emergency contact's phone, not the user's own) and it is unclear anything still does, but the owner can write it directly over PostgREST |
+| `emergency_no` | varchar | PII. ≤ 20 chars (`profiles_emergency_no_len`, 0011); digits/whitespace/`+`/`(`/`)`/`-` only (`profiles_emergency_no_format`, 0013 — the Zod regex the length cap left behind). Empty and NULL pass both |
 | `account_type` | `account_type` | **NOT NULL**, default `'trekker'`. Immutable to clients |
 
 Row created automatically by the `handle_new_user()` trigger on signup.
@@ -89,17 +89,17 @@ Owned by a company; company members create/edit their own treks via RLS, archive
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid | **PK**, `gen_random_uuid()` |
-| `title` | text | **NOT NULL** |
-| `description` | text | |
-| `location` | text | |
+| `title` | text | **NOT NULL**, ≤ 150 chars (`treks_title_len`, 0011) |
+| `description` | text | ≤ 2000 chars (`treks_description_len`, 0011) |
+| `location` | text | ≤ 200 chars (`treks_location_len`, 0011) |
 | `cover_image_url` | text | |
 | `difficulty` | `difficulty` | **NOT NULL** |
 | `distance_km` | numeric | |
 | `duration_hours` | numeric | |
-| `meeting_point` / `meeting_point2` | text | |
-| `max_participants` | integer | |
-| `estimated_cost` | numeric | |
-| `gear_checklist` | text[] | |
+| `meeting_point` / `meeting_point2` | text | ≤ 300 chars each (`treks_meeting_point_len` / `treks_meeting_point2_len`, 0011) |
+| `max_participants` | integer | `> 0` (`treks_max_participants_positive`, 0009). NULL = uncapped |
+| `estimated_cost` | numeric | `>= 0` (`treks_estimated_cost_nonneg`, 0009); no upper bound |
+| `gear_checklist` | text[] | Joined with newlines, ≤ 2000 chars (`treks_gear_checklist_len`, 0011) — bounds the same string the textarea's Zod cap measures, not the element count |
 | `rating` | smallint | ⚠️ legacy static column — **no longer surfaced on cards**. Card/Explore ratings are now the live average of `trek_reviews.rating` (see `get_trek_avg_rating()` / `search_treks()`). |
 | `plan` | text | itinerary |
 | `participants_joined` | smallint | denormalised counter, kept in sync by `trek_participants_count_trigger` → `update_participants_count()`; counts **confirmed only** (follow-up #1, so it equals `get_trek_participant_count()`). Used directly by the Explore listing. |
@@ -115,7 +115,8 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `id` | uuid | **PK** |
 | `name` | text | **NOT NULL**, CHECK non-blank |
 | `slug` | text | **NOT NULL, UNIQUE**, CHECK `^[a-z0-9]+(-[a-z0-9]+)*$`, ≤ 60 chars. Public URL `/company/[slug]`; **immutable** — pinned to OLD by `trg_protect_company_admin_fields` for non-platform-admins (blocks slug hijack of old links). No rename path in v1 |
-| `description` / `logo_url` / `cover_image_url` / `website` / `contact_email` / `contact_phone` | text | storefront profile, editable by company owner/admin |
+| `description` / `logo_url` / `cover_image_url` / `contact_email` / `contact_phone` | text | storefront profile, editable by company owner/admin. `description`, `contact_email` and `contact_phone` are bounded in `src/lib/schemas.ts` and nowhere else — `0009`/`0011` never reached this table |
+| `website` | text | storefront profile. CHECK `^https?://` case-insensitive (`companies_website_scheme`, 0014) — it is rendered into an `href` on the public storefront and on the admin review page, and bare `z.url()` accepted `javascript:`/`data:`/`vbscript:`. NULL passes (blank field: both writers send `website \|\| null`); `''` does not |
 | `status` | `company_status` | **NOT NULL** default `'pending'`, indexed. Only platform admins can change it (trigger-pinned) |
 | `rejection_reason` | text | set by `reject_company()` / `suspend_company()` |
 | `created_by` | uuid | **NOT NULL**, FK → `auth.users(id)`. Partial unique index `companies_one_pending_per_creator`: **one pending application per user** (spam guard; rejected users can reapply) |
@@ -161,7 +162,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `id` | uuid | **PK** |
 | `trek_id` | uuid | **NOT NULL**, FK → `treks(id)` |
 | `batch_date` | date | **NOT NULL** |
-| `max_participants` | integer | per-batch capacity; seeded from `treks.max_participants` by `join_trek_and_chat` at batch creation. NULL = unlimited. |
+| `max_participants` | integer | per-batch capacity; seeded from `treks.max_participants` by `join_trek_and_chat` at batch creation. `> 0` (`trek_batches_max_participants_positive`, 0009). NULL = unlimited. |
 | `created_at` | timestamptz | `now()` |
 | | | **UNIQUE(`trek_id`, `batch_date`)** |
 
@@ -225,11 +226,11 @@ Composite **PK (`created_at`, `id`)**.
 |---|---|---|
 | `conversation_id` | uuid | **NOT NULL**, FK → `conversations(id)` |
 | `user_id` | uuid | **NOT NULL**, FK → `profiles(id)` |
-| `message` | text | **NOT NULL** |
+| `message` | text | **NOT NULL**, ≤ 2000 chars (`conversation_messages_message_len`, 0009) and non-blank after trim **unless the row is soft-deleted** (`conversation_messages_message_not_blank`, 0010). The `is_deleted` arm exists because deletion blanks the text; `is_deleted` is pinned to false on INSERT by the `Send messages` policy, so a message can only be *born* live and non-blank |
 | `created_at` | timestamptz | **NOT NULL**, `now()`, part of PK |
 | `id` | uuid | `gen_random_uuid()`, part of PK |
 | `updated_at` | timestamptz | edit timestamp |
-| `is_deleted` | boolean | soft-delete (default `false`) |
+| `is_deleted` | boolean | soft-delete (default `false`). **Pinned to false on INSERT** by the `Send messages` policy since 0010 — deletion is an UPDATE, and letting a row arrive pre-deleted was the escape hatch in `conversation_messages_message_not_blank` (blank + `is_deleted = true` satisfies the CHECK). The UPDATE policy deliberately does *not* pin it, or nothing could ever be deleted |
 | `reply_to` | uuid | references another message id (no FK) |
 | `reactions` | jsonb | `{ "emoji": [userId, …] }`, default `{}` |
 | `is_announcement` | boolean | **NOT NULL**, default `false` (2026-08-08). Operator notice rather than a peer message; rendered on `/messages` as an amber `Megaphone` notice with no reply/react/edit affordances. **Only `post_batch_announcement()` can set it** — both write policies pin it to `false`, so a trekker cannot forge one through PostgREST. Consequence: an announcement is immutable through the table API, soft-delete included. |
@@ -244,7 +245,7 @@ Composite **PK (`created_at`, `id`)**.
 **PK (`user_id`, `achievement_key`)**; `earned_at` timestamptz. **Append-only, system-managed: read-only to clients** (SELECT own rows only; INSERT/UPDATE/DELETE revoked — written exclusively by `award_user_achievements()`, chained off `recompute_user_stats()`). Badge catalog (key → name/icon/description) lives in `src/lib/achievements.ts`; criteria thresholds live in `award_user_achievements()`. 15 badges keyed on treks joined (entry-level "Trailblazer"), completed-trek count, total distance, distinct locations, Hard/Expert completions, distinct active months, reviews written, and photos shared.
 
 ### `rate_events` — append-only rate-limit counter (added 2026-08-05)
-`id` bigint identity **PK**, `actor` uuid **NOT NULL** FK → `auth.users(id)` ON DELETE CASCADE, `action` text **NOT NULL** (`'join'` | `'invite'`), `at` timestamptz default `now()`. Indexed `(actor, action, at desc)`. **Invisible to clients: RLS on with ZERO policies *and* all grants revoked from `anon`/`authenticated`**, so it is not reachable through PostgREST at all — a user can neither read their own counter nor delete it to reset a limit. Written only by the SECURITY DEFINER functions in §6 (which bypass RLS). Logged **only** where the evidence of an action does not survive (leaving a trek deletes the `trek_participants` row; a failed invite lookup writes nothing) — chat flood counts real `conversation_messages` rows instead, since they are soft-deleted and never removed. Pruned hourly by the `prune-rate-events` pg_cron job (keeps 1 day; only the last hour is ever read).
+`id` bigint identity **PK**, `actor` uuid **NOT NULL** FK → `auth.users(id)` ON DELETE CASCADE, `action` text **NOT NULL** (`'join'` | `'invite'` | `'trek_email'` | the storage actions from `storage_rate_rule()`), `at` timestamptz default `now()`. Indexed `(actor, action, at desc)`. **Invisible to clients: RLS on with ZERO policies *and* all grants revoked from `anon`/`authenticated`**, so it is not reachable through PostgREST at all — a user can neither read their own counter nor delete it to reset a limit. Written only by the SECURITY DEFINER functions in §6 (which bypass RLS). Logged **only** where the evidence of an action does not survive (leaving a trek deletes the `trek_participants` row; a failed invite lookup writes nothing) — chat flood counts real `conversation_messages` rows instead, since they are soft-deleted and never removed. Pruned hourly by the `prune-rate-events` pg_cron job (keeps 1 day; only the last hour is ever read).
 
 ---
 
@@ -290,6 +291,7 @@ Composite **PK (`created_at`, `id`)**.
 | `enforce_message_rate_limit()` | trigger | **DEFINER** | pinned | Chat flood cap, **30 messages/minute/user**. Counts real `conversation_messages` rows (soft-deleted, never removed). Statement-level so PostgREST bulk inserts are covered. No-ops when `auth.uid()` is null (service-role writes). |
 | `enforce_join_rate_limit()` | trigger | **DEFINER** | pinned | Join cap, **10 joins/hour/user** — the cost is outbound email (`notify_trek_participation()` fires on INSERT *and* DELETE, so a join/leave cycle mails real people twice). Counts `rate_events` because leaving deletes the participant row. No-ops when `auth.uid()` is null (waitlist promotion). |
 | `enforce_storage_rate_limit()` | trigger | **DEFINER** | pinned | Upload cap on `storage.objects`, **6/hour/user** (`avatars`/`company-logos`/`trek-images`) and **20/hour** (`trek-reviews`, whose form uploads N photos per submit). Fires on INSERT **and** UPDATE — `avatars` upserts to a fixed path, so every write after the first is an UPDATE; skips UPDATEs whose `version` is unchanged (renames, metadata touches). Counts `rate_events` because avatars are one row forever and review photos are user-deletable. Lives in `public` because `postgres` lacks `CREATE` on the `storage` schema. **Identifies the user from `new.owner`, not `auth.uid()`** — `auth.uid()` is NULL inside this trigger on the storage-api path (verified live 2026-08-05) even though RLS policies on the same INSERT resolve it, which made the first version silently inert; no-ops when both are null so service-role/seeded writes are never blocked. |
+| `enforce_trek_email_rate_limit()` | trigger | **DEFINER** | pinned | **Added 2026-09-02 (`0012`).** Notification-email cap, **10 trek emails/hour/recipient**, on `rate_events` itself — `BEFORE INSERT ... WHEN (new.action = 'trek_email')`. The two edge functions used to enforce this in TypeScript, but both hold the SECRET key and bypass RLS on `rate_events`, so the count was a policy the caller applied to itself; making the insert the gate means a send cannot be recorded without being counted. Takes a `pg_advisory_xact_lock` on the recipient first: check-then-insert let ten concurrent webhook calls each read a count of 9 and each send. BEFORE, not AFTER, so the row being inserted is not in its own count. |
 | `storage_rate_rule(text)` | `(v_action text, v_limit int)` | INVOKER (immutable) | pinned | The bucket → (action, limit) mapping, in one place because `enforce_storage_rate_limit()` and `upload_rate_limited()` both read it — two copies of "6" would drift on the first tuning pass and the app would report a limit that isn't the one enforced. Returns NULLs for an uncovered bucket (`trek-profile`, anything new); both callers treat that as "not covered". EXECUTE revoked from `public`/`anon`/`authenticated` — both callers are DEFINER and owned by `postgres`. |
 | `upload_rate_limited(text)` | boolean | **DEFINER** (stable) | pinned | **Added 2026-08-08.** Answers "is the caller out of upload budget for this bucket right now?". Exists because **storage-api does not forward a database error message** — it answers a trigger raise with 500 and a body of `{}`, which supabase-js turns into the message `"{}"`, so a rate-limited upload was indistinguishable from any other failure and the user was told to retry (impossible for another hour). No errcode avoids this: storage-api maps 42501 to its own RLS text, 23505/23503 to key/bucket errors, everything else to an opaque 500. [src/lib/uploadErrors.ts](src/lib/uploadErrors.ts) calls it **only after an upload has already failed** with an unrecognised error, so the happy path costs no round trip. Read-only and consumes no budget, so probing after a rejection can't push the caller further into the limit. Returns one boolean about the caller's **own** counter — `rate_events` keeps zero policies and zero grants, so no count, timestamp or other actor leaks. EXECUTE: `authenticated` only. `auth.uid()` **is** reliable here (ordinary PostgREST call, not the storage-api trigger context). |
 | `admin_list_companies(text)` / `admin_get_company(uuid)` | setof `companies` | **DEFINER** | pinned | Platform-admin-only reads that return the audit columns (`created_by`/`approved_by`/`approved_at`) the base-table client SELECT grant excludes. Raise for non-admins. EXECUTE revoked from PUBLIC + `anon`, granted to `authenticated`. |
@@ -326,6 +328,7 @@ Composite **PK (`created_at`, `id`)**.
 | `trek_participants` | `trek_participants_waitlist_promote` | AFTER DELETE | `promote_waitlist_on_leave()` | ✅ active — FIFO waitlist promotion |
 | `conversation_messages` | `conversation_messages_rate_limit` | AFTER INSERT — **FOR EACH STATEMENT** | `enforce_message_rate_limit()` | ✅ active (2026-08-05) — 30 msg/min. Statement-level on purpose: a per-row check can't see its own statement's siblings, so a PostgREST array insert would pass every row through a count of 0 |
 | `trek_participants` | `trek_participants_rate_limit` | AFTER INSERT — FOR EACH ROW | `enforce_join_rate_limit()` | ✅ active (2026-08-05) — 10 joins/hr. A trigger, not a check inside `join_trek_and_chat()`, because the "Users can join treks" policy permits a direct INSERT that skips the RPC |
+| `rate_events` | `rate_events_trek_email_rate_limit` | BEFORE INSERT — FOR EACH ROW, `WHEN (new.action = 'trek_email')` | `enforce_trek_email_rate_limit()` | ✅ active (2026-09-02, `0012`) — 10 notification emails/hr/recipient. On the log table rather than a table the app writes: the sender is an edge function holding the SECRET key, so the only write it cannot skip is the one that records the send |
 
 > `trek_participants` had **two** INSERT and **two** DELETE notification triggers — one working webhook pair plus one dead `pg_net` pair. The dead pair was dropped in `0007`; `trek-join-notification` / `trek-leave-notification` are now the only notification triggers on the table.
 
@@ -403,6 +406,8 @@ Buckets (all **public**; **all five** capped at **3 MiB / `image/jpeg`,`image/pn
 | `send-trek-leave-notification` | **false** | `trek-leave-notification` trigger (on leave) |
 
 **`verify_jwt` is `false` on both** — read back over the MCP `list_edge_functions` (2026-08-26); this table said `true` until then. That is deliberate, not a gap: the caller is a Postgres trigger, which has no user JWT to send. Authorization is the shared secret in Vault (`edge_function_token`), sent on `x-trek-webhook-secret` and compared in constant time inside each function. It also means the gateway routes these two **without any `apikey` header**, which is why `0008` could delete the embedded publishable key from `notify_trek_participation()` rather than move it to Vault. A *wrong* `apikey` is worse than none — the gateway answers `401 {"message":"Invalid API key"}` before the function runs, and the trigger swallows it.
+
+**Both are rate-limited to 10 notification emails/hour per recipient** (EDGE-003), sharing one `'trek_email'` counter so alternating the two endpoints cannot double the rate. Since `0012` the cap is the `rate_events` trigger in §7, not the functions' own count — they log the attempt first and turn the trigger's `P0001` into a 429, so a leaked secret meets the limit in Postgres rather than in code it is already past.
 
 Source for both lives in [supabase/functions/](supabase/functions/). These two are the **only** functions on the project — confirmed via `list_edge_functions` over the read-only MCP (2026-08-25, EDGE-001). `trek-email-notification` was never deployed; the `notify_trek_*` triggers that referenced it were dropped in `0007`.
 

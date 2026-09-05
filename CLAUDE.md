@@ -56,7 +56,7 @@ App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src
 - `src/lib/auth.ts` — `signUp/signInAs/signOut/resetPassword/updatePassword/getCurrentUser`. `signInAs()` takes the account kind and only persists a session if it matches.
 - `src/contexts/AuthContext.tsx` — `useAuth(): { user, session, loading, signOut }`.
 - `src/utils/imageCompression.ts` — `compressImage()`, `sanitizeFileName()`.
-- `src/proxy.ts` → `src/utils/supabase/middleware.ts` `updateSession()` — session refresh + route guard.
+- `src/proxy.ts` → `src/utils/supabase/middleware.ts` `updateSession()` — session refresh + route guard, and (since 2026-09-05) the per-request CSP nonce from `src/utils/csp.ts`. The nonce is why every route renders at request time (`connection()` in `src/app/layout.tsx`); any `<script>` the app renders itself must carry it — see Known Gotchas in `FEATURES.md`.
 - `supabase/functions/` — edge functions (`send-trek-notification`, `send-trek-leave-notification`).
 - `supabase/migrations/` — every DB change, append-only. See its `README.md`; `schema.sql` is generated from it.
 
@@ -98,6 +98,18 @@ Config is `vitest.config.ts` (jsdom, `vitest.setup.ts`, `@` alias mirrored from 
 A stale `.eslintrc.json` is still in the repo turning four rules off — ESLint 9 reads `eslint.config.mjs` and ignores it entirely, so none of that applies; don't trust it. It's queued for deletion in `FEATURES.md` §1.5.
 
 So every rule the `next/core-web-vitals` + `next/typescript` presets ship is live at its default severity — including ones previously documented here as off. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
+
+`eslint-config-next` 16 ships **native flat config**, so `eslint.config.mjs` imports `eslint-config-next/core-web-vitals` and `/typescript` directly — it no longer wraps them in `FlatCompat`, which throws on the v16 package. That version also turns on two React Compiler rules, both **errors**, both already at zero violations — keep them there:
+
+- `react-hooks/purity` — no `Math.random()` / `Date.now()` during render. A `useState` lazy initializer is the accepted escape hatch; `useMemo` and `useRef` are **not** (the rule flags both).
+- `react-hooks/set-state-in-effect` — no synchronous `setState` in an effect body. Reach for `useSyncExternalStore` when reading web storage or "am I mounted", derive-during-render for defaults, and the adjust-during-render pattern (`if (prev !== next) { setPrev(next); … }`) when re-syncing on a prop change. Async `setState` inside a promise callback is not flagged.
+
+**Two toolchain versions are pinned below latest on purpose — both because of lint, and neither will show up as a problem in `npm run build`:**
+
+- **`typescript` stays on 6.x.** TS 7 (the Go rewrite) type-checks this repo cleanly, but `typescript-eslint` refuses to load against the TS 7 API and `npm run lint` dies before linting anything.
+- **`eslint` stays on 9.x**, even though npm marks 9.39.5 deprecated and 10.x is latest. ESLint 10 crashes inside `eslint-plugin-react`, which `eslint-config-next` 16 bundles. Its peer range (`eslint: >=9.0.0`) is wrong — don't trust it, just try it.
+
+Re-test both whenever `eslint-config-next` bumps; see `FEATURES.md` §2 for the tracking issue.
 
 **Known warning backlog** (non-blocking — `npm run build` passes; do not "fix" these in passing as part of unrelated work):
 - 12× `@next/next/no-img-element` — use `next/image` for remote images
