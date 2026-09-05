@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import TrekCard from '@/components/ui/TrekCard';
 import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/ui/FilterSection';
 import TrekPagination from '@/components/ui/TrekPagination';
@@ -12,17 +12,25 @@ const DEFAULT_IMAGE_URL =
 
 const TREKS_PER_PAGE = 6;
 
+const subscribeToNothing = () => () => {};
+
 export default function ExploreClient({ initialData }: { initialData: SearchTreksResult }) {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
 
   // Restore the last-applied filters + page when returning to this page, so
-  // going into a trek and back keeps the same results. Read in an effect (not a
-  // lazy initializer) so server and first client render match — sessionStorage
-  // isn't available during SSR.
-  useEffect(() => {
-    const saved = sessionStorage.getItem(EXPLORE_FILTERS_STORAGE_KEY);
-    if (!saved) return;
+  // going into a trek and back keeps the same results. Read through
+  // useSyncExternalStore, not a lazy initializer, so the server and the
+  // hydrating client both see null — sessionStorage isn't available during SSR
+  // — and the restore lands on the render straight after hydration.
+  const saved = useSyncExternalStore(
+    subscribeToNothing,
+    () => sessionStorage.getItem(EXPLORE_FILTERS_STORAGE_KEY),
+    () => null
+  );
+  const [restored, setRestored] = useState(false);
+  if (!restored && saved !== null) {
+    setRestored(true);
     try {
       const { filters: savedFilters, page } = JSON.parse(saved);
       if (savedFilters) setFilters({ ...DEFAULT_FILTERS, ...savedFilters });
@@ -30,7 +38,7 @@ export default function ExploreClient({ initialData }: { initialData: SearchTrek
     } catch {
       sessionStorage.removeItem(EXPLORE_FILTERS_STORAGE_KEY);
     }
-  }, []);
+  }
 
   // Persist on user actions only — never via an effect keyed on `filters`,
   // which would write the default state back over the saved value on the first
@@ -114,7 +122,7 @@ export default function ExploreClient({ initialData }: { initialData: SearchTrek
             <p className="text-white/60 animate-pulse text-xl">Loading adventures...</p>
           </div>
         ) : treks.length === 0 ? (
-          <div className="text-center py-20 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10">
+          <div className="text-center py-20 bg-white/5 backdrop-blur-xs rounded-2xl border border-white/10">
             <p className="text-xl text-gray-300">No treks found matching your filters.</p>
             <button
               onClick={() => handleFilterChange(DEFAULT_FILTERS)}

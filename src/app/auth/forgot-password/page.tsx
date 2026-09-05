@@ -151,7 +151,7 @@ export default function ForgotPasswordPage() {
                   value={email}
                   onChange={handleInputChange}
                   placeholder="Email or Username"
-                  className={`relative block w-full appearance-none rounded-xl border px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-none sm:text-sm transition-colors ${error
+                  className={`relative block w-full appearance-none rounded-xl border px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-hidden sm:text-sm transition-colors ${error
                       ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-500'
                       : 'border-gray-300 bg-gray-50 focus:border-blue-500 focus:ring-blue-500'
                     }`}
@@ -164,7 +164,7 @@ export default function ForgotPasswordPage() {
               <div>
                 <button
                   type="submit"
-                  className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
                 >
                   Send Password Reset Link
                 </button>

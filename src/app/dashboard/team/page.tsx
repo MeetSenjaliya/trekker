@@ -122,7 +122,7 @@ export default function TeamPage() {
                   setEmailError(null);
                 }}
                 placeholder="teammate@example.com"
-                className={`block w-full rounded-xl border px-4 py-3 text-sm text-gray-900 focus:outline-none ${
+                className={`block w-full rounded-xl border px-4 py-3 text-sm text-gray-900 focus:outline-hidden ${
                   emailError ? 'border-red-300 bg-red-50' : 'border-gray-300 bg-gray-50 focus:border-blue-500'
                 }`}
               />
@@ -219,7 +219,7 @@ export default function TeamPage() {
                       value={member.role}
                       onChange={(e) => changeRole(member.member_id, e.target.value as 'admin' | 'staff')}
                       disabled={busyId === member.member_id}
-                      className="rounded-lg border border-gray-300 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none disabled:opacity-60"
+                      className="rounded-lg border border-gray-300 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden disabled:opacity-60"
                     >
                       <option value="admin">Admin</option>
                       <option value="staff">Staff</option>

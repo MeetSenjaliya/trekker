@@ -74,7 +74,7 @@ const FilterSection: React.FC<FilterSectionProps> = ({ filters, onFilterChange }
   );
 
   const inputStyles =
-    'w-full bg-black/20 border border-white/10 rounded-lg py-2.5 px-4 text-sm text-white placeholder-blue-200/50 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all hover:bg-black/30 backdrop-blur-sm appearance-none';
+    'w-full bg-black/20 border border-white/10 rounded-lg py-2.5 px-4 text-sm text-white placeholder-blue-200/50 focus:outline-hidden focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all hover:bg-black/30 backdrop-blur-xs appearance-none';
 
   return (
     <div className="bg-white/5 backdrop-blur-md border border-white/10 p-6 rounded-2xl shadow-xl mb-8">
@@ -224,7 +224,7 @@ const FilterSection: React.FC<FilterSectionProps> = ({ filters, onFilterChange }
           {activeChips.map((key) => (
             <span
               key={key}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-100 text-sm font-medium shadow-[0_0_10px_rgba(59,130,246,0.1)] backdrop-blur-sm"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-100 text-sm font-medium shadow-[0_0_10px_rgba(59,130,246,0.1)] backdrop-blur-xs"
             >
               <span className="opacity-70 text-xs uppercase">{CHIP_LABELS[key]}:</span>
               <span className="font-semibold">{capitalize(filters[key])}</span>

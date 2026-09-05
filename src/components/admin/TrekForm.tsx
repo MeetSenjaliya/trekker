@@ -20,7 +20,7 @@ interface TrekFormProps {
 const toStr = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
 
 const inputClass = (hasError: boolean) =>
-  `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-none sm:text-sm transition-colors ${
+  `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-hidden sm:text-sm transition-colors ${
     hasError
       ? 'border-red-300 bg-red-50 focus:border-red-500'
       : 'border-gray-300 bg-gray-50 focus:border-blue-500'

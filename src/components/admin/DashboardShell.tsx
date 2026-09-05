@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useMemo, useState, useSyncExternalStore } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -42,6 +42,8 @@ export function useDashboardCompany(): DashboardCompanyValue {
 }
 
 const STORAGE_KEY = 'trekker.dashboard.companyId';
+
+const subscribeToNothing = () => () => {};
 
 /**
  * Status banner for the active (non-approved) company. Lives here rather than
@@ -145,18 +147,22 @@ export default function DashboardShell({ children }: { children: React.ReactNode
   // otherwise role-gated pages would bounce before memberships ever fetch.
   const loading = authLoading || isPending;
 
-  const [companyId, setCompanyIdState] = useState<string | null>(null);
+  const [pickedCompanyId, setPickedCompanyId] = useState<string | null>(null);
+  const storedCompanyId = useSyncExternalStore(
+    subscribeToNothing,
+    () => window.localStorage.getItem(STORAGE_KEY),
+    () => null
+  );
 
-  useEffect(() => {
-    if (memberships.length === 0) return;
-    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(STORAGE_KEY) : null;
-    const valid = stored && memberships.some((m) => m.company.id === stored) ? stored : memberships[0].company.id;
-    setCompanyIdState(valid);
-  }, [memberships]);
+  // This session's pick wins, then a remembered company that is still a
+  // membership; otherwise `active` below falls back to the first membership.
+  const companyId =
+    pickedCompanyId ??
+    (storedCompanyId && memberships.some((m) => m.company.id === storedCompanyId) ? storedCompanyId : null);
 
   const setCompanyId = (id: string) => {
     if (typeof window !== 'undefined') window.localStorage.setItem(STORAGE_KEY, id);
-    setCompanyIdState(id);
+    setPickedCompanyId(id);
   };
 
   const active = useMemo(
@@ -206,7 +212,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
                     id="company-switch"
                     value={active?.company.id ?? ''}
                     onChange={(e) => setCompanyId(e.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                    className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden"
                   >
                     {memberships.map((m) => (
                       <option key={m.company.id} value={m.company.id}>

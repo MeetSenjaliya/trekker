@@ -105,7 +105,7 @@ export default function ItineraryView({ plan }: { plan: string }) {
     return (
       <div className="relative border-l-2 border-blue-500/20 ml-4 pl-8 py-2">
         <div className="absolute top-0 -left-[9px] w-4 h-4 rounded-full bg-blue-500 shadow-[0_0_15px_rgba(59,130,246,0.5)]" />
-        <div className="bg-white/5 p-8 rounded-3xl border border-white/10 backdrop-blur-sm">
+        <div className="bg-white/5 p-8 rounded-3xl border border-white/10 backdrop-blur-xs">
           <p className="text-slate-300 leading-relaxed text-lg">{parsed.raw}</p>
         </div>
       </div>

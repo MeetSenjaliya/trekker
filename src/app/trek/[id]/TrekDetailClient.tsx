@@ -96,9 +96,11 @@ export default function TrekDetailClient({
 
   // Re-sync when the server component re-renders with a fresher count
   // (router.refresh() after a join/leave).
-  useEffect(() => {
+  const [syncedParticipantCount, setSyncedParticipantCount] = useState<number>(initialParticipantCount);
+  if (syncedParticipantCount !== initialParticipantCount) {
+    setSyncedParticipantCount(initialParticipantCount);
     setRealParticipantCount(initialParticipantCount);
-  }, [initialParticipantCount]);
+  }
 
   // Status Check Effects
   useEffect(() => {

@@ -19,7 +19,7 @@ const initialForm = {
 };
 
 const inputClass = (hasError: boolean) =>
-  `block w-full appearance-none rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-none sm:text-sm transition-colors ${
+  `block w-full appearance-none rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:z-10 focus:outline-hidden sm:text-sm transition-colors ${
     hasError
       ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-500'
       : 'border-gray-300 bg-gray-50 focus:border-blue-500 focus:ring-blue-500'
@@ -102,7 +102,7 @@ export default function CompanyApplyPage() {
               </div>
               <Link
                 href="/auth/signup"
-                className="inline-flex justify-center rounded-full border border-transparent bg-blue-600 px-8 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                className="inline-flex justify-center rounded-full border border-transparent bg-blue-600 px-8 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               >
                 Create a company account
               </Link>
@@ -267,7 +267,7 @@ export default function CompanyApplyPage() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {submitting ? 'Submitting…' : 'Submit application'}
               </button>

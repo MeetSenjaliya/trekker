@@ -219,7 +219,7 @@ export default function EditProfilePage() {
 
   // --- Styles ---
   // Input style that looks carved into the glass
-  const inputClass = "w-full pl-10 pr-4 py-3 rounded-xl bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all";
+  const inputClass = "w-full pl-10 pr-4 py-3 rounded-xl bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-hidden focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all";
 
   return (
     <div className="min-h-screen relative overflow-hidden flex items-center justify-center py-12 px-4" style={{ background: 'linear-gradient(to bottom, #1b2735 0%, #090a0f 100%)' }}>
@@ -347,14 +347,14 @@ export default function EditProfilePage() {
                   placeholder="Contact Name"
                   value={formData.emergencyContact.name}
                   onChange={(e) => handleEmergencyContactChange('name', e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-hidden focus:border-red-400/50 transition-all text-sm"
                 />
                 <input
                   type="text"
                   placeholder="Relationship"
                   value={formData.emergencyContact.relationship}
                   onChange={(e) => handleEmergencyContactChange('relationship', e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                  className="w-full px-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-hidden focus:border-red-400/50 transition-all text-sm"
                 />
                 <div className="col-span-1 md:col-span-2 relative">
                   <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-500" />
@@ -363,7 +363,7 @@ export default function EditProfilePage() {
                     placeholder="Emergency Phone Number"
                     value={formData.emergencyContact.phone}
                     onChange={(e) => handleEmergencyContactChange('phone', e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-red-400/50 transition-all text-sm"
+                    className="w-full pl-9 pr-4 py-2.5 rounded-lg bg-black/20 border border-white/10 text-white placeholder-gray-500 focus:outline-hidden focus:border-red-400/50 transition-all text-sm"
                   />
                 </div>
               </div>

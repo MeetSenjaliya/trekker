@@ -248,7 +248,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
           <button
             type="submit"
             disabled={isSubmitting || rating === 0 || review.trim().length < 10}
-            className="px-8 py-3 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-all duration-200 min-w-[120px]"
+            className="px-8 py-3 bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg shadow-md hover:shadow-lg focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-all duration-200 min-w-[120px]"
           >
             {isSubmitting ? 'Submitting...' : 'Submit Review'}
           </button>

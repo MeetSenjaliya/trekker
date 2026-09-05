@@ -74,7 +74,7 @@ export default function FavoritesPage() {
       <main className="flex-1 px-4 sm:px-6 lg:px-40 py-12 relative z-10">
         <div className="max-w-5xl mx-auto">
           {!favorites.length ? (
-            <div className="text-center py-16 bg-white/5 backdrop-blur-sm rounded-3xl border border-white/10">
+            <div className="text-center py-16 bg-white/5 backdrop-blur-xs rounded-3xl border border-white/10">
               <Heart className="w-24 h-24 text-gray-400/50 mx-auto mb-6" />
               <h2 className="text-2xl font-bold text-white mb-4">No Favorites Yet</h2>
               <p className="text-blue-100/60 mb-8 max-w-md mx-auto">
@@ -100,7 +100,7 @@ export default function FavoritesPage() {
                 if (!treks.length) return null;
 
                 return treks.map((trek) => (
-                  <div key={trek.id} className="flex flex-col md:flex-row items-center bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl shadow-xl overflow-hidden transition-all hover:bg-white/10 hover:shadow-2xl hover:-translate-y-1">
+                  <div key={trek.id} className="flex flex-col md:flex-row items-center bg-white/5 backdrop-blur-xs border border-white/10 rounded-2xl shadow-xl overflow-hidden transition-all hover:bg-white/10 hover:shadow-2xl hover:-translate-y-1">
                     {/* Image Section */}
                     <div className="md:w-1/3 w-full">
                       <img

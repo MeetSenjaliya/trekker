@@ -135,7 +135,7 @@ export default function ResetPasswordPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="New password"
-            className="relative block w-full appearance-none rounded-xl border border-gray-300 bg-gray-50 px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm transition-colors"
+            className="relative block w-full appearance-none rounded-xl border border-gray-300 bg-gray-50 px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-blue-500 focus:outline-hidden focus:ring-blue-500 sm:text-sm transition-colors"
           />
         </div>
         <div>
@@ -149,7 +149,7 @@ export default function ResetPasswordPage() {
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Confirm new password"
-            className="relative block w-full appearance-none rounded-xl border border-gray-300 bg-gray-50 px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-blue-500 focus:outline-none focus:ring-blue-500 sm:text-sm transition-colors"
+            className="relative block w-full appearance-none rounded-xl border border-gray-300 bg-gray-50 px-4 py-4 text-gray-900 placeholder-gray-500 focus:z-10 focus:border-blue-500 focus:outline-hidden focus:ring-blue-500 sm:text-sm transition-colors"
           />
         </div>
 
@@ -158,7 +158,7 @@ export default function ResetPasswordPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
+          className="group relative flex w-full justify-center rounded-full border border-transparent bg-blue-600 px-4 py-3 text-sm font-bold text-white transition-colors hover:bg-blue-700 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? 'Updating…' : 'Update password'}
         </button>

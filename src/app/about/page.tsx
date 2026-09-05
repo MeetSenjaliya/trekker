@@ -39,7 +39,7 @@ export default function AboutPage() {
 
             <div className="space-y-16">
               {/* Our Story Section */}
-              <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-8 rounded-2xl">
+              <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-8 rounded-2xl">
                 <h2 className="text-3xl font-bold text-white mb-6 border-l-4 border-blue-500 pl-4">
                   Our Story
                 </h2>
@@ -60,7 +60,7 @@ export default function AboutPage() {
                   How It Works
                 </h2>
                 <div className="grid md:grid-cols-3 gap-8 text-center">
-                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <div className="flex items-center justify-center size-16 bg-blue-500/20 text-blue-400 rounded-full mb-4 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300 transform group-hover:scale-110">
                       <Plus className="w-8 h-8" />
                     </div>
@@ -73,7 +73,7 @@ export default function AboutPage() {
                     </p>
                   </div>
 
-                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <div className="flex items-center justify-center size-16 bg-blue-500/20 text-blue-400 rounded-full mb-4 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300 transform group-hover:scale-110">
                       <MessageCircle className="w-8 h-8" />
                     </div>
@@ -86,7 +86,7 @@ export default function AboutPage() {
                     </p>
                   </div>
 
-                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="flex flex-col items-center group bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <div className="flex items-center justify-center size-16 bg-blue-500/20 text-blue-400 rounded-full mb-4 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300 transform group-hover:scale-110">
                       <CheckCircle className="w-8 h-8" />
                     </div>
@@ -102,7 +102,7 @@ export default function AboutPage() {
               </div>
 
               {/* Safety First Section */}
-              <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-8 rounded-2xl">
+              <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-8 rounded-2xl">
                 <h2 className="text-3xl font-bold text-white mb-6 text-center">
                   Safety First: Our Commitment
                 </h2>
@@ -123,7 +123,7 @@ export default function AboutPage() {
               </div>
 
               {/* Organizer Responsibilities Section */}
-              <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-8 rounded-2xl">
+              <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-8 rounded-2xl">
                 <h2 className="text-3xl font-bold text-white mb-6 border-l-4 border-blue-500 pl-4">
                   Organizer Responsibilities
                 </h2>
@@ -150,7 +150,7 @@ export default function AboutPage() {
                   of the Trek Buddies community to adhere to the following principles:
                 </p>
                 <div className="grid md:grid-cols-3 gap-8">
-                  <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <h3 className="text-xl font-semibold text-white mb-3">
                       Be Respectful
                     </h3>
@@ -159,7 +159,7 @@ export default function AboutPage() {
                       consideration. We have a zero-tolerance policy for harassment or discrimination.
                     </p>
                   </div>
-                  <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <h3 className="text-xl font-semibold text-white mb-3">
                       Be Honest
                     </h3>
@@ -168,7 +168,7 @@ export default function AboutPage() {
                       provide clear and accurate details about the trek.
                     </p>
                   </div>
-                  <div className="bg-white/5 backdrop-blur-sm border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
+                  <div className="bg-white/5 backdrop-blur-xs border border-white/10 p-6 rounded-2xl hover:bg-white/10 transition-colors">
                     <h3 className="text-xl font-semibold text-white mb-3">
                       Be Reliable
                     </h3>

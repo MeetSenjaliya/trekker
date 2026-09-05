@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Loader2, Building2, X, ImagePlus, Camera } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
@@ -13,7 +13,7 @@ import { updateCompany, isCompanyFrozen } from '@/lib/company';
 import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
 
 const inputClass = (hasError: boolean) =>
-  `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-none sm:text-sm transition-colors ${
+  `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-hidden sm:text-sm transition-colors ${
     hasError ? 'border-red-300 bg-red-50 focus:border-red-500' : 'border-gray-300 bg-gray-50 focus:border-blue-500'
   }`;
 
@@ -36,8 +36,12 @@ export default function CompanySettingsPage() {
   const [coverPreview, setCoverPreview] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    if (!company) return;
+  // Re-seed the form whenever the active company object changes — switching
+  // company, or the refetch that follows a save (which also clears the pending
+  // file inputs).
+  const [seededCompany, setSeededCompany] = useState<typeof company>(undefined);
+  if (company && seededCompany !== company) {
+    setSeededCompany(company);
     setForm({
       name: company.name ?? '',
       description: company.description ?? '',
@@ -49,7 +53,7 @@ export default function CompanySettingsPage() {
     setLogoFile(null);
     setCoverPreview(company.cover_image_url ?? null);
     setCoverFile(null);
-  }, [company]);
+  }
 
   if (!company || !permitted) return null;
 
@@ -158,7 +162,7 @@ export default function CompanySettingsPage() {
             )}
             <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/30 to-transparent" />
             <div className="absolute right-3 top-3 flex items-center gap-2">
-              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-white/90 px-3.5 py-1.5 text-xs font-bold text-gray-800 shadow-sm backdrop-blur transition-colors hover:bg-white">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-white/90 px-3.5 py-1.5 text-xs font-bold text-gray-800 shadow-xs backdrop-blur transition-colors hover:bg-white">
                 <Camera className="h-3.5 w-3.5" />
                 {coverPreview ? 'Change cover' : 'Upload cover'}
                 <input
@@ -176,7 +180,7 @@ export default function CompanySettingsPage() {
                     setCoverPreview(null);
                   }}
                   aria-label="Remove cover image"
-                  className="rounded-full bg-white/90 p-1.5 text-gray-600 shadow-sm backdrop-blur transition-colors hover:bg-white hover:text-red-600"
+                  className="rounded-full bg-white/90 p-1.5 text-gray-600 shadow-xs backdrop-blur transition-colors hover:bg-white hover:text-red-600"
                 >
                   <X className="h-4 w-4" />
                 </button>

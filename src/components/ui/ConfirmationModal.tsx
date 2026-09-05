@@ -70,7 +70,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               // offer a date the RPC is guaranteed to reject.
               min={localToday()}
               max={localMaxBatchDate()}
-              className="p-4 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
+              className="p-4 rounded-xl border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-hidden transition-all"
             />
           </div>
 
@@ -82,7 +82,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               type="checkbox"
               checked={safetyChecked}
               onChange={(e) => setSafetyChecked(e.target.checked)}
-              className="h-6 w-6 shrink-0 rounded-md border-2 border-slate-300 bg-white checked:bg-blue-500 checked:border-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              className="h-6 w-6 shrink-0 rounded-md border-2 border-slate-300 bg-white checked:bg-blue-500 checked:border-blue-500 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             />
             <span className="text-slate-700 font-medium">
               I have read and understood the safety instructions.
@@ -97,7 +97,7 @@ const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
               type="checkbox"
               checked={rulesChecked}
               onChange={(e) => setRulesChecked(e.target.checked)}
-              className="h-6 w-6 shrink-0 rounded-md border-2 border-slate-300 bg-white checked:bg-blue-500 checked:border-blue-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              className="h-6 w-6 shrink-0 rounded-md border-2 border-slate-300 bg-white checked:bg-blue-500 checked:border-blue-500 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
             />
             <span className="text-slate-700 font-medium">
               I agree to follow the organizer&apos;s rules.

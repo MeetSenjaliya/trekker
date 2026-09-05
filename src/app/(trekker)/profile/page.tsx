@@ -83,16 +83,15 @@ export default function ProfilePage() {
     distance_km: 0
   });
   const [earnedAchievements, setEarnedAchievements] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(true);
+  // With no signed-in user there is nothing to fetch, so only the auth check gates the page.
+  const loading = isLoading || (!!user && dataLoading);
 
   // ... (useEffect Logic remains identical) ...
   useEffect(() => {
     if (isLoading) return;
 
-    if (!user) {
-      setLoading(false);
-      return;
-    }
+    if (!user) return;
     
     const fetchData = async () => {
       try {
@@ -194,7 +193,7 @@ export default function ProfilePage() {
         } catch (err) { console.error(err); }
 
       } catch (error) { console.error(error); } 
-      finally { setLoading(false); }
+      finally { setDataLoading(false); }
     };
 
     fetchData();
@@ -298,12 +297,12 @@ export default function ProfilePage() {
             
             {/* Stats Cards Row */}
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-gradient-to-br from-white/5 to-transparent backdrop-blur-sm p-6 rounded-2xl border border-white/10 flex flex-col items-center">
+              <div className="bg-gradient-to-br from-white/5 to-transparent backdrop-blur-xs p-6 rounded-2xl border border-white/10 flex flex-col items-center">
                 <div className="p-3 bg-blue-500/10 rounded-full mb-2"><Award className="w-6 h-6 text-blue-400" /></div>
                 <div className="text-3xl font-bold text-white mb-0.5">{stats.treksCompleted}</div>
                 <div className="text-xs text-blue-200/50 uppercase tracking-widest font-semibold">Completed</div>
               </div>
-              <div className="bg-gradient-to-br from-white/5 to-transparent backdrop-blur-sm p-6 rounded-2xl border border-white/10 flex flex-col items-center">
+              <div className="bg-gradient-to-br from-white/5 to-transparent backdrop-blur-xs p-6 rounded-2xl border border-white/10 flex flex-col items-center">
                 <div className="p-3 bg-green-500/10 rounded-full mb-2"><Users className="w-6 h-6 text-green-400" /></div>
                 <div className="text-3xl font-bold text-white mb-0.5">{stats.treksOrganized}</div>
                 <div className="text-xs text-green-200/50 uppercase tracking-widest font-semibold">Organized</div>
@@ -311,7 +310,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Recent Treks */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-8 border border-white/10">
+            <div className="bg-white/5 backdrop-blur-xs rounded-2xl shadow-xl p-8 border border-white/10">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-bold text-white">Recent Adventures</h2>
                 <Link href="/treks/history" className="text-sm text-blue-400 hover:text-blue-300">View All</Link>
@@ -351,7 +350,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Upcoming Treks */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-8 border border-white/10">
+            <div className="bg-white/5 backdrop-blur-xs rounded-2xl shadow-xl p-8 border border-white/10">
               <h2 className="text-xl font-bold text-white mb-6">Upcoming Plans</h2>
               <div className="space-y-4">
                 {upcomingTreks.length > 0 ? upcomingTreks.map((trek) => (
@@ -385,7 +384,7 @@ export default function ProfilePage() {
           <div className="space-y-8">
             
             {/* Achievements */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-6 border border-white/10">
+            <div className="bg-white/5 backdrop-blur-xs rounded-2xl shadow-xl p-6 border border-white/10">
               <h2 className="text-lg font-bold text-white mb-5 flex items-center gap-2">
                 <Award className="w-5 h-5 text-yellow-400" /> Achievements
                 <span className="ml-auto text-xs font-medium text-gray-400">
@@ -421,7 +420,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Quick Actions */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-6 border border-white/10">
+            <div className="bg-white/5 backdrop-blur-xs rounded-2xl shadow-xl p-6 border border-white/10">
               <h2 className="text-lg font-bold text-white mb-5">Quick Actions</h2>
               <div className="grid gap-3">
                 <button className="w-full flex items-center gap-3 p-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 rounded-xl transition-all group text-left">
@@ -446,7 +445,7 @@ export default function ProfilePage() {
             </div>
 
             {/* Monthly Activity */}
-            <div className="bg-white/5 backdrop-blur-sm rounded-2xl shadow-xl p-6 border border-white/10">
+            <div className="bg-white/5 backdrop-blur-xs rounded-2xl shadow-xl p-6 border border-white/10">
               <h2 className="text-lg font-bold text-white mb-5">Monthly Activity</h2>
               <div className="space-y-4 text-sm">
                 <div className="flex justify-between items-center py-2 border-b border-white/5">

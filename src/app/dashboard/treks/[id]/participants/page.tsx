@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
@@ -26,10 +26,9 @@ export default function TrekParticipantsPage() {
   const { data: trek, isLoading: trekLoading } = useTrek(trekId);
   const { data: batches, isLoading: batchesLoading } = useTrekBatches(trekId);
 
-  const [batchId, setBatchId] = useState<string>('');
-  useEffect(() => {
-    if (!batchId && batches && batches.length > 0) setBatchId(batches[0].id);
-  }, [batches, batchId]);
+  // Until the user picks a departure, fall back to the first one.
+  const [pickedBatchId, setPickedBatchId] = useState<string>('');
+  const batchId = pickedBatchId || batches?.[0]?.id || '';
 
   const { data: participants, isLoading, isError } = useBatchParticipants(batchId || undefined);
   const { data: announcements, isLoading: annLoading } = useBatchAnnouncements(batchId || undefined);
@@ -111,8 +110,8 @@ export default function TrekParticipantsPage() {
             <select
               id="batch"
               value={batchId}
-              onChange={(e) => setBatchId(e.target.value)}
-              className="w-full max-w-xs rounded-xl border border-gray-300 bg-gray-50 px-4 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+              onChange={(e) => setPickedBatchId(e.target.value)}
+              className="w-full max-w-xs rounded-xl border border-gray-300 bg-gray-50 px-4 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden"
             >
               {batches.map((b) => (
                 <option key={b.id} value={b.id}>
@@ -216,7 +215,7 @@ export default function TrekParticipantsPage() {
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   placeholder="e.g. Pickup moved to the north gate, 6am sharp."
-                  className="block w-full resize-y rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                  className="block w-full resize-y rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden"
                 />
                 {textError && <p className="mt-1.5 text-sm text-red-600">{textError}</p>}
                 <div className="mt-2 flex items-center justify-between gap-4">

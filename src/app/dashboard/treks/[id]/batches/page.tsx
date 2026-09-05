@@ -113,7 +113,7 @@ export default function TrekBatchesPage() {
                   type="date"
                   value={form.batchDate}
                   onChange={(e) => setForm((p) => ({ ...p, batchDate: e.target.value }))}
-                  className="block w-full rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                  className="block w-full rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden"
                 />
                 {errors.batchDate && <p className="mt-1.5 text-sm text-red-600">{errors.batchDate}</p>}
               </div>
@@ -127,7 +127,7 @@ export default function TrekBatchesPage() {
                   placeholder={trek.max_participants ? String(trek.max_participants) : 'e.g. 15'}
                   value={form.maxParticipants}
                   onChange={(e) => setForm((p) => ({ ...p, maxParticipants: e.target.value }))}
-                  className="block w-full rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                  className="block w-full rounded-xl border border-gray-300 bg-gray-50 px-4 py-3 text-sm text-gray-900 focus:border-blue-500 focus:outline-hidden"
                 />
                 {errors.maxParticipants && (
                   <p className="mt-1.5 text-sm text-red-600">{errors.maxParticipants}</p>

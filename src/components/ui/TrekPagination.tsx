@@ -56,7 +56,7 @@ export default function TrekPagination({ totalPages, currentPage, onPageChange }
             onClick={() => onPageChange(p)}
             className={
               p === currentPage
-                ? `${baseBtn} bg-blue-600 text-white shadow-sm hover:bg-blue-700`
+                ? `${baseBtn} bg-blue-600 text-white shadow-xs hover:bg-blue-700`
                 : `${baseBtn} text-slate-600 hover:bg-blue-50`
             }
           >

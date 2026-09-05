@@ -165,24 +165,36 @@ function MessagesPageContent() {
     load();
   }, [uid, supabase, fetchProfilesMap]);
 
+  // Opening a conversation marks it read and drops its unread badge. Done here
+  // rather than in an effect on `selectedConversation` so it stays tied to the
+  // act of opening, not to every re-render that happens to change the object.
+  const openConversation = useCallback((conv: Conversation) => {
+    setSelectedConversation(conv);
+    markConversationRead(conv.id);
+    setUnreadCounts(prev => {
+      if (!prev.get(conv.id)) return prev;
+      const next = new Map(prev); next.set(conv.id, 0); return next;
+    });
+  }, []);
+
   useEffect(() => {
     if (!uid) return;
     const conversationIdParam = searchParams.get('conversationId');
     const init = async () => {
       if (!conversationIdParam) return;
       const existing = conversations.find(c => c.id === conversationIdParam);
-      if (existing) { setSelectedConversation(existing); return; }
+      if (existing) { openConversation(existing); return; }
       const { data: conv } = await supabase.from('conversations').select('id, batch_id, name, created_at, trek_batches(trek_id)').eq('id', conversationIdParam).single();
       if (conv) {
         const { data: parts } = await supabase.from('conversation_participants').select('user_id').eq('conversation_id', conv.id);
         const pIds = (parts || []).map((p) => p.user_id);
         const pMap = await fetchProfilesMap(pIds);
         const obj = { id: conv.id, batch_id: conv.batch_id, name: conv.name, participants: pIds.map(id => ({ user_id: id, full_name: pMap.get(id)?.full_name, avatar_url: pMap.get(id)?.avatar_url })) };
-        setSelectedConversation(obj as Conversation);
+        openConversation(obj as Conversation);
       }
     };
     init();
-  }, [uid, searchParams, conversations, supabase, fetchProfilesMap]);
+  }, [uid, searchParams, conversations, supabase, fetchProfilesMap, openConversation]);
 
   const fetchMessagesPage = async (conversationId: string, before?: string | null) => {
     let query = supabase.from('conversation_messages').select('*').eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(30);
@@ -210,15 +222,9 @@ function MessagesPageContent() {
     if (session?.access_token) supabase.realtime.setAuth(session.access_token);
   }, [session?.access_token, supabase]);
 
-  // Track the open conversation for the global channel callback, and mark it read on open.
+  // Track the open conversation for the global channel callback.
   useEffect(() => {
     selectedConvIdRef.current = selectedConversation?.id ?? null;
-    if (!selectedConversation) return;
-    markConversationRead(selectedConversation.id);
-    setUnreadCounts(prev => {
-      if (!prev.get(selectedConversation.id)) return prev;
-      const next = new Map(prev); next.set(selectedConversation.id, 0); return next;
-    });
   }, [selectedConversation]);
 
   // Resolve the current user's display name once (used for presence + typing).
@@ -495,7 +501,7 @@ function MessagesPageContent() {
               {conversations.map(conv => (
                 <button
                   key={conv.id}
-                  onClick={() => setSelectedConversation(conv)}
+                  onClick={() => openConversation(conv)}
                   className={`w-full group flex items-center gap-4 p-4 rounded-2xl transition-all relative ${selectedConversation?.id === conv.id ? 'bg-[#2a3942]' : 'hover:bg-[#202c33]'}`}
                 >
                   <div className="relative">

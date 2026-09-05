@@ -1,13 +1,26 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
+
+const subscribeToNothing = () => () => { };
+const onClient = () => true;
+const onServer = () => false;
 
 export default function SnowEffect() {
-    const [mounted, setMounted] = useState(false);
+    // The flakes are randomly positioned, so they must never render on the
+    // server — the markup would not match what the client produces.
+    const mounted = useSyncExternalStore(subscribeToNothing, onClient, onServer);
 
-    useEffect(() => {
-        setMounted(true);
-    }, []);
+    // Rolled once at mount, not per render: re-rolling would teleport every
+    // flake whenever this component happens to re-render.
+    const [flakes] = useState(() =>
+        Array.from({ length: 50 }, () => ({
+            size: Math.random() * 5 + 2 + 'px',
+            left: Math.random() * 100 + 'vw',
+            animationDelay: Math.random() * 5 + 's',
+            animationDuration: Math.random() * 3 + 4 + 's',
+        }))
+    );
 
     if (!mounted) return null;
 
@@ -37,26 +50,19 @@ export default function SnowEffect() {
         }
       `}</style>
             <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
-                {Array.from({ length: 50 }).map((_, i) => {
-                    const size = Math.random() * 5 + 2 + 'px';
-                    const left = Math.random() * 100 + 'vw';
-                    const animationDelay = Math.random() * 5 + 's';
-                    const animationDuration = Math.random() * 3 + 4 + 's';
-
-                    return (
-                        <div
-                            key={i}
-                            className="snowflake"
-                            style={{
-                                width: size,
-                                height: size,
-                                left: left,
-                                animationDelay: animationDelay,
-                                animationDuration: animationDuration,
-                            }}
-                        />
-                    );
-                })}
+                {flakes.map((flake, i) => (
+                    <div
+                        key={i}
+                        className="snowflake"
+                        style={{
+                            width: flake.size,
+                            height: flake.size,
+                            left: flake.left,
+                            animationDelay: flake.animationDelay,
+                            animationDuration: flake.animationDuration,
+                        }}
+                    />
+                ))}
             </div>
         </>
     );
