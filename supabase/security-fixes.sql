@@ -1849,3 +1849,44 @@ using (
 -- 'https://example.com', 'a@b@c' and '<script>alert(1)</script>' rejected,
 -- 'ops@himalayan-trails.com' and '' accepted.
 -- ============================================================================
+
+-- ============================================================================
+-- 0016 — the four trigger functions authenticated could still call (2026-09-05)
+-- ============================================================================
+-- FINDING: re-running the security advisors after 0014/0015 surfaced
+-- enforce_join_rate_limit, enforce_message_rate_limit,
+-- enforce_storage_rate_limit and enforce_trek_email_rate_limit under
+-- authenticated_security_definer_function_executable. They are trigger
+-- functions, not an API. Not drift: pg_proc on the live database reads
+-- authenticated=X/postgres on all four, and schema.sql agrees -- their revokes
+-- were written `from public, anon` where every other trigger function in the
+-- schema (protect_company_admin_fields, handle_new_user, and the rest) names
+-- all three roles.
+--
+-- IMPACT: none. All four are `returns trigger`, and Postgres refuses a direct
+-- call before the body runs --
+--
+--   select public.enforce_join_rate_limit();
+--   ERROR: trigger functions can only be called as triggers   (0A000)
+--
+-- verified against PGlite rather than assumed. PostgREST does not expose a
+-- trigger-returning function over /rest/v1/rpc/ either.
+--
+-- FIX: revoke execute ... from authenticated on the four, bringing them to the
+-- same shape as every other trigger function. The reason to bother with an
+-- inert grant is the advisor list: four of its 34 entries were known-inert, and
+-- a list padded with those is one nobody reads carefully. Same argument as 0003
+-- and the 2026-08-08 anon sweep.
+--
+-- SAFE BECAUSE: Postgres checks EXECUTE at CREATE TRIGGER time, not at fire
+-- time -- the invariant 0001 relied on for the other nine trigger functions
+-- (see the 0001 note above). The rate-limit suites are the proof here: if any
+-- of the four stopped firing, the join, message, storage and trek-email caps
+-- would all fail. 229 tests green after the revoke.
+--
+-- No data touched; grants only.
+-- Test: tests/db/acl.test.ts -- the expected list of definer functions
+-- reachable by no client role gains the four names.
+-- STATUS: NOT YET APPLIED. Ledger reads 0001-0015. After applying, confirm
+-- pg_proc.proacl on all four no longer carries authenticated=X.
+-- ============================================================================

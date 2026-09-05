@@ -78,6 +78,13 @@ describe('EXECUTE grants on SECURITY DEFINER functions', () => {
     // Postgres checks EXECUTE at CREATE TRIGGER time, not at fire time.
     expect(rows.map((r) => r.proname)).toEqual([
       'award_user_achievements',
+      // The four rate-limit triggers joined this list in 0016: their revokes
+      // named only public and anon, so authenticated kept a grant on a
+      // `returns trigger` function it could never actually call.
+      'enforce_join_rate_limit',
+      'enforce_message_rate_limit',
+      'enforce_storage_rate_limit',
+      'enforce_trek_email_rate_limit',
       'handle_new_user',
       'notify_trek_participation',
       'promote_waitlist_on_leave',

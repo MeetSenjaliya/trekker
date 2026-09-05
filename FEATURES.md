@@ -38,11 +38,18 @@ _Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | **Not urgent, and not checkable from outside.** `/sitemap.xml` resolves to `https://trekker-tan.vercel.app` — absolute and the real production domain, so the localhost symptom is absent. But that is the same string `VERCEL_PROJECT_PRODUCTION_URL` would produce, so the fallback and the explicit value are indistinguishable over HTTP. It starts mattering the day a custom domain is attached: the fallback keeps emitting the `*.vercel.app` URL | [§1.3](#seo) |
-| 2 | **After** #1 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 3 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-| 4 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
-> **The DB backlog is empty again as of 2026-09-05.** `0014` (11:50:34+00) and
+| 1 | **Apply [`0016_revoke-authenticated-execute-on-trigger-functions.sql`](supabase/migrations/0016_revoke-authenticated-execute-on-trigger-functions.sql)** in the SQL editor | Tidy-up, not a hole — the four `enforce_*` rate-limit triggers revoke EXECUTE `from public, anon` where every other trigger function names `authenticated` too. All four are `returns trigger`, so a direct call raises `0A000` before the body runs and PostgREST will not expose them; the win is four fewer inert entries in an advisor list nobody reads carefully when it is padded | [§3](#the-four-trigger-functions-authenticated-could-still-call--2026-09-05) |
+| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | **Not urgent, and not checkable from outside.** `/sitemap.xml` resolves to `https://trekker-tan.vercel.app` — absolute and the real production domain, so the localhost symptom is absent. But that is the same string `VERCEL_PROJECT_PRODUCTION_URL` would produce, so the fallback and the explicit value are indistinguishable over HTTP. It starts mattering the day a custom domain is attached: the fallback keeps emitting the `*.vercel.app` URL | [§1.3](#seo) |
+| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
+| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
+| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
+> **The DB backlog has one item as of 2026-09-05.**
+> `0016_revoke-authenticated-execute-on-trigger-functions` is written, tested and
+> **not yet applied** — ledger reads `0001`–`0015`. It is #1 in §1.0 above, and
+> it is hardening rather than a fix: see the §3 entry for why the grant it
+> removes was never callable.
+>
+> **Before it, the backlog was empty as of 2026-09-05.** `0014` (11:50:34+00) and
 > `0015` (12:01:25+00) are **applied and verified live** — ledger `0001`–`0015`,
 > no gaps. All seven new constraints read back from `pg_constraint`,
 > all `convalidated`, all matching the migration text. Both regexes were
@@ -1703,6 +1710,44 @@ description 31, `contact_email` 27, `contact_phone` 13, `rejection_reason` null
 on every row, 0 rows failing any of the five rules. No backfill. Eleven cases
 added to `tests/db/input-constraints.test.ts` and two to
 `src/lib/schemas.test.ts`; 229 tests green.
+
+## The four trigger functions `authenticated` could still call  ·  2026-09-05
+
+Found by re-running the Supabase security advisors after `0014`/`0015` landed.
+Under `authenticated_security_definer_function_executable` — 34 findings, most
+of them the intended RPC surface — sat `enforce_join_rate_limit`,
+`enforce_message_rate_limit`, `enforce_storage_rate_limit` and
+`enforce_trek_email_rate_limit`, which are trigger functions and not an API.
+
+**It is not drift.** `pg_proc` on the live database reads
+`authenticated=X/postgres` on all four, and `schema.sql` says the same thing —
+their revokes were written `from public, anon` where every other trigger
+function in the schema names all three roles:
+
+```sql
+revoke execute on function public.protect_company_admin_fields()
+  from public, anon, authenticated;   -- and handle_new_user, and the rest
+revoke execute on function public.enforce_join_rate_limit()
+  from public, anon;                  -- authenticated left behind
+```
+
+**Worth nothing to an attacker, which is why it is worth removing.** All four
+are `returns trigger`, and Postgres refuses a direct call before the body runs
+— `trigger functions can only be called as triggers` (`0A000`), verified
+against PGlite rather than assumed — and PostgREST does not expose a
+`trigger`-returning function over `/rest/v1/rpc/` at all. So the grant exists in
+the catalogue and nowhere else. The reason to close it is the advisor list: four
+of its 34 entries were items known to be inert, and a list padded with those is
+one nobody reads carefully. That was the argument for `0003` and the anon sweep
+too.
+
+Revoking is safe because Postgres checks EXECUTE at CREATE TRIGGER time and not
+at fire time — the same invariant `0001` relied on for the other nine trigger
+functions. The rate-limit suites are what prove it here: if any of the four
+stopped firing, the join, message, storage and trek-email caps would all fail.
+229 tests green after the revoke, and the expected list in
+[`tests/db/acl.test.ts`](tests/db/acl.test.ts) — definer functions reachable by
+no client role — gains the four names.
 
 ## Company website URLs are pinned to `http(s)`  ·  2026-09-05
 
