@@ -8,10 +8,10 @@ import { logError } from '@/lib/log';
 
 interface ReviewFormProps {
   trekTitle?: string;
-  onSubmit?: (reviewData: ReviewData) => void;
+  onSubmit?: (reviewData: ReviewData) => Promise<{ success: boolean; message: string }>;
 }
 
-interface ReviewData {
+export interface ReviewData {
   rating: number;
   review: string;
   photos: File[];
@@ -98,12 +98,17 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
     };
 
     try {
-      onSubmit?.(reviewData);
+      const result = await onSubmit?.(reviewData);
+      if (result && !result.success) {
+        // Keep the draft: a rate limit or a refused insert should not cost the text.
+        toast.error(result.message);
+        return;
+      }
       // Reset form
       setRating(0);
       setReview('');
       setPhotos([]);
-      toast.success('Review submitted successfully!');
+      toast.success(result?.message ?? 'Review submitted successfully!');
     } catch {
       toast.error('Failed to submit review. Please try again.');
     } finally {

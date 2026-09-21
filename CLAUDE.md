@@ -57,7 +57,7 @@ Always prioritize correctness, simplicity, security, and maintainability.
 
 ## Tech Stack
 
-Versions live in `package.json`. Two things it doesn't tell you: styling is **Tailwind only** (MUI, Emotion and Bootstrap were removed — don't reintroduce them); and there is **no custom backend server**. All data access goes through the Supabase publishable key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
+Versions live in `package.json`. Two things it doesn't tell you: styling is **Tailwind only** (MUI, Emotion and Bootstrap were removed — don't reintroduce them); and there is **no custom backend server** — except `src/app/api/upload/route.ts`, which owns image uploads to **Cloudflare R2** (rules in `src/lib/uploadRules.ts`, R2 env vars in `.env.local.example`). Everything else goes through the Supabase publishable key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
 
 ---
 
@@ -68,7 +68,8 @@ App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src
 - `src/lib/joinTrek.ts` — `joinTrekBatchAndChat()` / `leaveTrek()`, the **only** correct join path (→ RPC `join_trek_and_chat`).
 - `src/lib/auth.ts` — `signUp/signInAs/signOut/resetPassword/updatePassword/getCurrentUser`. `signInAs()` takes the account kind and only persists a session if it matches.
 - `src/contexts/AuthContext.tsx` — `useAuth(): { user, session, loading, signOut }`.
-- `src/utils/imageCompression.ts` — `compressImage()`, `sanitizeFileName()`.
+- `src/utils/imageCompression.ts` — `compressImage()`.
+- `src/lib/upload.ts` — `uploadImage(file, { kind, companyId?, trekId? })`, the **only** upload path (→ `POST /api/upload` → R2). Never call `supabase.storage` from the client.
 - `src/proxy.ts` → `src/utils/supabase/middleware.ts` `updateSession()` — session refresh + route guard, and (since 2026-09-05) the per-request CSP nonce from `src/utils/csp.ts`. The nonce is why every route renders at request time (`connection()` in `src/app/layout.tsx`); any `<script>` the app renders itself must carry it — see Known Gotchas in `FEATURES.md`.
 - `supabase/functions/` — edge functions (`send-trek-notification`, `send-trek-leave-notification`).
 - `supabase/migrations/` — every DB change, append-only. See its `README.md`; `schema.sql` is generated from it.
@@ -88,7 +89,7 @@ App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src
 - **Supabase queries:** always handle both `.data` and `.error`. Log errors with `logError()` from `src/lib/log.ts` — never `console.error(error)` with the raw object, whose `details` can carry the failing row into Sentry — and don't expose Supabase error detail to the UI.
 - **Auth:** derive the acting user from `auth.uid()` server-side (RLS / SECURITY DEFINER RPCs), not from a client-supplied `user_id`.
 - **Join/leave trek:** always go through `joinTrekBatchAndChat()` / `leaveTrek()` in `src/lib/joinTrek.ts` → RPC `join_trek_and_chat`. Never insert into `trek_participants` directly from the client.
-- **Image uploads:** compress with `compressImage()` before uploading. Store under `{uid}/filename` in the relevant bucket. Never store PII in file names.
+- **Image uploads:** compress with `compressImage()`, then `uploadImage()` from `src/lib/upload.ts`. The route names the object itself (`{bucket}/{prefix}/{ts}-{hex}.{ext}`, type from magic bytes) — the client's filename never reaches storage.
 - **Components:** no default prop sprawl. Keep page components focused; extract reusable pieces into `src/components/ui/`.
 - **No comments explaining what code does.** Only comment when the *why* is non-obvious (hidden constraint, workaround, invariant).
 

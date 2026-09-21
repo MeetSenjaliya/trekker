@@ -4,7 +4,8 @@ import { notFound } from 'next/navigation';
 import { BadgeCheck, Globe, MapPin } from 'lucide-react';
 import TrekCard from '@/components/ui/TrekCard';
 import { getCompanyBySlug, getStorefrontTreks } from '@/lib/server-queries';
-import { DEFAULT_TREK_IMAGE, siteUrl, truncate } from '@/lib/site';
+import { siteUrl, truncate } from '@/lib/site';
+import { DEFAULT_TREK_IMAGE } from '@/lib/defaultImages';
 import JsonLd from '@/components/ui/JsonLd';
 
 interface PageProps {

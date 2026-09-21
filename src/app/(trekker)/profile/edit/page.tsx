@@ -8,8 +8,10 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
-import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
-import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
+import { compressImage } from '@/utils/imageCompression';
+import { UploadError } from '@/lib/uploadErrors';
+import { uploadImage } from '@/lib/upload';
+import { DEFAULT_AVATAR_IMAGE } from '@/lib/defaultImages';
 import { logError } from '@/lib/log';
 
 export default function EditProfilePage() {
@@ -143,25 +145,7 @@ export default function EditProfilePage() {
       if (avatarFile) {
         setUploading(true);
         const compressed = await compressImage(avatarFile);
-        // The extension comes off a user-supplied filename, so run it through the
-        // same sanitiser the other three upload call sites use — an unsanitised
-        // one can carry '/' and spray nested folders under the user's prefix.
-        const fileExt = sanitizeFileName(avatarFile.name.split('.').pop() ?? '') || 'jpg';
-        const fileName = `${user.id}/${Date.now()}.${fileExt}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from('avatars')
-          .upload(fileName, compressed, { upsert: true });
-
-        if (uploadError) {
-          throw new UploadError(await uploadErrorMessage(uploadError, supabase, 'avatars'));
-        }
-
-        const { data: { publicUrl } } = supabase.storage
-          .from('avatars')
-          .getPublicUrl(fileName);
-
-        currentAvatarUrl = publicUrl;
+        currentAvatarUrl = await uploadImage(compressed, { kind: 'avatar' });
         setUploading(false);
       }
 
@@ -189,8 +173,7 @@ export default function EditProfilePage() {
       router.push('/profile');
       router.refresh();
     } catch (error: unknown) {
-      // An upload rejection already carries text written for the user, and
-      // uploadErrorMessage() has logged it if it was worth logging.
+      // An upload rejection already carries text written for the user.
       if (error instanceof UploadError) {
         toast.error(error.message);
         return;
@@ -240,7 +223,7 @@ export default function EditProfilePage() {
             <div className="relative inline-block group">
               <div className="w-32 h-32 rounded-full p-1 bg-[#1b2735]">
                 <img
-                  src={avatarPreview || avatarUrl || "https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/avatars/image.jpg"}
+                  src={avatarPreview || avatarUrl || DEFAULT_AVATAR_IMAGE}
                   alt="Profile"
                   className={`w-full h-full rounded-full object-cover ${uploading ? 'opacity-50' : ''}`}
                 />

@@ -24,6 +24,7 @@ export interface TrekCompany {
 
 export interface TrekReview {
   id: string;
+  user_id: string;
   rating: number;
   comment: string;
   created_at: string;

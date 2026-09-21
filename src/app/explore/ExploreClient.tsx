@@ -6,9 +6,7 @@ import FilterSection, { DEFAULT_FILTERS, type FilterState } from '@/components/u
 import TrekPagination from '@/components/ui/TrekPagination';
 import { useSearchTreks, type SearchTreksResult } from '@/lib/queries';
 import { EXPLORE_FILTERS_STORAGE_KEY } from '@/lib/exploreFilters';
-
-const DEFAULT_IMAGE_URL =
-  'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
+import { DEFAULT_TREK_IMAGE } from '@/lib/defaultImages';
 
 const TREKS_PER_PAGE = 6;
 
@@ -145,7 +143,7 @@ export default function ExploreClient({ initialData }: { initialData: SearchTrek
                     id={String(trek.id)}
                     title={trek.title}
                     description={trek.description}
-                    image={trek.cover_image_url || DEFAULT_IMAGE_URL}
+                    image={trek.cover_image_url || DEFAULT_TREK_IMAGE}
                     date={dateDisplay}
                     location={trek.location}
                     difficulty={trek.difficulty as 'Easy' | 'Moderate' | 'Hard' | 'Expert'}

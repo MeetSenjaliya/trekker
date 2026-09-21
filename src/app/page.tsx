@@ -2,7 +2,7 @@ import Link from 'next/link';
 import HeroSection from '@/components/ui/HeroSection';
 import TrekCard from '@/components/ui/TrekCard';
 import { getFeaturedTreks } from '@/lib/server-queries';
-import { DEFAULT_TREK_IMAGE } from '@/lib/site';
+import { DEFAULT_TREK_IMAGE } from '@/lib/defaultImages';
 
 export default async function HomePage() {
   const treks = await getFeaturedTreks(3);

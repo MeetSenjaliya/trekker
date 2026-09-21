@@ -83,6 +83,12 @@ export async function updateSession(
     publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`)) ||
     isPublicCompanyRoute
 
+  // A fetch() from the app follows redirects, so an API caller sent to the
+  // login page would receive its HTML with status 200.
+  if (!user && pathname.startsWith('/api/')) {
+    return NextResponse.json({ error: 'unauthenticated' }, { status: 401 })
+  }
+
   if (!user && !isPublicRoute) {
     // no user, redirect the user to the login page
     const url = request.nextUrl.clone()

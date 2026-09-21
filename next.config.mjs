@@ -15,6 +15,14 @@ const sentryReportUri = (() => {
 
 const REPORT_GROUP = 'csp-endpoint';
 
+const r2PublicHost = (() => {
+    try {
+        return new URL(process.env.NEXT_PUBLIC_R2_PUBLIC_URL).hostname;
+    } catch {
+        return '';
+    }
+})();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     images: {
@@ -23,12 +31,16 @@ const nextConfig = {
             // storage URL or a storage-hosted default. The unsplash fallbacks
             // are plain <img> tags, which never touch /_next/image — they are
             // covered by CSP img-src, a different control.
+            // Supabase stays until the stored URLs are rewritten to R2.
             {
                 protocol: 'https',
                 hostname: 'dtjmyqogeozrzzbdjokr.supabase.co',
                 port: '',
                 pathname: '/storage/v1/object/public/**',
             },
+            ...(r2PublicHost
+                ? [{ protocol: 'https', hostname: r2PublicHost, port: '', pathname: '/**' }]
+                : []),
         ],
     },
     async headers() {

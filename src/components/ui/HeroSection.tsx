@@ -1,7 +1,6 @@
 import React from 'react';
 import Link from 'next/link';
-
-const DEFAULT_IMAGE = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/River%20Valley%20Trek.jpeg';
+import { DEFAULT_HERO_IMAGE } from '@/lib/defaultImages';
 
 
 const HeroSection = () => {
@@ -11,7 +10,7 @@ const HeroSection = () => {
       <div
         className="absolute inset-0 bg-cover bg-center bg-no-repeat"
         style={{
-          backgroundImage: `url(${DEFAULT_IMAGE})`
+          backgroundImage: `url(${DEFAULT_HERO_IMAGE})`
         }}
       />
 

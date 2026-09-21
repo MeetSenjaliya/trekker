@@ -18,9 +18,3 @@ export async function compressImage(file: File) {
         return file; // Fallback to original file
     }
 }
-
-export function sanitizeFileName(fileName: string) {
-    return fileName
-        .replace(/\s+/g, '-') // Replace spaces with hyphens
-        .replace(/[^a-zA-Z0-9.\-_]/g, ''); // Remove non-alphanumeric characters except dots, hyphens, and underscores
-}

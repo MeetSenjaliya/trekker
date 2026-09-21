@@ -15,9 +15,6 @@ export const siteUrl = (
 
 export const SITE_NAME = 'Trek Buddies';
 
-export const DEFAULT_TREK_IMAGE =
-  'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
-
 /** "Moderate trek · Uttarakhand · ₹4500" — the facts that make a shared link worth tapping. */
 export function factLine(trek: { difficulty?: string; location?: string; estimated_cost?: number }) {
   return [

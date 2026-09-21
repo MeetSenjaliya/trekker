@@ -20,6 +20,10 @@ const originOf = (url: string | undefined) => {
 
 const supabaseOrigin = originOf(process.env.NEXT_PUBLIC_SUPABASE_URL)
 
+// Images are served from R2; Supabase stays in img-src until the stored URLs
+// are rewritten, and in connect-src for good.
+const r2Origin = originOf(process.env.NEXT_PUBLIC_R2_PUBLIC_URL)
+
 // Realtime chat opens a WebSocket to the same host over wss://, which
 // connect-src treats as a separate origin from the https:// REST calls.
 const supabaseSocketOrigin = supabaseOrigin.replace(/^https:/, 'wss:')
@@ -62,7 +66,7 @@ export function buildCsp(nonce: string) {
     // Emotion/MUI inject <style> at runtime; Framer Motion writes style attrs.
     // A nonce cannot cover a style attribute at all, so this one stays.
     `style-src 'self' 'unsafe-inline'`,
-    `img-src 'self' data: blob: ${supabaseOrigin} https://images.unsplash.com https://www.transparenttextures.com`,
+    `img-src 'self' data: blob: ${supabaseOrigin} ${r2Origin} https://images.unsplash.com https://www.transparenttextures.com`,
     `font-src 'self' data:`,
     `connect-src 'self' ${supabaseOrigin} ${supabaseSocketOrigin} https://api.pwnedpasswords.com ${sentry.origin}`,
     // Nothing spawns a worker: compressImage() runs on the main thread

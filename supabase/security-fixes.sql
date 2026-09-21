@@ -2318,3 +2318,36 @@ using (
 -- 0001-0028 alone (checked by removing 0029 and re-running).
 -- STATUS: NOT YET APPLIED -- the ledger row is the only evidence that counts.
 -- ============================================================================
+
+
+-- ============================================================================
+-- 0030 -- record_upload(): the upload rate limit as an RPC, for the R2 route
+-- ============================================================================
+-- SQL: supabase/migrations/0030_record-upload-rpc-for-the-r2-upload-route.sql
+--
+-- Uploads move from Supabase Storage to Cloudflare R2 through one Next.js
+-- route handler (src/app/api/upload/route.ts), which runs as the signed-in
+-- user over the cookie session. The 6/hour and 20/hour caps of 0001 §13.4
+-- hang off a trigger on storage.objects that R2 never touches, so the route
+-- calls record_upload(p_bucket) BEFORE the PUT: per-(action, user) advisory
+-- lock, count the trailing hour in rate_events, insert-and-true or false.
+-- Same rule table (storage_rate_rule), same counter, same zero policies and
+-- zero grants on rate_events. false becomes a real 429 with a message --
+-- the thing storage-api could never deliver (§13.5), which is why the
+-- upload_rate_limited() probe existed at all.
+--
+-- The route also closes what the policies could not check: the real file
+-- type is sniffed from magic bytes (no SVG/HTML renamed to .jpg), the object
+-- name is server-generated (no client filename, no '..'), path ids are
+-- validated as UUIDs, and the company checks call the same is_company_member
+-- / is_company_writable / is_approved_company_member RPCs the policies did.
+--
+-- ADDITIVE. The storage trigger, the 14 storage.objects policies and the
+-- probe all stay until 0031, which lands only after the stored URLs point at
+-- R2 (Part 3 of the cutover plan).
+--
+-- Test: tests/db/upload-rate.test.ts -- 9 cases: 6 then refuse, shared
+-- counter across the three buckets, trek-reviews' own 20, per-user, trailing
+-- hour, no-rule bucket writes nothing, anon refused, grants exact.
+-- STATUS: NOT YET APPLIED -- the ledger row is the only evidence that counts.
+-- ============================================================================

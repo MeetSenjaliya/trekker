@@ -5,12 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { ImagePlus, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { createClient } from '@/utils/supabase/client';
-import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
+import { compressImage } from '@/utils/imageCompression';
 import { trekFormSchema, difficultyValues, fieldErrors } from '@/lib/schemas';
 import { createTrek, updateTrek, type EditableTrek, type TrekInput } from '@/lib/company';
 import { queryKeys } from '@/lib/queries';
-import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
+import { UploadError } from '@/lib/uploadErrors';
+import { uploadImage } from '@/lib/upload';
 
 interface TrekFormProps {
   companyId: string;
@@ -74,17 +74,9 @@ export default function TrekForm({ companyId, trek }: TrekFormProps) {
     setCoverPreview(URL.createObjectURL(compressed));
   };
 
-  // Uploads the cover to trek-images/{companyId}/{trekId}/… and returns the
-  // public URL. Storage RLS keys writes to the first path segment (company id).
   const uploadCover = async (trekId: string): Promise<string | null> => {
     if (!coverFile) return null;
-    const supabase = createClient();
-    const path = `${companyId}/${trekId}/${Date.now()}-${sanitizeFileName(coverFile.name)}`;
-    const { error } = await supabase.storage.from('trek-images').upload(path, coverFile, { upsert: true });
-    if (error) {
-      throw new UploadError(await uploadErrorMessage(error, supabase, 'trek-images'));
-    }
-    return supabase.storage.from('trek-images').getPublicUrl(path).data.publicUrl;
+    return uploadImage(coverFile, { kind: 'trek-cover', companyId, trekId });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

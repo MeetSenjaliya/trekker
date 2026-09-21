@@ -6,11 +6,11 @@ import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDashboardCompany } from '@/components/admin/DashboardShell';
 import { useRequireCompanyRole } from '@/hooks/useRequireCompanyRole';
-import { createClient } from '@/utils/supabase/client';
-import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
+import { compressImage } from '@/utils/imageCompression';
 import { companyProfileSchema, fieldErrors } from '@/lib/schemas';
 import { updateCompany, isCompanyFrozen } from '@/lib/company';
-import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
+import { UploadError } from '@/lib/uploadErrors';
+import { uploadImage } from '@/lib/upload';
 
 const inputClass = (hasError: boolean) =>
   `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-hidden sm:text-sm transition-colors ${
@@ -89,17 +89,6 @@ export default function CompanySettingsPage() {
     setPreview(URL.createObjectURL(compressed));
   };
 
-  // Covers live in the same company-scoped bucket as logos; the `cover-` prefix
-  // just keeps the two distinguishable when browsing storage.
-  const uploadBrandImage = async (file: File, prefix: string): Promise<string | null> => {
-    const supabase = createClient();
-    const path = `${company.id}/${prefix}${Date.now()}-${sanitizeFileName(file.name)}`;
-    const { error } = await supabase.storage.from('company-logos').upload(path, file, { upsert: true });
-    if (error) {
-      throw new UploadError(await uploadErrorMessage(error, supabase, 'company-logos'));
-    }
-    return supabase.storage.from('company-logos').getPublicUrl(path).data.publicUrl;
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,10 +101,10 @@ export default function CompanySettingsPage() {
     try {
       // undefined = leave the column untouched; null = the user removed it.
       const logoUrl = logoFile
-        ? await uploadBrandImage(logoFile, '')
+        ? await uploadImage(logoFile, { kind: 'company-logo', companyId: company.id })
         : logoPreview === null ? null : undefined;
       const coverImageUrl = coverFile
-        ? await uploadBrandImage(coverFile, 'cover-')
+        ? await uploadImage(coverFile, { kind: 'company-cover', companyId: company.id })
         : coverPreview === null ? null : undefined;
       const res = await updateCompany(company.id, { ...result.data, logoUrl, coverImageUrl });
       if (!res.success) {

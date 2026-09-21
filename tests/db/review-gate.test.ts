@@ -192,4 +192,48 @@ describe('review gate', () => {
       expect(rows.rows).toEqual([{ rating: 3 }])
     })
   })
+
+  // ---- 6 ---------------------------------------------------------------------
+  // 0031: the form's five-photo cap, restated where a direct API write cannot
+  // skip it. The shutterbug badge sums photo counts, so this is what bounds it.
+  describe('a review carries at most five photos', () => {
+    const overCap = /trek_reviews_photo_urls_max/
+
+    const postWithPhotos = (tx: Actor, userId: string, n: number) =>
+      tx.query(
+        `insert into public.trek_reviews (trek_id, user_id, rating, comment, photo_urls)
+         values ($1, $2, 5, 'Great trek', array_fill('https://media.example/p.jpg'::text, array[${n}]))
+         returning cardinality(photo_urls) as photos`,
+        [ids.trek.approvedActive, userId],
+      )
+
+    it('accepts five', async () => {
+      const rows = await afterReshaping(ridgeWalk('current_date - 1'), ids.user.trekkerA, (tx) =>
+        postWithPhotos(tx, ids.user.trekkerA, 5),
+      )
+      expect(rows.rows).toEqual([{ photos: 5 }])
+    })
+
+    it('rejects six on insert', async () => {
+      await expect(
+        afterReshaping(ridgeWalk('current_date - 1'), ids.user.trekkerA, (tx) =>
+          postWithPhotos(tx, ids.user.trekkerA, 6),
+        ),
+      ).rejects.toThrow(overCap)
+    })
+
+    it('rejects growing a posted review past five', async () => {
+      await expect(
+        afterReshaping(ridgeWalk('current_date - 1'), ids.user.trekkerA, async (tx) => {
+          await postWithPhotos(tx, ids.user.trekkerA, 5)
+          return tx.query(
+            `update public.trek_reviews
+                set photo_urls = photo_urls || 'https://media.example/six.jpg'::text
+              where user_id = $1`,
+            [ids.user.trekkerA],
+          )
+        }),
+      ).rejects.toThrow(overCap)
+    })
+  })
 })

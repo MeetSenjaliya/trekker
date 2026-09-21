@@ -7,7 +7,8 @@ import {
   type TrekDetail,
   type TrekReview,
 } from '@/lib/server-queries';
-import { DEFAULT_TREK_IMAGE, factLine, siteUrl, truncate } from '@/lib/site';
+import { factLine, siteUrl, truncate } from '@/lib/site';
+import { DEFAULT_TREK_IMAGE } from '@/lib/defaultImages';
 import JsonLd from '@/components/ui/JsonLd';
 import TrekDetailClient from './TrekDetailClient';
 

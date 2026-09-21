@@ -9,7 +9,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   Heart, Share2, MessageCircle, Camera, MapPin,
   Clock, Mountain, IndianRupee, Star,
-  CheckCircle2, ChevronRight, Calendar, Lock
+  CheckCircle2, ChevronRight, Calendar, Lock, PenLine
 } from 'lucide-react';
 import { motion, Variants } from 'framer-motion';
 import ConfirmationModal from '@/components/ui/ConfirmationModal';
@@ -18,8 +18,11 @@ import { localToday } from '@/lib/schemas';
 import { toast } from 'sonner';
 import { getDisplayParticipantCount, getParticipantCount } from '@/lib/utils';
 import { useIsTrekker } from '@/lib/queries';
+import { DEFAULT_TREK_IMAGE } from '@/lib/defaultImages';
 import ReviewCard from '@/components/ui/ReviewCard';
+import ReviewForm from '@/components/ui/ReviewForm';
 import ItineraryView from '@/components/ui/ItineraryView';
+import { lastTrekDay, submitReview } from '@/lib/reviews';
 import type { TrekBatch, TrekDetail, TrekReview } from '@/lib/server-queries';
 import { logError } from '@/lib/log';
 
@@ -51,7 +54,6 @@ interface TrekDetailClientProps {
   initialParticipantCount: number;
 }
 
-const DEFAULT_IMAGE = 'https://dtjmyqogeozrzzbdjokr.supabase.co/storage/v1/object/public/trek-profile/defaulttrek.jpeg';
 
 // trek_participants row with its trek_batches embed. Supabase types a to-one
 // embed as an object, but PostgREST answers with an array in some shapes — both
@@ -93,6 +95,8 @@ export default function TrekDetailClient({
   const [checkedItems, setCheckedItems] = useState<{ [key: string]: boolean }>({});
   const [joinedBatchId, setJoinedBatchId] = useState<string | null>(null);
   const [joinedStatus, setJoinedStatus] = useState<'confirmed' | 'waitlisted' | null>(null);
+  const [hasFinishedBooking, setHasFinishedBooking] = useState(false);
+  const [showReviewForm, setShowReviewForm] = useState(false);
   const [realParticipantCount, setRealParticipantCount] = useState<number>(initialParticipantCount);
 
   // Re-sync when the server component re-renders with a fresher count
@@ -118,6 +122,12 @@ export default function TrekDetailClient({
         .eq('user_id', user.id)
         .eq('trek_batches.trek_id', id);
       const rows = (data ?? []) as JoinedRow[];
+      // Mirrors the 0018 insert policy: a confirmed seat on a departure that
+      // has ended. The policy still decides; this only offers the form.
+      const today = localToday();
+      setHasFinishedBooking(
+        rows.some((r) => r.status === 'confirmed' && lastTrekDay(batchDateOf(r), trek.duration_hours) < today),
+      );
       const current = pickCurrentBooking(rows);
       if (current) {
         setJoinedBatchId(current.batch_id);
@@ -128,7 +138,7 @@ export default function TrekDetailClient({
       }
     };
     checkJoinStatus();
-  }, [id, user, supabase, isModalOpen]);
+  }, [id, user, supabase, isModalOpen, trek.duration_hours]);
 
   useEffect(() => {
     const initFavoriteStatus = async () => {
@@ -157,6 +167,8 @@ export default function TrekDetailClient({
   // visitors keep them; they prompt for login.
   const { data: isTrekker } = useIsTrekker(user?.id);
   const canBook = !user || isTrekker === true;
+  const hasReviewed = !!user && reviews.some((r) => r.user_id === user.id);
+  const canReview = !!user && isTrekker === true && hasFinishedBooking && !hasReviewed;
 
   const handleCheckboxChange = (item: string) => setCheckedItems(prev => ({ ...prev, [item]: !prev[item] }));
   const handleJoinTrek = () => setIsModalOpen(true);
@@ -211,7 +223,7 @@ export default function TrekDetailClient({
       {/* Hero Section */}
       <section className="relative h-[65vh] w-full overflow-hidden">
         <Image
-          src={trek.cover_image_url || DEFAULT_IMAGE}
+          src={trek.cover_image_url || DEFAULT_TREK_IMAGE}
           alt={trek.title || 'Trek'}
           fill
           priority
@@ -352,12 +364,44 @@ export default function TrekDetailClient({
 
             {/* Reviews */}
             <motion.section variants={fadeInUp} initial="hidden" whileInView="visible" viewport={{ once: true }} className="space-y-8">
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center gap-4">
                 <h2 className="text-2xl font-bold text-white">Trekkers Feedback</h2>
-                <div className="px-4 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold uppercase">
-                  {reviews.length} Reviews
+                <div className="flex items-center gap-3">
+                  {canReview && (
+                    <button
+                      type="button"
+                      onClick={() => setShowReviewForm((v) => !v)}
+                      className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/20 text-white text-xs font-bold uppercase transition-colors"
+                    >
+                      <PenLine className="w-4 h-4" />
+                      {showReviewForm ? 'Close' : 'Write a review'}
+                    </button>
+                  )}
+                  <div className="px-4 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/30 text-blue-400 text-xs font-bold uppercase">
+                    {reviews.length} Reviews
+                  </div>
                 </div>
               </div>
+              {canReview && showReviewForm && user && (
+                <ReviewForm
+                  trekTitle={trek.title || 'this trek'}
+                  onSubmit={async (data) => {
+                    const result = await submitReview({
+                      trekId: id,
+                      userId: user.id,
+                      rating: data.rating,
+                      comment: data.review,
+                      photos: data.photos,
+                    });
+                    if (result.success) {
+                      setShowReviewForm(false);
+                      // Reviews are server props — re-run the server render to show it.
+                      router.refresh();
+                    }
+                    return result;
+                  }}
+                />
+              )}
               {reviews.length > 0 ? (
                 <div className="flex flex-col gap-6">
                   {reviews.map((review) => <ReviewCard key={review.id} review={review} />)}
