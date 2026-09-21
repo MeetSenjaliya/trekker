@@ -30,6 +30,7 @@ import {
   getMyAccountType,
 } from '@/lib/company';
 import type { CompanyStatusFilter } from '@/lib/company';
+import { adminListLoginEvents } from '@/lib/loginEvents';
 import type { FilterState } from '@/components/ui/FilterSection';
 
 const supabase = createClient();
@@ -60,6 +61,8 @@ export const queryKeys = {
   adminOverview: ['admin', 'overview'] as const,
   adminCompanies: (status: string) => ['admin', 'companies', status] as const,
   adminCompany: (companyId: string) => ['admin', 'company', companyId] as const,
+  adminLoginEvents: (search: string, page: number) =>
+    ['admin', 'loginEvents', search, page] as const,
 };
 
 const num = (v: string) => (v.trim() === '' ? null : Number(v));
@@ -408,6 +411,15 @@ export function useAdminCompanies(status: CompanyStatusFilter) {
   return useQuery({
     queryKey: queryKeys.adminCompanies(status),
     queryFn: () => getAllCompanies(status),
+  });
+}
+
+/** One page of sign-ins for /admin/logins, newest first, optionally filtered by email. */
+export function useAdminLoginEvents(search: string, page: number) {
+  return useQuery({
+    queryKey: queryKeys.adminLoginEvents(search, page),
+    queryFn: () => adminListLoginEvents(search, page),
+    placeholderData: keepPreviousData,
   });
 }
 

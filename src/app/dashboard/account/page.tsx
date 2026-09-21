@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { createClient } from '@/utils/supabase/client';
 import { accountNameSchema, resetPasswordSchema, fieldErrors } from '@/lib/schemas';
+import { logError } from '@/lib/log';
 
 const inputClass = (hasError: boolean) =>
   `block w-full rounded-xl border px-4 py-3 text-gray-900 placeholder-gray-500 focus:outline-hidden sm:text-sm transition-colors ${
@@ -42,7 +43,7 @@ export default function AccountPage() {
 
       if (cancelled) return;
       if (error) {
-        console.error('Error loading profile:', error);
+        logError('Error loading profile:', error);
         toast.error('Failed to load your account. Please refresh.');
       } else {
         setFullName(data?.full_name ?? '');
@@ -76,7 +77,7 @@ export default function AccountPage() {
         .select('id');
 
       if (error) {
-        console.error('Error updating profile:', error);
+        logError('Error updating profile:', error);
         toast.error('Failed to save your name. Please try again.');
         return;
       }

@@ -15,6 +15,7 @@ tsconfig.tsbuildinfo
 /test-results
 /playwright-report
 /playwright/.cache
+/.shots
 
 # security test plan — documents live test-account credentials, never commit
 TEST.md
@@ -24,3 +25,6 @@ TEST.md
 
 # Strix test results — documents live vuln findings against production, never commit
 result.md
+
+# graphify knowledge graph (local cache; rebuild with /graphify)
+graphify-out/

@@ -7,6 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Calendar, MapPin, Star, Users, Camera, Edit, Settings, Clock, Activity, Award } from 'lucide-react';
 import { ACHIEVEMENTS } from '@/lib/achievements';
+import { logError } from '@/lib/log';
 
 // Interfaces remain the same...
 interface Profile {
@@ -160,7 +161,7 @@ export default function ProfilePage() {
               };
             }) || []
           );
-        } catch (err) { console.error(err); }
+        } catch (err) { logError('Error loading recent treks:', err); }
 
         // Upcoming Treks Fetch
         try {
@@ -190,9 +191,9 @@ export default function ProfilePage() {
               };
             }) || []
           );
-        } catch (err) { console.error(err); }
+        } catch (err) { logError('Error loading upcoming treks:', err); }
 
-      } catch (error) { console.error(error); } 
+      } catch (error) { logError('Error loading profile:', error); } 
       finally { setDataLoading(false); }
     };
 

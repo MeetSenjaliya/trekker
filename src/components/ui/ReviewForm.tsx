@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Star, Upload, X } from 'lucide-react';
 import { compressImage } from '@/utils/imageCompression';
 import { toast } from 'sonner';
+import { logError } from '@/lib/log';
 
 interface ReviewFormProps {
   trekTitle?: string;
@@ -65,7 +66,7 @@ const ReviewForm: React.FC<ReviewFormProps> = ({
 
       setPhotos(prev => [...prev, ...validFiles]);
     } catch (error) {
-      console.error('Error processing photos:', error);
+      logError('Error processing photos:', error);
     } finally {
       setIsSubmitting(false);
     }

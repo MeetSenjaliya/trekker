@@ -1,4 +1,5 @@
 import imageCompression from 'browser-image-compression';
+import { logError } from '@/lib/log';
 
 export async function compressImage(file: File) {
     const options = {
@@ -13,7 +14,7 @@ export async function compressImage(file: File) {
         const compressedFile = await imageCompression(file, options);
         return compressedFile;
     } catch (error) {
-        console.error('Image compression failed:', error);
+        logError('Image compression failed:', error);
         return file; // Fallback to original file
     }
 }

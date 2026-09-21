@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/nextjs';
+import { scrubConsoleBreadcrumb } from '@/lib/log';
 
 // Server + edge Sentry init. No DSN set → no-op, so this is inert until
 // NEXT_PUBLIC_SENTRY_DSN (or SENTRY_DSN) is configured in the environment.
@@ -11,6 +12,7 @@ export async function register() {
       dsn,
       // Lower this in high-traffic production to control quota.
       tracesSampleRate: 1,
+      beforeBreadcrumb: scrubConsoleBreadcrumb,
     });
   }
 }

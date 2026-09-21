@@ -75,6 +75,14 @@ export default function AdminOverviewPage() {
               <ArrowRight className="h-4 w-4" />
             </Link>
           )}
+
+          <Link
+            href="/admin/logins"
+            className="flex items-center justify-between rounded-2xl border border-gray-200 bg-white px-5 py-4 text-sm font-medium text-gray-700 transition-colors hover:border-indigo-300 hover:text-indigo-700"
+          >
+            View login activity
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </>
       )}
     </div>

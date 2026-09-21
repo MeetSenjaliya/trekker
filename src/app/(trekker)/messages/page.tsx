@@ -465,7 +465,7 @@ function MessagesPageContent() {
   const handleLeaveTrek = async (e: React.MouseEvent, conv: Conversation) => {
     e.stopPropagation();
     if (confirm('Leave trek chat?')) {
-      const res = await leaveTrek(user!.id, conv.batch_id, conv.id);
+      const res = await leaveTrek(user!.id, conv.batch_id);
       if (res.success) setConversations(prev => prev.filter(c => c.id !== conv.id));
     }
   };

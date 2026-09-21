@@ -12,7 +12,7 @@ Single source of truth for what's built and what's pending.
 
 Legend: ✅ Done · 🟡 Partial / in progress · ❌ Not started
 
-_Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newest-first)._
+_Last updated: 2026-09-19 — full history in [§3 Changelog](#3--changelog-newest-first)._
 
 ## Contents
 
@@ -38,16 +38,151 @@ _Last updated: 2026-09-05 — full history in [§3 Changelog](#3--changelog-newe
 
 | # | Do this | Why it matters | Detail |
 |---|---------|----------------|--------|
-| 1 | **Apply [`0016_revoke-authenticated-execute-on-trigger-functions.sql`](supabase/migrations/0016_revoke-authenticated-execute-on-trigger-functions.sql)** in the SQL editor | Tidy-up, not a hole — the four `enforce_*` rate-limit triggers revoke EXECUTE `from public, anon` where every other trigger function names `authenticated` too. All four are `returns trigger`, so a direct call raises `0A000` before the body runs and PostgREST will not expose them; the win is four fewer inert entries in an advisor list nobody reads carefully when it is padded | [§3](#the-four-trigger-functions-authenticated-could-still-call--2026-09-05) |
-| 2 | Confirm `NEXT_PUBLIC_SITE_URL` is set in Vercel | **Not urgent, and not checkable from outside.** `/sitemap.xml` resolves to `https://trekker-tan.vercel.app` — absolute and the real production domain, so the localhost symptom is absent. But that is the same string `VERCEL_PROJECT_PRODUCTION_URL` would produce, so the fallback and the explicit value are indistinguishable over HTTP. It starts mattering the day a custom domain is attached: the fallback keeps emitting the `*.vercel.app` URL | [§1.3](#seo) |
-| 3 | **After** #2 ships: re-scrape already-shared trek links so the generated OG card replaces the cached cover photo | Link scrapers cache the *page*, not the image — nothing in the app can force a refresh. Doing this before #2 just re-caches the `*.vercel.app` URL | [§1.3](#seo) |
-| 4 | Enable leaked-password protection **server-side** in the Supabase dashboard | `isPasswordPwned()` runs in the browser and gates a call the browser makes directly to GoTrue — anyone can `POST /auth/v1/signup` and skip it. Only the platform setting binds | [§1.5](#leaked-password-protection-is-client-side-only) |
-| 5 | Move auth email off Gmail SMTP to a transactional provider (Resend / Postmark / SendGrid) | Every signup confirmation, recovery and invite mail goes through one personal Gmail account — ~100–500/day, poor deliverability for app mail, and Supabase's own dashboard flags the host as personal-not-transactional. Also re-check the email rate limit (was moved to 20/hour while debugging) | [§2](#password-reset-failures-stopped-surfacing-raw-auth-errors-2026-08-29) |
-> **The DB backlog has one item as of 2026-09-05.**
-> `0016_revoke-authenticated-execute-on-trigger-functions` is written, tested and
-> **not yet applied** — ledger reads `0001`–`0015`. It is #1 in §1.0 above, and
-> it is hardening rather than a fix: see the §3 entry for why the grant it
-> removes was never callable.
+| 1 | **Apply [`0029_gate-apply-for-company-on-a-company-account.sql`](supabase/migrations/0029_gate-apply-for-company-on-a-company-account.sql)** in the SQL Editor, then confirm the ledger row | **Not a behaviour change in production** — the live `apply_for_company()` has refused trekker accounts since phase F (2026-08-06; read back via `pg_get_functiondef` over MCP 2026-09-19). The repo drifted: folding phase F into `0001` kept the gate only as a comment (§14.7), so the PGlite suite was proving a function that lets a trekker create a company. `0029` restates the live body verbatim; `tests/db/company-application-gate.test.ts` fails against `0001`–`0028` alone. Applying it just makes the ledger say what production already does. After apply: `select version, applied_at from supabase_migrations.schema_migrations where version='0029'`, then flip the `security-fixes.sql` STATUS line and this row | [§2](#account-types--trekker-vs-company-steps-15) |
+| 2 | Decide the Sentry uptime monitor's interval — keep 60 s, or drop to 300 s | Monitor `8178532` now watches `https://trekker-tan.vercel.app` (repointed 2026-09-17, read back over the Sentry MCP: active, `uptimeStatus: ok`, environment `production`). Sentry had auto-created it on a stale August preview URL — see [§2](#the-chat-channel-is-stable-sentry-ingest-works-and-the-uptime-monitor-watches-production-2026-09-17). Every check renders the homepage at request time (no cache — the nonce CSP) and the homepage calls `search_treks`, so at 60 s it is **~1,440 `search_treks` calls a day**: 1,445 of the following 24 h's PostgREST requests, ~99 % of API traffic at today's usage. Cheap per call (`0023` bounds it; 14 rows) but it *is* the whole API log. 300 s cuts it to 288/day at the price of a five-minute alert delay. Owner's call; either way a one-field `update_uptime_monitor` over the MCP. Cosmetic: the monitor is still *named* after the old preview URL | [§2](#the-chat-channel-is-stable-sentry-ingest-works-and-the-uptime-monitor-watches-production-2026-09-17) |
+| 3 | Move auth email off Gmail SMTP to a transactional provider — **deferred until Trekker owns a domain** | Decided 2026-09-15: Gmail stays. Resend / Postmark / SendGrid all verify the sender by DNS records on a domain you own, and `trekker-tan.vercel.app` cannot be verified (Vercel owns `vercel.app`) — so this is blocked on buying a domain (~$10/yr), which is also the day `NEXT_PUBLIC_SITE_URL` (set 2026-09-15 to the `*.vercel.app` URL — §2) needs changing. The Gmail-side hardening and the rate-limit re-check are **done** (see [§2](#gmail-smtp-stays-until-there-is-a-domain-2026-09-15)). The same domain fixes a second problem: both edge functions send from `onboarding@resend.dev`, Resend's testing-only sender — Resend requires a verified domain to reach real recipients, so join/leave notification mail to anyone but the Resend account owner is very likely not being delivered today ([send-trek-notification](supabase/functions/send-trek-notification/index.ts), [send-trek-leave-notification](supabase/functions/send-trek-leave-notification/index.ts)). When a domain exists: verify it in Resend → change both functions' `from:` to `Trekker <noreply@<domain>>` and redeploy → switch auth SMTP to `smtp.resend.com:465`, username `resend`, password = a Sending-access API key → set the email rate limit to 30/hour | [§2](#gmail-smtp-stays-until-there-is-a-domain-2026-09-15) |
+> **Closed 2026-09-15 — the four rows above this one are gone:** Postgres upgraded from the
+> dashboard, `NEXT_PUBLIC_SITE_URL` set in Vercel, already-shared trek links re-scraped, and the
+> `0020` backfill confirmed from the data. Recorded from the owner's confirmation for the two
+> dashboard items — the Supabase and Vercel MCP servers were unreachable when this was written.
+> **Re-read later the same day once MCP was back: `vulnerable_postgres_version` is gone.** The
+> security advisor now lists only known-accepted items (the `public_profiles` definer view, the
+> anon-executable load-bearing trio, RLS-with-no-policy on `platform_admins` / `rate_events`,
+> and the Pro-only leaked-password toggle); the ledger reads `0001`–`0026`, gapless. Detail in
+> [§2](#postgres-security-patches-applied-and-the-last-three-dashboard-actions-closed-2026-09-15).
+
+> **The DB backlog has one item as of 2026-09-19: `0029` is written, tested and not yet
+> applied** (row #1 above). It is a repo-side drift fix — production already runs the body it
+> restates — so the live database is not waiting on it.
+>
+> **Before that, the DB backlog was empty as of 2026-09-17 and the ledger gapless — `0001`–`0028`,
+> no version holes.** `0027` (applied 2026-09-17 10:23:19+00) and `0028` (11:05:36+00) — the
+> platform-admin login log and its session-end / method / account-type / new-device columns —
+> were both read back over the read-only MCP server rather than trusted from the ledger: the
+> `auth.sessions` and `auth.mfa_amr_claims` triggers present and enabled, the `login_events`
+> columns in place. The only new client-facing surface is `login_events` SELECT for
+> `authenticated`, gated by the `"Platform admins read login events"` policy; `0028` adds no
+> grant. See [§2](#login-activity-log--every-sign-in-with-ip-and-device-for-platform-admins-2026-09-17).
+>
+> **Before that, the DB backlog was empty as of 2026-09-15 and the ledger gapless — `0001`–`0026`,
+> no version holes.** `0025` (applied 2026-09-14 19:04:19+00) and `0026` (19:04:40+00) were
+> read back from the catalogue rather than trusted from the ledger: `pg_policies` holds **0**
+> policies with a bare `auth.uid()`/`auth.role()` and **22** with the `( SELECT auth.uid() …)`
+> form, the five `to public` policies still `{public}`; `pg_constraint` shows
+> `conversation_participants_pkey` and `favorites_pkey` with no leftover UNIQUE, and
+> `favorites.trek_id` now `attnotnull`; all four indexes present (`companies_approved_by_idx`,
+> `company_invites_invited_by_idx`, plus the two kept); `user_completed_treks` carries the
+> `0020` predicate, `reloptions = {security_invoker=on}`, still no client grant. Performance
+> advisor after: `auth_rls_initplan` 22 → **0**, `no_primary_key` 2 → **0**,
+> `unindexed_foreign_keys` 2 → **0**; the `treks` `multiple_permissive_policies` WARN remains
+> **by decision**, and `unused_index` reads **4** — the two kept plus the two just created,
+> which is the same tiny-table noise and expected. The one check that could not run live: the
+> read-only MCP role cannot plan an INSERT on `conversation_participants`, so "the PK still
+> serves `on conflict (conversation_id, user_id)`" rests on the PGlite suite (`seat-capacity`,
+> `leave-binds-chat`, `chat`), which exercises `join_trek_and_chat` against the PK.
+> Neither migration reconciled data or changed what any client can read or write; see
+> [§2](#performance-advisors-closed-and-the-completed-treks-view-agrees-with-0020-2026-09-15).
+>
+> **Before that, the DB backlog was empty as of 2026-09-14 and the ledger gapless — `0001`–`0024`,
+> no version holes.** `0024` was applied 09:15:46+00 and verified from the catalogue:
+> `trek_participants_assign_status` in `pg_trigger` with `tgenabled='O'`, first of the two
+> BEFORE INSERT triggers in fire order; `assign_participant_status()` DEFINER, `search_path`
+> pinned, EXECUTE false for `anon` and `authenticated`; `join_trek_and_chat` body without
+> `v_batch_max`, with `returning id, status into …` and the `perform … for update` batch
+> lock, grants unchanged (authenticated yes, anon no). No new advisor findings. **The first
+> paste deadlocked** (`40P01`, against a transient session that held `trek_participants`
+> while waiting on `storage.buckets`) and rolled back whole — confirmed no ledger row, no
+> trigger, no function, RPC still `0021` — before the second paste landed. Before `0024`,
+> `0023` was applied 06:35:41+00 and verified from `pg_proc`
+> (both clamps present, old `limit` line gone, INVOKER, pinned `search_path`, anon +
+> authenticated EXECUTE, one overload) and by calling it: `p_limit => 2147483647`
+> returns the full 14-trek catalogue with `total_count` 14 — the cap is not yet binding
+> at this size, which is the point — negatives → 0, a huge `p_offset` → 0, and the
+> Explore (6) and home (3) calls are unchanged. Before it, the backlog was empty as of
+> 2026-09-09 — **`0001`–`0022`**. `0021` (12:55:52+00) and `0016` (12:56:20+00) were
+> applied last, closing the two gaps that had opened when `0017`–`0020` and `0022` went
+> in over them. Both landed out of version order, so they sit behind `0017`–`0022` by
+> `applied_at`: **order the ledger by `version`, never by `applied_at`** — the same
+> caveat `0004`/`0005` already carry. Applying them late was safe exactly as predicted:
+> `0016` only revokes EXECUTE on four `enforce_*` functions, and `0021` restates
+> `is_trek_bookable()` and `join_trek_and_chat()`, neither of which touches the newer
+> `0022` body of `promote_waitlist_on_leave()` — confirmed still carrying its
+> `(joined_at, id)` tie-break afterwards.
+>
+> - `0021_refuse-bookings-for-treks-that-left-the-catalogue` — **applied and
+>   verified live 2026-09-09 12:55:52+00.** Read back over the read-only MCP
+>   server rather than trusted from the ledger: `is_trek_bookable()` exists with
+>   EXECUTE **true for `authenticated`, false for `anon`** (there is no
+>   anonymous booking path), `join_trek_and_chat()` now references it in its
+>   body, and the `"Users can join treks"` policy carries the third arm —
+>   `EXISTS (SELECT 1 FROM trek_batches tb WHERE tb.id = trek_participants.batch_id
+>   AND is_trek_bookable(tb.trek_id))` — so the direct
+>   `POST /rest/v1/trek_participants` path is closed alongside the RPC. Nothing
+>   was destructive and there was no backfill: the pre-apply sweep found **zero
+>   bookings on treks that are archived or whose company is not approved** (there
+>   are none of either: 4 approved companies, 1 pending, 0 archived treks). Nine
+>   regression cases in `tests/db/booking-gate.test.ts`; seven fail with the
+>   migration removed.
+> - `0022_promote-the-waitlist-in-the-order-it-was-shown` — **applied and
+>   verified live 2026-09-09 12:18:27+00.** `promote_waitlist_on_leave()` reads
+>   back from `pg_proc` **md5-identical** to the body in the migration
+>   (`e0bc36ee…`, 1208 bytes), carrying `order by joined_at asc, id asc` with
+>   `prosecdef`, `search_path=public, pg_temp` and EXECUTE false for **both**
+>   `anon` and `authenticated`; `trek_participants_waitlist_promote` is still
+>   the only promotion trigger on the table and enabled (`tgenabled='O'`), and
+>   `join_trek_and_chat()` still numbers the queue with `(joined_at, id) <=`,
+>   which is the agreement the migration exists to create. Nothing to
+>   reconcile: it changes which of two equally-timed waitlisted rows goes
+>   first, not any row already written. Two cases in
+>   `tests/db/waitlist-order.test.ts`; the first fails with the migration
+>   removed, the second is the control and passes either way. **Applied ahead
+>   of `0021`**, which briefly left the ledger with holes at both `0016` and
+>   `0021`; both were filled later the same day — order it by `version`, never
+>   by `applied_at`.
+> - `0020_earn-badges-only-from-treks-actually-held` — **applied and verified
+>   live 2026-09-09 07:48:50+00.** Read back over the read-only MCP server
+>   rather than trusted from the file: `trek_participants_pin_joined_at` is in
+>   `pg_trigger` as `BEFORE INSERT` and enabled (`tgenabled='O'`); all three
+>   functions carry `search_path=public, pg_temp` and `has_function_privilege`
+>   false for **both** `anon` and `authenticated`; `award_user_achievements` has
+>   `prosecdef` with the reconciling DELETE in its body, `recompute_user_stats`
+>   has `prosecdef` with both new gates, and `pin_participant_joined_at` is
+>   deliberately `prosecdef = false` (INVOKER — it touches only NEW). Advisors
+>   unchanged, and none of the three appear among the 34 entries in
+>   `authenticated_security_definer_function_executable`, which is the revoke
+>   taking effect. **The one caveat: it reconciled nobody on apply** — closed 2026-09-15, the
+>   backfill confirmed from the data ([§2](#postgres-security-patches-applied-and-the-last-three-dashboard-actions-closed-2026-09-15)). Nine regression cases in `tests/db/badge-farming.test.ts`; six fail
+>   with the migration removed.
+> - `0019_bind-the-chat-seat-to-the-trek-booking` — **applied and verified live
+>   2026-09-09 07:30:49+00.** `trek_participants_chat_leave` is present in
+>   `pg_trigger` and enabled (`tgenabled='O'`), `leave_chat_on_trek_leave()`
+>   reads back from `pg_proc` byte-for-byte with `prosecdef`, the pinned
+>   `search_path` and EXECUTE false for **both** `anon` and `authenticated`, and
+>   the `"Users can leave conversation"` qual in `pg_policy` carries the
+>   `NOT EXISTS` clause. A forensic sweep found **no residue**: 9 chat seats
+>   against 9 confirmed bookings, zero seats without a confirmed booking and zero
+>   confirmed bookings without a seat, so the hole was never exploited in
+>   production data. The advisor list is unchanged — the new function does not
+>   appear among the 34 signed-in-executable DEFINER functions.
+> - `0018_gate-reviews-on-a-finished-confirmed-booking` — **applied and verified
+>   live 2026-09-09 07:09:15+00.** Both rewritten policies read back from
+>   `pg_policy` matching the migration text. Applied ahead of `0016`, which is
+>   why `0016` sits behind both `0017` and `0018` by `applied_at` now that it
+>   has landed.
+> - `0016_revoke-authenticated-execute-on-trigger-functions` — **applied and
+>   verified live 2026-09-09 12:56:20+00.** All four `enforce_*` rate-limit
+>   functions now answer `has_function_privilege` **false for `anon`,
+>   `authenticated` and `public` alike**, where they previously read
+>   `authenticated=X/postgres`. Hardening rather than a fix: see the §3 entry
+>   for why the grant it removed was never callable. The invariant it relied on
+>   held — all four triggers are still present in `pg_trigger` and enabled
+>   (`tgenabled='O'`), so the join, message, storage and trek-email caps go on
+>   firing with no client role able to execute the function behind them.
+> - `0017_trek-range-checks-and-emergency-relationship-column` — **applied and
+>   verified live 2026-09-07 14:35:04+00.** Found by re-checking the
+>   `CODE_REVIEW.md` §2 Zod↔DB table against live `pg_constraint`: all seven
+>   findings in it are closed, but two columns of the same class were never in
+>   the table to be chased.
 >
 > **Before it, the backlog was empty as of 2026-09-05.** `0014` (11:50:34+00) and
 > `0015` (12:01:25+00) are **applied and verified live** — ledger `0001`–`0015`,
@@ -123,18 +258,17 @@ Everything below is the same backlog, grouped by area, with the full reasoning k
 
 **Status:** ❌
 
-Edge functions exist (`send-trek-notification`, `send-trek-leave-notification`) but not wired; no in-app bell, no web push.
+The two edge functions (`send-trek-notification`, `send-trek-leave-notification`) are wired — DB triggers on `trek_participants` call them (`schema.sql` `trek-join-notification` / `trek-leave-notification`) and both are deployed (v12 / v7). What is missing is an in-app bell and web push.
 
 > **Multi-tenant / company admin UI** and **Trekker/company account split** both
 > closed on 2026-08-08 and moved to §2 ("Multi-tenant platform → F" and "Account
-> types → 5"). The account split's step 5 ships with one **unapplied** SQL file —
-> item 1 in [§1.0](#10-next-actions-ordered--start-at-the-top).
+> types → 5"). The account split's step 5 SQL is applied — it lives in `0001_baseline`.
 
 ### Static content pages the footer already links to
 
 **Status:** ❌ — the links ship, the routes do not.
 
-[`Footer.tsx`](src/components/layout/Footer.tsx) links to `/blog` (L35), `/gallery` (L40), `/faq` (L45), `/contact` (L50), `/privacy` (L97), `/terms` (L100) and `/cookies` (L103); none of the seven exist under `src/app/`. [`profile/page.tsx`](src/app/(trekker)/profile/page.tsx) L317 links to `/treks/history`, which does not exist either — the closest real route is `/dashboard/treks`.
+[`Footer.tsx`](src/components/layout/Footer.tsx) links to `/blog` (L68), `/gallery` (L73), `/faq` (L78), `/contact` (L83), `/privacy` (L130), `/terms` (L133) and `/cookies` (L136); none of the seven exist under `src/app/`. [`profile/page.tsx`](src/app/(trekker)/profile/page.tsx) L317 links to `/treks/history`, which does not exist either — the closest real route is `/dashboard/treks`.
 
 Nothing crashes ([`not-found.tsx`](src/app/not-found.tsx) catches them), but Next `<Link>` **prefetches in-viewport routes**, so all seven 404 on every page load with the footer visible — which is every page. That is the whole "404 (gallery/blog/faq/contact/privacy/cookies/terms)" block in the browser console; found while click-testing after the CSP was promoted (2026-09-01), and unrelated to CSP.
 
@@ -156,6 +290,46 @@ Priority split, when this is picked up:
 
 `estimated_cost` is display-only; no Stripe, no server endpoint.
 
+### Badge unlock rules — defined and verified in sync; the duplication is unguarded
+
+**Status:** 🟡 — the rules exist, run live, and are now written down
+([DATABASE.md → `user_achievements`](DATABASE.md), added 2026-09-09). What is
+missing is anything that *keeps* them true, plus four metrics that were never
+specified.
+
+**Verified 2026-09-09** (read back over the read-only MCP): the live
+`award_user_achievements()`, `recompute_user_stats()` and
+`pin_participant_joined_at()` bodies are md5-identical to
+[`0020`](supabase/migrations/0020_earn-badges-only-from-treks-actually-held.sql) and to the
+final definitions in `supabase/schema.sql`, and the 15 keys in
+[`src/lib/achievements.ts`](src/lib/achievements.ts) match the SQL catalog exactly, in
+the same order, with descriptions that agree with every threshold. So: nothing is
+drifting today.
+
+**What is unguarded.** A badge's threshold lives in the `values (...)` catalog inside
+`award_user_achievements()`; the sentence a user reads lives separately in the TS
+catalog, and the profile page prints that sentence under every **locked** badge
+([profile/page.tsx:395-414](src/app/(trekker)/profile/page.tsx#L395-L414)) — so it is the
+only unlock rule anyone ever sees. No test compares the two. Changing a threshold in
+SQL makes the UI silently wrong, and adding badge #16 means editing both catalogs by
+hand (the reconciling `DELETE` is scoped to the keys the function owns, so a key added
+to only one side half-works). Cheapest fix: assert the catalogs agree in
+[`tests/db/badge-farming.test.ts`](tests/db/badge-farming.test.ts), which already boots
+the schema and can read `prosrc`.
+
+**Metrics still to specify** (these are product decisions, not bugs):
+
+- **`explorer` / `globetrotter`** count `count(distinct treks.location)` — free text an
+  operator types per trek, so "Manali" and "Manali, HP" are two locations. No place
+  table, no normalisation.
+- **`peak_conqueror`** keys off `treks.difficulty in ('Hard','Expert')` — also
+  operator-set, so the badge is only as honest as their labelling.
+- **`shutterbug`** sums `array_length(photo_urls, 1)` across reviews — no dedupe, and
+  25 photos on a single review earns it.
+- **`storyteller`** counts reviews with no length or content floor (`0018`'s
+  finished-confirmed-booking gate is the only bar).
+- Unstated everywhere: whether a cancelled/refunded booking or a no-show counts.
+
 ## 1.3 Partials to finish
 
 ### TanStack Query migration
@@ -168,11 +342,11 @@ Follow-up #6 done (optimistic favorites). Trek detail's initial read moved to th
 
 **Status:** 🟡
 
-Server rendering + per-page metadata shipped (§2). JSON-LD and `/about` metadata shipped 2026-08-08 (§2). Generated per-trek OG images shipped 2026-08-12 (§2). **Remaining:**
+Server rendering + per-page metadata shipped (§2). JSON-LD and `/about` metadata shipped 2026-08-08 (§2). Generated per-trek OG images shipped 2026-08-12 (§2). `NEXT_PUBLIC_SITE_URL` set in Vercel and already-shared links re-scraped 2026-09-15 (§2). **Remaining:**
 
 - `/company/[slug]` still shares its cover/logo as the OG image — no generated card. The trek card in [src/app/trek/[id]/opengraph-image.tsx](src/app/trek/[id]/opengraph-image.tsx) is the template; the fonts are colocated there, so a company card either moves them somewhere shared or keeps its own copy.
-- **Re-scrape links shared before the generated card shipped.** WhatsApp/Facebook cache the *scraped page*, not the image, so they hold the old `og:image` URL and will not re-read the HTML until their own TTL expires (~7–30 days). No app-side change reaches them — not a new image URL, not a cache header (the route already answers `cache-control: public, max-age=0, must-revalidate`, so a trek edited today shows its new title on the very next scrape). The only fix is triggering a re-scrape: [Facebook Sharing Debugger](https://developers.facebook.com/tools/debug) → "Scrape Again" (covers WhatsApp too), LinkedIn Post Inspector; X has no manual refresh and re-fetches per post. **Do this only after `NEXT_PUBLIC_SITE_URL` is set (§1.0 #2)** or the re-scrape just re-caches the `*.vercel.app` URL. 13 treks as of 2026-08-12 — manual is faster than wiring up the Graph API `?id=<url>&scrape=true` batch call, which needs an FB app ID + secret.
-- ⚠️ `NEXT_PUBLIC_SITE_URL` should be set in Vercel. `src/lib/site.ts` falls through to `VERCEL_PROJECT_PRODUCTION_URL` first, so production without it yields the `*.vercel.app` domain in canonical/OG URLs — wrong, but not `localhost:3000`. Only an off-Vercel deploy hits the `localhost` fallback.
+- ~~**Re-scrape links shared before the generated card shipped.**~~ **Done 2026-09-15**, after `NEXT_PUBLIC_SITE_URL` was set the same day, so the re-scrape cached the intended URL. Kept for the next time a card changes: WhatsApp/Facebook cache the *scraped page*, not the image, so they hold the old `og:image` URL and will not re-read the HTML until their own TTL expires (~7–30 days). No app-side change reaches them — not a new image URL, not a cache header (the route already answers `cache-control: public, max-age=0, must-revalidate`, so a trek edited today shows its new title on the very next scrape). The only fix is triggering a re-scrape: [Facebook Sharing Debugger](https://developers.facebook.com/tools/debug) → "Scrape Again" (covers WhatsApp too), LinkedIn Post Inspector; X has no manual refresh and re-fetches per post.
+- ✅ `NEXT_PUBLIC_SITE_URL` is set in Vercel to `https://trekker-tan.vercel.app` (owner-confirmed in the Vercel dashboard 2026-09-15). Not observable over HTTP: `src/lib/site.ts` falls through to `VERCEL_PROJECT_PRODUCTION_URL`, which yields the same string, so `/sitemap.xml` and a trek page's `og:url`/`og:image` read `https://trekker-tan.vercel.app/…` before and after — checked 2026-09-15, as expected. **Change the variable the day a custom domain is attached**, or canonical/OG URLs keep pointing at `*.vercel.app`. Only an off-Vercel deploy hits the `localhost` fallback.
 
 ## 1.4 Phase 1 — Engineering foundation (remaining)
 
@@ -184,40 +358,28 @@ Read path done — server components + `src/lib/server-queries.ts` (see SEO row 
 
 ### Test coverage gaps
 
-**Status:** 🟡 — the harness shipped (§2); these are the boundaries it does not yet cover.
+**Status:** ✅ — **closed 2026-09-15**, see §2 "The join RPC, storage writes and the login-type mismatch are pinned". The four gaps below are kept struck through for the record; the CI-lint note at the end is closed in the same change.
 
 The PGlite suite in [tests/db/](tests/db/) is the right place for almost all of this: security here lives in Postgres, so a React test cannot reach the parts that can actually leak. Ordered by *what escapes if it breaks*.
 
 As of 2026-08-14 the suite covers table-level RLS well — 81 DB tests across chat isolation, catalogue/profile writes, tenant boundaries and EXECUTE grants. **What is left is almost entirely the RPC bodies**, which RLS tests cannot reach: a `SECURITY DEFINER` function bypasses every policy the other tests assert, so its `if not …` guard is the only thing standing there.
 
-1. **`join_trek_and_chat` abuse paths.** Three threats, none pinned: `p_user_id ≠ auth.uid()` forgery; `p_batch_date` in the past or beyond the +1-year cap (the batch/conversation spam DoS); and `enforce_join_rate_limit`. `catalogue-writes.test.ts:281` and `chat.test.ts:158` both note in comments that this RPC is the real guard for booking and chat membership — and neither calls it. It is the single largest untested write path in the app: it is the *only* sanctioned way rows enter `trek_participants` and `conversation_participants`, and the table tests deliberately assert that direct inserts fail, so nothing else exercises the path that is supposed to succeed. All three were verified by hand once (§2 "H — behavioural verification"); hand-verification does not survive the next refactor.
-2. **`trek_reviews` join-gate.** Posting a review for a trek the user never joined. The policy exists (NEW-3), is the anti-rating-manipulation control, and has no test.
-3. **Storage *write* policies.** Overwriting another user's avatar (the M1 fix). ~~**Not expressible in PGlite** — the harness has no `storage` schema~~ — **that was wrong**: `shim.sql` has modelled `storage.buckets`, `storage.objects` and `foldername()` since the harness shipped, and `storage-listing.test.ts` (2026-08-25, `0006`) now asserts the SELECT policies there directly. Writing that test also found the shim was missing `storage.objects.version`, which had silently made every storage insert fail. What is still uncovered is the INSERT/UPDATE/DELETE side — the actual M1 fix — which is now plainly expressible and just not written yet.
-4. **Auth flow e2e.** `signInAs()`'s mismatch path — the probe client, the wrong-account-type rejection, and the guarantee that **no session is persisted** on rejection — has no end-to-end coverage. `e2e/smoke.spec.ts` is two specs: the homepage title and `/explore` returning <400.
+1. ~~**`join_trek_and_chat` abuse paths.** Three threats, none pinned: `p_user_id ≠ auth.uid()` forgery; `p_batch_date` in the past or beyond the +1-year cap (the batch/conversation spam DoS); and `enforce_join_rate_limit`. `catalogue-writes.test.ts:281` and `chat.test.ts:158` both note in comments that this RPC is the real guard for booking and chat membership — and neither calls it. It is the single largest untested write path in the app: it is the *only* sanctioned way rows enter `trek_participants` and `conversation_participants`, and the table tests deliberately assert that direct inserts fail, so nothing else exercises the path that is supposed to succeed. All three were verified by hand once (§2 "H — behavioural verification"); hand-verification does not survive the next refactor.~~ **Closed 2026-09-15** — [tests/db/join-abuse.test.ts](tests/db/join-abuse.test.ts), 16 tests: forged and null `p_user_id`, the anon EXECUTE refusal, both edges of the date window (−2 days and +1 year + 1 day refused; yesterday and exactly +1 year accepted), on-demand batch/chat creation inside the window, and the join cap — 11th refused, the direct insert counted, a repeat on a held batch not counted, per-user, trailing hour only, trigger wiring.
+2. ~~**`trek_reviews` join-gate.** Posting a review for a trek the user never joined. The policy exists (NEW-3), is the anti-rating-manipulation control, and has no test.~~ **Closed 2026-09-09** — [tests/db/review-gate.test.ts](tests/db/review-gate.test.ts), 10 tests. Writing it is what surfaced the gate's two missing questions (`0018`): the policy never asked whether the booking was `confirmed` or whether the trip had happened. The test that would have "covered" the old policy would have asserted the abuse was allowed.
+3. ~~**Storage *write* policies.** Overwriting another user's avatar (the M1 fix). ~~**Not expressible in PGlite** — the harness has no `storage` schema~~ — **that was wrong**: `shim.sql` has modelled `storage.buckets`, `storage.objects` and `foldername()` since the harness shipped, and `storage-listing.test.ts` (2026-08-25, `0006`) now asserts the SELECT policies there directly. Writing that test also found the shim was missing `storage.objects.version`, which had silently made every storage insert fail. What is still uncovered is the INSERT/UPDATE/DELETE side — the actual M1 fix — which is now plainly expressible and just not written yet.~~ **Closed 2026-09-15** — [tests/db/storage-writes.test.ts](tests/db/storage-writes.test.ts), 30 tests across all four buckets: upload/overwrite/rename/delete into another user's or company's prefix refused, own allowed, the flat `{uid}.ext` layout, the pending-vs-approved tier split between `company-logos` and `trek-images`, `trek-profile` has no client write path, and a structural check that no write policy narrows only to `bucket_id`.
+4. ~~**Auth flow e2e.** `signInAs()`'s mismatch path — the probe client, the wrong-account-type rejection, and the guarantee that **no session is persisted** on rejection — has no end-to-end coverage. `e2e/smoke.spec.ts` is two specs: the homepage title and `/explore` returning <400.~~ **Closed 2026-09-15** — [e2e/auth-mismatch.spec.ts](e2e/auth-mismatch.spec.ts), 2 specs against the real login page with GoTrue/PostgREST mocked by `page.route()`, so it runs in CI under the dummy URL: the company-tab mismatch shows the generic message, stays on `/auth/login`, calls `/auth/v1/logout` to revoke the probe's token, and leaves no `sb-*` cookie or storage key; the trekker-tab control signs in and gets the cookie session.
 
-**Closed 2026-08-14 while this section was being written:** chat ACL (now [tests/db/chat.test.ts](tests/db/chat.test.ts), 14 tests — reads, writes, forged announcements, self-add, cross-user edits) and the anon EXECUTE grant surface (now [tests/db/acl.test.ts](tests/db/acl.test.ts), including an assertion that the load-bearing trio stays anon-executable).
+**Closed 2026-08-14 while this section was being written:** chat ACL (now [tests/db/chat.test.ts](tests/db/chat.test.ts), now 23 tests — reads, writes, forged announcements, self-add, cross-user edits) and the anon EXECUTE grant surface (now [tests/db/acl.test.ts](tests/db/acl.test.ts), including an assertion that the load-bearing trio stays anon-executable).
 
-Also worth pinning while in here: CI runs `npm run test` and `npm run build` but **not** `npm run lint` ([.github/workflows/ci.yml](.github/workflows/ci.yml)). Lint errors reach `main` unless the build happens to surface them.
+~~Also worth pinning while in here: CI runs `npm run test` and `npm run build` but **not** `npm run lint` ([.github/workflows/ci.yml](.github/workflows/ci.yml)). Lint errors reach `main` unless the build happens to surface them.~~ **Closed 2026-09-15** — `npm run lint` runs first in the `test-build` job. Warnings do not fail it (the 15-item backlog in `CLAUDE.md` stays non-blocking); errors do.
 
 ## 1.5 Phase 0 — Security tail (remaining)
 
 > Everything from here to "Promote CSP" was found in the 2026-08-14 audit pass (§3).
 
-### Leaked-password protection is client-side only
-
-**Status:** 🟡 — the app-side half shipped; the half that binds has not.
-
-`isPasswordPwned()` ([src/lib/auth.ts:32](src/lib/auth.ts#L32)) is a genuine k-anonymity HIBP check and a good free-plan substitute — but it runs **in the browser**, gating a call the browser then makes *directly* to GoTrue with the publishable key. A `POST /auth/v1/signup` skips it entirely. It raises the floor for honest users and enforces nothing against anyone who doesn't want it enforced.
-
-The advisor still reports `auth_leaked_password_protection` **disabled** (re-checked 2026-08-14). Enable it in Auth → Password settings; raise the minimum length there at the same time (the app currently allows 6 — see the Zod follow-up in §1.3).
-
-### Postgres has outstanding security patches
-
-**Status:** ❌ — advisor `vulnerable_postgres_version`, re-confirmed 2026-08-14: `supabase-postgres-17.4.1.069`. Upgrade via Project Settings → Infrastructure. Brief downtime; back up first. Carried over from `SECURITY_AUDIT_ISSUE.md`.
-
 ### `/company/apply` is reachable logged-out
 
-**Status:** ✅ **fixed 2026-08-18** — see the gotcha-audit entry in §3.
+**Status:** ✅ **fixed 2026-08-20** in commit `a02991d` — see "Review of the gotcha audit — 5 follow-ups fixed" in §3.
 
 `publicRoutes` listed `/company` and matched on prefix, so `/company/apply` passed
 the guard with no session. `/company` is gone from the list; the storefront is
@@ -228,115 +390,9 @@ unchanged. The write was always refused (`apply_for_company` is
 `authenticated`-only and derives the owner from `auth.uid()`), so this was
 defence-in-depth, not a leak.
 
-### Delete the dead `.eslintrc.json`
-
-**Status:** ❌ — hygiene, but it actively misleads.
-
-[.eslintrc.json](.eslintrc.json) turns off `@typescript-eslint/no-explicit-any`, `no-unused-vars`, `no-unused-expressions` and `react-hooks/exhaustive-deps`. **ESLint 9 uses [eslint.config.mjs](eslint.config.mjs) and ignores this file completely**, so every one of those rules is live at error severity — as `CLAUDE.md` documents. No behaviour changes when it goes.
-
-The risk is purely that a human (or an agent) reads it and concludes `catch (e: any)` will pass lint, when it fails the build. Note `CLAUDE.md` states there is **no** `.eslintrc.json`; there is one, so either delete the file or correct that line — the two must not disagree.
-
 **NEW-5 and everything before it are applied** — see §2 "Phase 0 — Security tail (shipped)".
 
 **Doc debt cleared 2026-08-12:** both dropped `increment_participants` blocks removed from `supabase/schema.sql` (the `create` and the `revoke`), leaving a tombstone comment in place of the definition so the next reader doesn't re-add it or confuse it with the live `update_participants_count()`. `DATABASE.md` needed no change — it already described the RPC as non-existent.
-
-## 1.7 `createTrek()` RETURNING bug
-
-**Status:** ✅ **applied + verified live 2026-08-13** — now
-[`migrations/0002_trek-returning-and-chat-policy-roles.sql`](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) §A
-(applied as `phases/fix-trek-returning-and-chat-policy-roles.sql`; split into its
-own migration 2026-08-14 — see the `0002` note in
-[`migrations/README.md`](supabase/migrations/README.md)).
-Found by `tests/db/catalogue-writes.test.ts`. Post-apply `pg_policies` read back
-from production: `treks` carries two SELECT policies, `view treks` `{public}`
-and `company members view own treks` `{authenticated}`, and `is_trek_visible`
-still holds its `anon` EXECUTE grant.
-
-`INSERT … RETURNING` applies the table's SELECT policy to the returned row.
-`view treks` is `using (public.is_trek_visible(id))`, and `is_trek_visible` is
-declared `stable` with a body of
-`select 1 from public.treks t join public.companies c … where t.id = p_trek_id`.
-A STABLE function sees the snapshot taken at the start of the calling statement,
-so the row the INSERT is creating is not visible to it. The predicate returns
-false, the returned row fails the SELECT check, and the statement is rejected
-with `new row violates row-level security policy for table "treks"` — an error
-that reads like a `with_check` failure and sends you looking at the wrong policy.
-
-`src/lib/company.ts` does `.insert({...}).select('id').single()`, which PostgREST
-compiles to exactly that, so **no company can publish a trek**. It fails for
-platform admins too: the `or is_platform_admin()` arm sits inside the same
-unsatisfiable `FROM`. `createBatch()` is unaffected — it inserts without
-`.select()`.
-
-Confirmed the same statement **without** `RETURNING` succeeds for the same user,
-isolating the cause to the SELECT policy rather than `company members create
-treks`. `pg_policies` for `treks` was read from production on 2026-08-13 and
-matched `schema.sql` exactly, so it reproduces live.
-
-### The fix, and the wrong version of it
-
-⚠️ **The obvious fix would take the public site down.** Folding the arm into
-`view treks` itself —
-
-```sql
-using (public.is_trek_visible(id) or public.is_approved_company_member(company_id))
-```
-
-— fails because `view treks` is `to public`, which includes `anon`, and
-`is_approved_company_member` is revoked from `anon` (§17.3 of `schema.sql`).
-Every anonymous `/explore` and `/trek/[id]` read would raise
-`permission denied for function is_approved_company_member`. This is the same
-trap as the load-bearing trio in [Known Gotchas](#known-gotchas).
-
-The applied fix is a **second permissive policy scoped `to authenticated`**.
-Postgres only applies policies whose roles include the current role, so `anon`
-never evaluates it, and permissive policies on the same command are OR'd:
-
-```sql
-create policy "company members view own treks" on public.treks for select to authenticated
-using (public.is_approved_company_member(company_id));
-```
-
-It grants **no new visibility**: `is_trek_visible` already carries
-`or is_company_member(t.company_id)` with no status gate, and this is the
-strictly narrower approved-only form. It exists only to be evaluable during
-`INSERT … RETURNING`, since it reads `company_members`/`companies` and never
-`treks`.
-
-Three tests in `tests/db/catalogue-writes.test.ts` cover it: that
-`insert … returning` now works, that `anon` still sees exactly the public
-catalogue, and that no cross-tenant visibility was opened.
-
-## 1.8 Chat policies: `to public` → `to authenticated`
-
-**Status:** ✅ **applied + verified live 2026-08-13** — now
-[`migrations/0002_trek-returning-and-chat-policy-roles.sql`](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) §B
-(see §1.7 for the file move).
-Post-apply read-back confirms the four `is_chat_participant()` policies are
-`{authenticated}` with quals intact (`is_announcement = false` still pinned on
-`"Send messages"`), and the four left as `{public}` are unchanged.
-
-The chat policies were declared `to public`, which includes `anon`, but their
-quals call `is_chat_participant()` — which `anon` does not hold EXECUTE on
-(§17.5 of `schema.sql`). An anonymous read of `conversation_messages` therefore
-raised `permission denied for function is_chat_participant` rather than
-returning an empty set. It failed closed and nothing in the app reads chat
-anonymously, so this is tidiness, not exposure.
-
-Note this is the **opposite** resolution to the load-bearing trio in
-[Known Gotchas](#known-gotchas) — same definer-called-from-a-`to public`-policy
-shape, different answer, because chat genuinely has no anonymous read path while
-`/explore` does. That is exactly why both are written down.
-
-Only the four policies that actually call `is_chat_participant()` are re-scoped.
-Left as `to public` on purpose: `"System adds participants"` (its `with_check` is
-`auth.role() = 'service_role'`, so re-scoping to `authenticated` would exclude
-the only role it admits), and `"Users can leave conversation"` /
-`"Edit own messages"` / `"Delete own messages"` (they test
-`user_id = auth.uid()`, already NULL for anon, and call no revoked function).
-
-`tests/db/chat.test.ts` now asserts anon gets an empty set across all three
-tables, so re-scoping these back to `to public` fails the test.
 
 ## 1.6 Decided: leave as-is
 
@@ -352,7 +408,7 @@ every future dashboard page then has to reason about. Also in Known Gotchas and 
 
 ## 1.9 Day 5 pentest — storage / edge functions / realtime bugs to solve
 
-**Status:** 🟡 — **all findings closed in production; one fix awaits deploy.**
+**Status:** ✅ — **all findings closed in production.**
 Every finding from the 2026-08-24 pentest Day 5 pass (`result.md`) against storage
 object policies, the three edge functions, and Realtime/WebSocket now has a §2
 entry. The section stays here rather than moving because six other places link to
@@ -363,7 +419,7 @@ this anchor.
 SELECT policies, bucket MIME caps and `realtime.messages` RLS read back matching,
 and listing `avatars` as the plain trekker returns only its own folder.
 
-**One item remains open: [EDGE-004](#edge-004-fix--webhook-secret-compared-in-constant-time-2026-08-26)**
+**The last item, [EDGE-004](#edge-004-fix--webhook-secret-compared-in-constant-time-2026-08-26)**
 — the non-constant-time webhook secret comparison, which the Day 5 pass raised in
 its source-only edge-function notes and which never got a finding ID. Fixed in the
 repo 2026-08-26 and **deployed 2026-09-04** (v12 / v7; the constant-time
@@ -419,6 +475,328 @@ reproduction and control cases in
 ---
 
 # §2 — Done (shipped features & changes)
+
+## Login activity log — every sign-in, with IP and device, for platform admins (2026-09-17)
+
+**Status:** ✅ — **`0027` applied and verified live 2026-09-17 10:23:19+00** over the read-only MCP: ledger row present; `pg_trigger` carries `on_auth_session_created` (AFTER INSERT) and `on_auth_session_refreshed` (AFTER UPDATE OF `refreshed_at`, `WHEN … IS DISTINCT FROM`), both `tgenabled='O'`; `record_login_event()` is DEFINER with `search_path=public, pg_temp` and no `anon`/`authenticated` EXECUTE; `authenticated` holds SELECT only (INSERT/UPDATE/DELETE all false), `anon` holds nothing; RLS on with exactly 1 policy; `cron.job` has `prune-login-events @ 23 * * * *`. The backfill copied all 59 live sessions (59 = 59), IPs stored bare (`106.194.220.56`, no `/32`), emails resolved, and one session's `last_seen_at` already sits an hour past its `created_at` from a refresh that predates the apply.
+
+`/admin/logins` lists every sign-in newest first — **email (+ "New device" badge) · type · method · signed in · duration · signed out · IP · device** — searchable by email, 50 per page, platform admins only. Decided scope: admin-only, no self-serve "my devices" page, no active-sessions list, no remote sign-out, no failed-attempt capture, no geolocation, no filters.
+
+**`0028` — session end, method, account type, new device (2026-09-17).** ✅ **applied and verified live 2026-09-17 11:05:36+00** over the read-only MCP: ledger row present; `pg_trigger` shows `on_auth_session_created` / `on_auth_session_refreshed` / **`on_auth_session_deleted`** on `auth.sessions` and **`on_auth_amr_claim_created`** on `auth.mfa_amr_claims`, all four `tgenabled='O'`; `record_login_event()` and the new `record_login_method()` are both DEFINER, owned by `postgres`, `search_path=public, pg_temp`, EXECUTE false for `anon` / `authenticated` / `public`; `authenticated` still holds SELECT only, `anon` nothing. The backfill filled `method` and `account_type` on all 60 rows (0 null — `password` 59 / `otp` 1; `trekker` 35 / `company_owner` 23 / `platform_admin` 2) and set `is_new_device` on 11 rows, the first row of every one of the 5 users among them.
+
+- **What it adds.** [`0028_session-end-method-account-type-and-new-device-on-login-events.sql`](supabase/migrations/0028_session-end-method-account-type-and-new-device-on-login-events.sql): four columns — `ended_at` (stamped by a third `auth.sessions` trigger, AFTER DELETE: GoTrue deletes the session row on sign-out), `method` (GoTrue's `auth.mfa_amr_claims.authentication_method` — `password` / `otp` / `magiclink` / `recovery` …), `account_type` (snapshot at sign-in, highest wins: `platform_admins` → `platform_admin`, `company_members.role = 'owner'` → `company_owner`, any other membership → `company_staff`, else `trekker`) and `is_new_device` (true when this user has **no** earlier row with the same IP **and** none with the same version-stripped user-agent — `regexp_replace(ua, '\d+([._]\d+)*', '', 'g')` — so a first sign-in is new, a new IP alone is not, a Chrome version bump alone is not). **Why a trigger on `auth.mfa_amr_claims`:** the method is not on `auth.sessions`; GoTrue inserts the AMR claim *after* the session row in the same transaction, so the session INSERT trigger cannot see it. `record_login_method()` writes it back once the claim lands (only fills a NULL, so the first claim wins); the session INSERT also tries `(select … from auth.mfa_amr_claims)` in case GoTrue ever reorders its writes. **Both functions are fail-open** — see Known Gotchas. Access unchanged.
+- **Duration replaces "Last seen"** on the page: `ended_at ?? last_seen_at` minus `created_at`, as `< 1 min` / `12 min` / `3 h 12 min` / `2 d 4 h`. "Signed out" shows `ended_at` or a green **Active** pill when null — which means the `auth.sessions` row still exists, not that anyone is using it (sessions GoTrue has not yet cleaned up show Active; `signInAs()`'s wrong-tab probe leaves seconds-long rows, since it signs the throwaway client out). Method labels: `password` → Password; `otp` / `magiclink` / `recovery` / `email/signup` / `invite` → Email link; `oauth` → OAuth (not wired in this app); null → —; anything else raw.
+- **Tests** — [`tests/db/login-events.test.ts`](tests/db/login-events.test.ts) grows to 20: a session DELETE stamps `ended_at` on that row only; an AMR claim sets `method` once and a second claim does not overwrite it; the session INSERT picks up a claim that already exists (FK dropped inside the rolled-back transaction to force the order); `account_type` for the admin / owner / staff / trekker fixtures; `is_new_device` × 7 (first sign-in, same+same, same IP + new browser, new IP + same browser, new+new, Chrome version bump, another user's history); the four new columns are as unreadable as the old ones for the signed-in user, a stranger and anon; the admin cannot UPDATE `ended_at` / `method`; no client role can EXECUTE either function; and **a renamed-away table still lets the session INSERT, the AMR claim INSERT and the session DELETE all land**. `auth.mfa_amr_claims` added to [`tests/db/harness/shim.sql`](tests/db/harness/shim.sql) with the live NOT NULLs, `UNIQUE (session_id, authentication_method)` and the cascade. `record_login_method` joins the no-client-EXECUTE list in `acl.test.ts`. [`src/lib/loginEventFormat.test.ts`](src/lib/loginEventFormat.test.ts) (22) pins `formatDuration` / `methodLabel` / `accountTypeLabel`.
+- **App** — `LoginEvent` in [`src/lib/loginEvents.ts`](src/lib/loginEvents.ts) carries the four columns; new pure [`src/lib/loginEventFormat.ts`](src/lib/loginEventFormat.ts); [`src/app/admin/logins/page.tsx`](src/app/admin/logins/page.tsx) re-laid out as above, raw user-agent still in the Device cell's `title`. `npm run build` clean, lint 0 errors, 405 tests green.
+
+- **Why a table of our own.** Read live over MCP before deciding: `auth.sessions` carries the real client IP and user-agent of every sign-in but GoTrue **deletes the row on sign-out**, so it is "who is signed in now", not a log; `auth.audit_log_entries` keeps 13 months of `login` rows with email + timestamp but its `ip_address` is `''` on every one and it has no user-agent. Neither is a history of devices, and together they still aren't.
+- **How it fills.** [`0027_log-every-sign-in-for-platform-admins.sql`](supabase/migrations/0027_log-every-sign-in-for-platform-admins.sql): `public.login_events` (`user_id`, `session_id` UNIQUE, `email` snapshot, `ip` text via `host()`, `user_agent`, `created_at`, `last_seen_at`) + `record_login_event()`, a SECURITY DEFINER trigger on **`auth.sessions`** (AFTER INSERT copies the row; AFTER UPDATE OF `refreshed_at` bumps `last_seen_at`). Same standing as `on_auth_user_created` — `postgres` holds TRIGGER on the table (checked). **Fail-open by design**: the body swallows every exception, because a raise would roll back GoTrue's INSERT and turn every sign-in into a 500 — see Known Gotchas. Read access: one SELECT policy `is_platform_admin()`, `to authenticated`; `anon` holds no grant; no client role can write. Pruned at 180 days by `prune-login-events` (pg_cron, hourly). Backfills the sessions alive at apply time so the page is not empty on day one.
+- **Tests** — [`tests/db/login-events.test.ts`](tests/db/login-events.test.ts) (6): a session INSERT becomes one row with ip / UA / email; a refresh bumps `last_seen_at` and an unrelated session UPDATE does not; the platform admin reads every row; the user who signed in, a stranger, and anon read nothing (anon is refused outright — no grant); INSERT / UPDATE / DELETE are refused for the admin and anon; **a renamed-away table still lets the session land**. `auth.sessions` added to [`tests/db/harness/shim.sql`](tests/db/harness/shim.sql) with the live column types (`refreshed_at` is `timestamp` *without* tz). `record_login_event` joins the no-client-EXECUTE list in `acl.test.ts`. [`src/lib/deviceLabel.test.ts`](src/lib/deviceLabel.test.ts) (9) pins the UA → label parser on the two real UAs seen live plus iPhone / Edge / Android / Firefox / `node` / empty / null.
+- **App** — [`src/lib/loginEvents.ts`](src/lib/loginEvents.ts) `adminListLoginEvents(search, page)` (ssr browser client, `count: 'exact'`, `ilike` on email, `range`); `useAdminLoginEvents` + `['admin','loginEvents',…]` key in [`src/lib/queries.ts`](src/lib/queries.ts); [`src/lib/deviceLabel.ts`](src/lib/deviceLabel.ts) (≈30 lines, no dependency — raw UA stays in the cell's `title`); [`src/app/admin/logins/page.tsx`](src/app/admin/logins/page.tsx); nav item in `AdminShell`, link card on `/admin`. Guarded by the existing server `is_platform_admin()` check in `src/app/admin/layout.tsx`. `npm run build` clean, lint 0 errors, 366 tests green.
+- **Docs** — `DATABASE.md` §1 / §2 / §4 / §6 / §7 / §8, `supabase/schema.sql` regenerated (27 migrations), `security-fixes.sql` entry.
+
+## The chat channel is stable, Sentry ingest works, and the uptime monitor watches production (2026-09-17)
+
+**Status:** ✅ for the first two; 🟡 for the third — the URL is fixed, the interval is an open decision (the uptime-monitor row in §1.0). No code changed; every claim below was read live over the Supabase, Sentry and Vercel MCP servers rather than taken from the console dump or from memory.
+
+Three findings from a browser console dump on 2026-09-15, checked rather than trusted:
+
+- **Realtime "flapping" in `/messages` — not a bug, and the diagnosis in the dump was wrong.** The console showed the channel cycling `CLOSED → SUBSCRIBED`, read at the time as the effects being keyed on the `user` object. They are keyed on `uid` ([messages/page.tsx:321](src/app/(trekker)/messages/page.tsx#L321), [:379](src/app/(trekker)/messages/page.tsx#L379)) and each run is chained behind the previous teardown ([:107-115](src/app/(trekker)/messages/page.tsx#L107-L115)) — since `82761a7` (2026-09-01, `PERFORMANCE.md` §6), and production (`67c2ebf`, Vercel `dpl_BKCLjN…`) carries it. What the dump actually was: `next dev`. React Strict Mode is on by default in the App Router and mounts → unmounts → remounts every effect once, which is exactly one subscribe / remove / subscribe per channel — the gate refs exist to survive it. **Live check 2026-09-17:** the owner used chat on production from Safari 08:51–09:04 UTC (`conversation_messages` ×10, `mark_conversation_read` ×8, a `/messages` pageload in Sentry at 08:59:06); `realtime_logs` show one tenant initialisation at 08:51:02–08 — a ~6 s cold start on the day's first socket, including a pending realtime-schema migration — and then nothing: no `JoinRateLimitReached`, no re-initialisation, no `Database supervisor not found`. Realtime doesn't log individual channel joins at info level, so the server side is consistent with, not proof of, a steady channel; the owner's console on the live site is the definitive check and showed one `SUBSCRIBED` with no `CLOSED` after it.
+- **The Sentry 408 — the owner's everyday Safari, not the app.** The dump had a 408 on the `ingest.…sentry.io` request and Sentry showed nothing for 14 days, which read as a possible ingest failure. The 14 empty days were the *errors* list — no errors happened; traces were flowing all along (pageloads from Chrome / Chrome Mobile / HeadlessChrome on Sep 4, 5 and 16). On 2026-09-17 with extensions off, four `envelope/` requests returned 200 and the pageloads arrived tagged release `67c2ebf`, `vercel-production`, `/messages` at 08:59:06 among them. The 408 is a content blocker in the everyday browser. **Known limit, decided for now:** `withSentryConfig` in [next.config.mjs](next.config.mjs) sets no `tunnelRoute`, so a user running a blocker never reports at all — optional, declined 2026-09-17.
+- **Sentry's auto-created uptime monitor was guarding a stale preview URL — and is ~99 % of API traffic.** Monitor `8178532` came from Sentry's automatic domain detection, which picked `trekker-9bexhvv4z-…vercel.app`: the preview deployment of `d1c6aa3` from 2026-08-27, before the realtime and CSP fixes, and the first hostname Sentry ever saw because the August CSP reports were sent from it. It polled once a minute; each poll rendered that old copy's homepage, which calls `search_treks` against the *production* database — 1,455 of 1,460 PostgREST requests on 2026-09-15 (AWS us-east-1, user-agent `node`). Production going down would not have alerted. **Repointed to `https://trekker-tan.vercel.app` on 2026-09-17** and read back: active, `uptimeStatus: ok`, 60 s, environment `production`. The load is unchanged and now lands on the real site — 1,445 `search_treks` in the following 24 h — so the interval is the uptime-monitor row in §1.0. `JAVASCRIPT-NEXTJS-C` (two timeouts against the old URL on 2026-09-14) is resolved and stays so.
+
+Known Gotchas gains the Strict Mode note and the "the once-a-minute `search_treks` is the monitor" note; `PERFORMANCE.md` §4.4 carries the load number.
+
+## The join RPC, storage writes and the login-type mismatch are pinned; CI lints; DB row data stays out of Sentry (2026-09-15)
+
+**Status:** ✅ — 351 tests green (was 291), `npm run build` clean, `npm run lint` 0 errors, 4 Playwright specs passing locally (the chat spec skips without credentials, as before). Nothing in `supabase/` changed — every test here pins behaviour the migrations already have.
+
+Closes the whole of §1.4 "Test coverage gaps" and CODE_REVIEW §4.3.
+
+- **[tests/db/join-abuse.test.ts](tests/db/join-abuse.test.ts)** — 16 tests for the guards inside `join_trek_and_chat()`, the SECURITY DEFINER body no RLS test can reach: forged and null `p_user_id`, anon refused at the EXECUTE grant, the date window on both edges, the batch + conversation built on demand inside it, and the 10/hour cap (11th refused, the direct insert counted, a repeat on a held batch not counted, per user, trailing hour, `trek_participants_rate_limit` wiring). Every negative sits next to its positive control, per `tests/db/README.md`.
+- **[tests/db/storage-writes.test.ts](tests/db/storage-writes.test.ts)** — 30 tests, the INSERT/UPDATE/DELETE half of the M1 fix. Cross-prefix writes throw `row-level security`; cross-prefix UPDATE/DELETE report 0 rows (RLS filters rather than refuses), asserted on `affectedRows` beside a 1-row own-prefix control. Pins the tier split the two company buckets have always had: `company-logos` is writable while pending *or* approved, `trek-images` only once approved. Structural check mirrors `storage-listing` #6 for the write side.
+- **[e2e/auth-mismatch.spec.ts](e2e/auth-mismatch.spec.ts)** — the `signInAs()` mismatch path in a real browser, with GoTrue and PostgREST answered by `page.route()` so it runs under CI's dummy Supabase URL. Asserts the generic message, no redirect, the probe's `/auth/v1/logout` call, and no `sb-*` cookie or localStorage key; the trekker-tab control proves the same fake session *does* persist when the kind matches, so the negative cannot pass for the wrong reason.
+- **[.github/workflows/ci.yml](.github/workflows/ci.yml)** — `npm run lint` runs before `npm run test` in the `test-build` job. The 15 known warnings do not fail it; errors do.
+- **[src/lib/log.ts](src/lib/log.ts)** — `logError(context, error)` logs only `message` and `code`. A `PostgrestError` also carries `details` — where Postgres puts the failing row (`Key (email)=(…) already exists`, `Failing row contains (…)`) — and Sentry records every `console.error` as a breadcrumb on the next event, so the raw object was shipping row data to a third party (CODE_REVIEW §4.3; hygiene, not a user-facing leak). All 79 `console.error(…, error)` sites in `src/` now go through it (the one in `uploadErrors.ts` already logged a hand-shaped safe object and is unchanged). **`scrubConsoleBreadcrumb`** is wired as `beforeBreadcrumb` in both [src/instrumentation-client.ts](src/instrumentation-client.ts) and [src/instrumentation.ts](src/instrumentation.ts) as the safety net for any future direct `console.error(err)` or a library's own logging — both SDKs put the raw arguments on `data.arguments`, the server one also pre-formats them into `message`, and the hook rebuilds that too. [src/lib/log.test.ts](src/lib/log.test.ts) (6 tests) pins the invariant: `details` never reaches `console.error` or a breadcrumb; `message` and `code` always do.
+
+The dev console gets *more* readable, not less: the Next dev overlay renders a raw `PostgrestError` as `{}`, which is why `inviteErrorMessage()` was already logging `code, message` by hand.
+
+**Still open in §1.4:** the Server layer row (write endpoints for notifications/admin/payments) — unchanged.
+
+## Postgres security patches applied, and the last three dashboard actions closed (2026-09-15)
+
+**Status:** ✅ — done in the Supabase and Vercel dashboards by the owner on 2026-09-15. The two dashboard items are recorded here from the owner's confirmation: the Supabase and Vercel MCP servers were unreachable (DNS failure / connect timeout) when this was written, so the build string and the advisor state could not be read back. **Re-read the security advisor at the next opportunity — `vulnerable_postgres_version` should be absent and `select version()` should read above 17.4.**
+
+- **Postgres upgraded** — Project Settings → Infrastructure → "Upgrade project" (in-place `pg_upgrade`, offered to every plan). The dashboard now shows a newer 17.x with no upgrade offered. Closes the §1.5 section "Postgres has outstanding security patches": `supabase-postgres-17.4.1.069` had carried the `vulnerable_postgres_version` WARN since at least 2026-06-17, kept off the list for three months by a "Pro-only, acknowledged on free plan" note that was wrong (corrected 2026-09-14). Last observed pre-upgrade over the MCP server: `PostgreSQL 17.4 on aarch64-unknown-linux-gnu` at 2026-09-14 19:08 UTC.
+- **`NEXT_PUBLIC_SITE_URL` set in Vercel** to `https://trekker-tan.vercel.app` (§1.3 SEO). Not observable over HTTP because the value equals the `VERCEL_PROJECT_PRODUCTION_URL` fallback — `/sitemap.xml` and a trek page's `og:url`/`og:image` read `https://trekker-tan.vercel.app/…` before and after, checked 2026-09-15. It starts to matter the day a custom domain is attached: change the variable then, the same day the Gmail → Resend move (the Gmail SMTP row in §1.0) becomes possible.
+- **Already-shared trek links re-scraped** so the generated OG card replaces the cached cover photo (§1.3 SEO), done after the variable was set so the re-scrape cached the intended URL. The mechanics (scrapers cache the page, only a manual re-scrape reaches them) stay documented in §1.3 for the next time a card changes.
+- **`0020` backfill confirmed** — the one pre-existing stale badge is gone. `user_achievements` for `655b4188…` read 2026-09-14 over the MCP server as `first_steps`, `peak_conqueror`, `trailblazer`, `warming_up` — no `explorer` — and `cron.job_run_details` shows jobid 1 (`recompute_user_stats`, `5 0 * * *`) `succeeded` every night 2026-09-10 → 2026-09-14. The nightly recompute did the reconcile exactly as the (since-closed) `0020` backfill row in §1.0 predicted; nothing to investigate.
+
+§1.0 was down to one row (Gmail SMTP, deferred on owning a domain; the uptime-interval row joined it 2026-09-17 and the `0029` apply row 2026-09-19). §1.5 keeps only the ✅ `/company/apply` record. §1.3 SEO keeps only the company OG card. Nothing in `src/` changed.
+
+## Leaked-password protection stays app-side (2026-09-15)
+
+**Status:** ✅ decided — `isPasswordPwned()` ([src/lib/auth.ts:36](src/lib/auth.ts#L36)) is the accepted control; the Pro-only Supabase toggle stays off and the `auth_leaked_password_protection` advisor WARN is no longer actionable. GoTrue's minimum password length is **set to 8 and verified live 2026-09-15** — the free-plan password control that actually binds.
+
+The open question was whether to upgrade the plan (~$25/month) for the dashboard toggle, given that the app's check runs in the browser and a direct `POST /auth/v1/signup` skips it. The answer is no, because of *who* the bypass hurts. Leaked-password protection exists to stop an ordinary user from reusing a breached password and getting credential-stuffed later. Ordinary users come through the form, and the form enforces it. The only way past the check is to hand-craft the sign-up call — and the only account that weakens is the caller's own. There is no second party to protect from that, so the platform toggle would close a gap nobody else can exploit. The control is client-side only, but so is the threat.
+
+What the check does today, unchanged: SHA-1 the candidate password in the browser, send the first 5 hex chars to HaveIBeenPwned's range API (k-anonymity — the password never leaves), reject a suffix match with a `weak_password` error. Wired into `signUp()` and `updatePassword()`; fails open if HIBP is unreachable so an outage cannot block sign-ups; `api.pwnedpasswords.com` is in the CSP `connect-src` for it ([src/utils/csp.ts:67](src/utils/csp.ts#L67)).
+
+Revisit only if the plan is upgraded for other reasons (daily backups, no idle pausing, larger DB) — then flip Authentication → Providers → Email → "Prevent the use of leaked passwords", which costs nothing extra at that point. The minimum-length field on the same page is not plan-gated and was set to 8 the same day. Verified without creating anything: `POST /auth/v1/signup` with a 1-character password (rejected before any row is written) now answers `422 weak_password` — `Password should be at least 8 characters.` The app has required 8 since 2026-09-07 ([src/lib/schemas.ts:23](src/lib/schemas.ts#L23)); the two now agree, and a direct API call no longer gets a lower bar than the form.
+
+Docs re-checked 2026-09-15: the [password-security guide](https://supabase.com/docs/guides/auth/password-security) gates only the leaked-password toggle ("available on the Pro Plan and above"); minimum length and required characters carry no plan note.
+
+## Gmail SMTP stays until there is a domain (2026-09-15)
+
+**Status:** ✅ — Gmail-side hardening done and verified (forgot-password mail
+arrives); the provider swap itself is parked in [§1.0's Gmail SMTP row](#1--to-do-add--change--fix).
+
+The open item was "move auth mail to Resend/Postmark/SendGrid". All three verify
+the sender through DNS records on a domain you own, and Trekker has none —
+`trekker-tan.vercel.app` is Vercel's domain and cannot be verified. So the swap is
+blocked on buying a domain, not on any config, and the decision is to stay on the
+personal Gmail account (`achutakeshavam@gmail.com`, `smtp.gmail.com:465`, App
+Password) until then.
+
+What was done instead, in the Supabase dashboard:
+
+- **Email rate limit confirmed at 20/hour and deliberately left there.** It was set
+  while debugging the Aug 29 outage, but it happens to be the right value for Gmail:
+  20 × 24 = 480/day sits just under Gmail's ~500/day cap, so a signup-bot burst cannot
+  exhaust the day's quota and lock real users out of password resets. Do not raise it
+  while Gmail is the sender.
+- **Sender name set to `Trekker`.** Gmail forces the From *address* to the account's
+  own, but keeps the display name.
+- **Three things that would silently break it, recorded here because none are in the
+  repo:** (1) 2-Step Verification on the Gmail account must stay on — turning it off
+  deletes every App Password and auth mail fails with the same `535` as Aug 29;
+  (2) changing that account's Google password also revokes App Passwords — create a
+  new one and paste it into SMTP Settings; (3) Google's "new sign-in" alerts for
+  Supabase's SMTP logins are expected — answering "No, it wasn't me" blocks them.
+
+Verified by a live forgot-password round trip on 2026-09-15; `auth_logs` show the
+five GoTrue restarts from the dashboard saves (04:10–04:20 UTC) and no SMTP errors.
+
+## Performance advisors closed, and the completed-treks view agrees with `0020` (2026-09-15)
+
+**Status:** ✅ — both migrations **applied and verified live** (`0025` 2026-09-14 19:04:19+00,
+`0026` 19:04:40+00; catalogue read-back in §1.0). `.eslintrc.json` deletion ✅ shipped.
+
+**[`0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys`](supabase/migrations/0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys.sql)**
+— behaviour-identical. Three advisor findings in one file:
+
+- `auth_rls_initplan` ×22: every policy that called `auth.uid()` / `auth.role()` per row now
+  calls `(select auth.uid())`, which Postgres hoists into an InitPlan and evaluates once per
+  statement. Roles, commands and predicates are otherwise restated verbatim from the latest
+  migration that defined each (`0001`, `0010`, `0018`, `0019`, `0021`) — the five `to public`
+  policies stay `to public`.
+- `no_primary_key` ×2: `conversation_participants` and `favorites` had a UNIQUE on their
+  identifying pair but no PK. The unique is promoted (dropped and replaced by a PK on the same
+  columns in one ALTER), not duplicated. `on conflict (conversation_id, user_id)` in
+  `join_trek_and_chat` keeps working — inference accepts any unique index. Side effect:
+  `favorites.trek_id` becomes NOT NULL (0 live NULLs).
+- `unindexed_foreign_keys` ×2: `companies_approved_by_idx`, `company_invites_invited_by_idx`.
+
+Pinned by [`tests/db/performance-advisors.test.ts`](tests/db/performance-advisors.test.ts)
+(3 cases, all fail with the migration removed); the rest of the suite re-proves every
+rewritten policy.
+
+**Decided, not done:** the `treks` SELECT policies stay two, and the two "unused" indexes
+stay — see Known Gotchas and `PERFORMANCE.md` §4.4 for why the advisor is wrong about both.
+
+**[`0026_define-completed-in-user-completed-treks-as-0020-does`](supabase/migrations/0026_define-completed-in-user-completed-treks-as-0020-does.sql)**
+— the view carried `0001`'s bare `batch_date < current_date` after `0020` redefined
+"completed" for stats and badges (confirmed booking, trek ended, booked before departure).
+It now carries the `0020` CTE predicate verbatim, so that expression lives in three places
+(`0018` policies, `0020` functions, this view) — change all three together. Also records a
+drift: the live view has `security_invoker = on`, which no migration ever set; the file now
+says so. No grant added — nothing in `src/` reads it and no client role can.
+[`tests/db/completed-view.test.ts`](tests/db/completed-view.test.ts) uses
+`recompute_user_stats()` as the oracle: for five scenarios the view's row count equals
+`user_stats.treks_completed` (3 fail with the migration removed; the 2 that pass either way
+are the positive controls).
+
+**`.eslintrc.json` deleted.** ESLint 9 reads `eslint.config.mjs` only; the legacy file turned
+off four rules that were in fact live at error severity, and misled readers into thinking
+`catch (e: any)` passes lint. `CLAUDE.md`'s lint section now states there is no such file.
+`npm run lint` output is unchanged.
+
+## Node 24 everywhere, Vitest 5, and the audit is clean (2026-09-14)
+
+**Status:** ✅ — the two follow-ups from the morning's in-range refresh, closed.
+`npm run build`, `npm test` (291 passing, both projects) and `npm run lint`
+(0 errors, the same 15 warnings) green; `npm audit` **0 vulnerabilities**.
+
+**Node 24 LTS — local, CI and the repo now match production.** Vercel already
+ran this project on `nodeVersion: "24.x"` (read over the Vercel MCP); local dev
+was on Homebrew's unversioned `node` formula, stuck at 23.10.0 since April 2025,
+and CI on 20 — both behind prod. `brew upgrade node` would have landed on 26.8.2
+(the Current line), so the fix is the versioned keg: `brew install node@24`
+(24.21.0), `brew unlink node`, `brew link --overwrite --force node@24`.
+Homebrew ships `node@24`'s npm with `prefix = /opt/homebrew`, so the global CLIs
+(`pnpm`, `deno`, `ionic`, `claude-code` …) stayed in place and run; verified
+`node -v`, `npm -v` (11.19.0) and each global afterwards. Rollback is `brew
+unlink node@24 && brew link node` — the old keg is still installed. The repo
+declares it in [.nvmrc](.nvmrc) (`24`), and both CI jobs read that file
+(`node-version-file: .nvmrc` in [ci.yml](.github/workflows/ci.yml)) instead of
+the hard-coded `20`, which Vitest 5's `engines` would have failed anyway.
+**Deliberately no `engines.node` in `package.json`** — Vercel derives the runtime
+from that field, and production is already pinned in project settings; leave
+prod alone. No `node_modules` rebuild was needed (`sharp`, `lightningcss`,
+`@next/swc` are N-API prebuilds) — the suite passed on 24 before Vitest moved.
+
+**Vitest 3.2.7 → 5.0.0, jsdom 27.0.1 → 30.0.1** — two Vitest majors, taken
+against the [v4](https://v4.vitest.dev/guide/migration.html) and
+[v5](https://vitest.dev/guide/migration.html) migration guides. Nothing in this
+config was on either list (no `workspace`, `poolOptions`, coverage, custom
+environments; jsdom is still a built-in environment fed by the `jsdom` peer), and
+the tests use only `vi.fn` / `vi.spyOn` / `vi.restoreAllMocks`. The two v5
+semantic changes that could have bitten were checked by hand: `clearMocks` now
+defaults to `true` (every mock here is created per test — no-op), and unawaited
+`.resolves`/`.rejects` now fail the test (all 93 are awaited — checked by walking
+back to each `expect(`). **Zero test or config edits.** That clears the 2
+moderate `npm audit` findings ([GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9)).
+
+**`vitest.config.ts` → [vitest.config.mts](vitest.config.mts).** Vitest 5 runs on
+the root Vite 8 (Vitest 3 carried its own nested Vite 7), and Vite 8 warns on
+every run that the config "uses ESM syntax in a file loaded as CommonJS" — with
+no `"type": "module"` in `package.json`, Node's native loader would treat a `.ts`
+config as CJS, and Vite's `configLoader: 'native'` "is planned to become the
+default in a future major". The `.mts` extension is the documented fix and matches
+`next.config.mjs`. Renamed with `git mv`; `tsconfig.json`'s exclude entry,
+`vitest.setup.ts`'s comment, `CLAUDE.md`, `CONTEXT.md` and the two §2 evidence
+pointers updated; the §3 history line keeps the old name.
+
+**Found by the fix itself.** With Node 24 running, `npm outdated` immediately
+showed what 23 had hidden — `eslint` 10.10.0 as Latest (`^20.19.0 || ^22.13.0 ||
+>=24`; still pinned, see the entry below) — and one genuinely new in-range
+release: `framer-motion` 13.2.0 → **13.3.0**, published 14:57 UTC today, after
+the morning pass. Applied; gates re-run.
+
+npm 11.19.0 (bundled with `node@24`) prints a new `install-scripts` notice for
+`@sentry/cli`, `fsevents` and `unrs-resolver` ("not yet covered by
+`allowScripts`"). Informational today; the `sentry-cli` binary lives in the
+`@sentry/cli-darwin` platform package and was verified present and runnable.
+
+## Dependency upgrade — the in-range refresh, and both lint pins re-tested (2026-09-14)
+
+**Status:** ✅ — the 12 packages `npm outdated` showed as within-range moved to
+their `Wanted` versions, plus `eslint-config-next` 16.3.4 → **16.3.5** (exact pin,
+bumped explicitly). `typescript` stays 6.0.3 and `@types/node` stays on 24, as
+decided on 2026-09-05. `npm run build`, `npm test` (291 passing) and `npm run lint`
+(0 errors, the same 15 warnings) are green before and after. `package.json`
+changes only on the `eslint-config-next` line — `npm update` moves the lock, not
+the ranges.
+
+| Package | From | To |
+|---|---|---|
+| `next` | 16.3.4 | 16.3.5 |
+| `react`, `react-dom` | 19.2.8 | 19.3.0 |
+| `@types/react` | 19.2.18 | 19.3.0 |
+| `@types/react-dom` | 19.2.7 | 19.3.0 |
+| `zod` | 4.5.4 | 4.6.5 |
+| `lucide-react` | 1.41.0 | 1.46.0 |
+| `@sentry/nextjs` | 10.73.0 | 10.74.0 |
+| `@supabase/supabase-js` | 2.115.0 | 2.116.0 |
+| `@supabase/ssr` | 0.12.6 | 0.12.7 |
+| `@playwright/test` | 1.62.1 | 1.63.0 |
+| `@types/node` | 24.13.3 | 24.13.4 |
+| `eslint-config-next` | 16.3.4 | **16.3.5** (bundles `typescript-eslint` 8.69.0 → 8.70.0; `eslint-plugin-react` stays 7.37.5) |
+
+**Both pins re-tested, both still hold.** Each was tried live with `npm install
+--no-save`, then the lock was restored (`npm install`, lock byte-identical after):
+
+- **TypeScript 7.0.2 — still rejected.** `typescript-eslint` 8.70.0 keeps the hard
+  guard `if (versionMajor >= 7) throw` in `typescript-eslint/dist/index.js` and
+  `@typescript-eslint/parser/dist/index.js`, and declares
+  `typescript: '>=4.8.4 <6.1.0'`; `npm run lint` dies at load with
+  "typescript-eslint does not support TS 7.0" before touching a file. `npx tsc
+  --noEmit` under 7.0.2 still passes clean, so the block is lint-only, exactly as
+  before. Still tracked in
+  [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
+- **ESLint 10.10.0 — still crashes, and now with the precise cause.**
+  `eslint-plugin-react` 7.37.5 calls `context.getFilename()`, which ESLint 10
+  removed, so loading `react/display-name` throws
+  `TypeError: contextOrFilename.getFilename is not a function` on the first file
+  (`eslint-plugin-react/lib/util/version.js:31`). Its own peer range tops out at
+  `eslint ^9.7`; the `>=9.0.0` on `eslint-config-next` is still the wrong one to
+  trust. Unblocks when `eslint-config-next` bundles an `eslint-plugin-react` that
+  supports ESLint 10.
+
+**Two things found on the way — both closed later the same day** (see
+[Node 24 everywhere, Vitest 5, audit clean](#node-24-everywhere-vitest-5-and-the-audit-is-clean-2026-09-14)):
+
+- The local Node is **23.10.0** — an odd-numbered, end-of-life line that current
+  `engines` ranges exclude (`^20.19.0 || ^22.13.0 || >=24`; npm prints
+  `EBADENGINE` for `eslint-visitor-keys@5.0.1` on every install). `npm outdated`
+  picks "latest" *respecting the running engine*, so it silently hides every
+  major whose engines skip 23: `vitest` 4.1.11 / 5.0.0 and `jsdom` 28–30 never
+  appeared in its output, which is why the 2026-09-05 pass could say "every
+  direct dependency is on its latest release". Check against `npm view <pkg>
+  dist-tags` until the machine is on Node 24.
+- `npm audit` reports the same **2 moderate** findings before and after —
+  [GHSA-82fw-gwwq-j7x9](https://github.com/advisories/GHSA-82fw-gwwq-j7x9) in
+  `@vitest/mocker` (dev-only; path traversal through a redirect mock). The patched
+  line is `vitest` 4.1.11+, a major from the pinned `^3.2.6`. `npm audit fix
+  --force` would *downgrade* to 2.0.5 — do not run it.
+
+The registry was dropping the two large tarballs (`next`, `@next/swc-darwin-arm64`)
+mid-stream with `ETIMEDOUT` / `ECONNRESET` on this connection. `npm cache add
+<pkg>@<ver>` for each, then `npm update --prefer-offline`, finished in 13s.
+
+## A booking's status is decided by the seat count, not the client (2026-09-14)
+
+**Status:** ✅ — [`0024_decide-the-seat-when-the-booking-is-written.sql`](supabase/migrations/0024_decide-the-seat-when-the-booking-is-written.sql) **applied and verified live 2026-09-14 09:15:46+00**. `npm test` green (291 tests, 7 new — 235 in the db project), `npm run build` clean, `schema.sql` regenerated. This was the last security ❌ in the DB.
+
+**Verified from the catalogue over the read-only MCP server**, not from the ledger: `pg_trigger` has `trek_participants_assign_status` on `trek_participants`, `tgenabled='O'`, first of the two BEFORE INSERT triggers in fire order (`…_assign_status`, `…_pin_joined_at`); `pg_proc` has `assign_participant_status()` SECURITY DEFINER with `search_path=public, pg_temp`, `has_function_privilege` false for `anon` and `authenticated`; `join_trek_and_chat` body no longer contains `v_batch_max`, does contain `returning id, status into v_participant_id, v_status` and `perform 1 from public.trek_batches where id = v_batch_id for update`, EXECUTE still true for `authenticated` and false for `anon`. Security advisors: no new findings — the new function appears in neither "executable" list. **The first paste deadlocked** (`40P01`: a transient session held `trek_participants` while waiting on `storage.buckets`, which `0024` never touches) and Postgres rolled the whole batch back — confirmed by reading no ledger row, no trigger, no function and the `0021` RPC body before the retry, which landed clean.
+
+**The hole** (found by `0020`, tracked in §1.5 since 2026-09-09): the `"Users can join treks"` INSERT policy pins `user_id`, `is_trekker()` and (`0021`) bookability, and says nothing about `status`. `join_trek_and_chat()` decides confirmed-vs-waitlisted under a `FOR UPDATE` lock and writes the row — but a `POST /rest/v1/trek_participants` skips the RPC, so `status = 'confirmed'` on a full departure took a seat the RPC would have waitlisted. So did a POST with **no** status, since the column defaults to `'confirmed'`. Swept 2026-09-09: zero batches over capacity, so open, not exploited.
+
+**The fix is `0020`'s shape for `joined_at`, applied to `status`:** a BEFORE INSERT trigger, `trek_participants_assign_status` → `assign_participant_status()`, locks the batch row, counts confirmed seats and **overwrites** `NEW.status` — `'waitlisted'` if full, `'confirmed'` otherwise (NULL `max_participants` = uncapped, as everywhere). Every insert path lands the row with the status the seat count allows. Three design points, each with a reason:
+
+- **Rewrite, not refuse.** The honest answer to "the batch is full" is a waitlisted row — that is what the RPC has always returned, and a plain POST now gets the same. A `WITH CHECK` arm could not do this anyway: Postgres evaluates it on the row *after* BEFORE triggers ran, so it would only ever see the trigger's value; and a count under the caller's RLS sees only their own rows (SELECT is own-row-only), so the count needs definer rights a policy does not have. The trigger is SECURITY DEFINER for that reason, like `enforce_join_rate_limit()` and `promote_waitlist_on_leave()`.
+- **Writes with no session are left alone** — `auth.uid() is null` returns `NEW` untouched. That is the SQL Editor / seeding / pg_cron branch, the same one `protect_profile_account_type()` takes, and it keeps the Editor usable for a manual repair. A client cannot reach it: the INSERT policy is `to authenticated` and requires `auth.uid() = user_id`. It also keeps the other DB tests honest — `leave-binds-chat` and `waitlist-order` seed `'waitlisted'` rows as superuser and mean it.
+- **The RPC no longer decides; it reads back.** With the trigger authoritative, the RPC's own count was a second implementation of one rule — the drift `0022` had to repair between the RPC's queue numbering and the trigger's queue order. `0024` restates `join_trek_and_chat()` as `0021`'s body with the capacity block removed: no `v_batch_max`/`v_confirmed`, the insert passes no status, and `returning id, status into …` feeds both the chat-seat decision and the returned `status`. The batch lock stays — it also serializes the already-a-participant check, so a double submit from one user finds its first row instead of tripping the unique constraint. Live body confirmed byte-identical to `0021` before writing this, so the restatement reverts nothing.
+
+**Deliberately not done:** seating a directly-inserted *confirmed* booker in the batch chat. A bare POST that lands `'confirmed'` on a departure with room holds a legitimate seat and has no chat seat (the RPC creates the conversation on demand; nothing else does). That is the client hurting only itself — it takes nothing from anyone, and leaving still promotes correctly — and it is not what this entry is about. Noted, not fixed.
+
+Evidence: the migration; [`tests/db/seat-capacity.test.ts`](tests/db/seat-capacity.test.ts) — 7 cases: the attacker's POST with `status = 'confirmed'` lands `'waitlisted'` on a full departure, so does one with no status, both land `'confirmed'` with room (asking for `'waitlisted'` included — the column is derived, not validated), the RPC returns what the trigger wrote and seats the chat only on `'confirmed'`, an operator write keeps its status, and a leave still promotes the waitlister the trigger queued. Every case re-reads the column, per the README's rewrite-vs-reject warning. [`tests/db/acl.test.ts`](tests/db/acl.test.ts) gains `assign_participant_status` in its reaches-nobody list. `DATABASE.md` `trek_participants`, functions and triggers tables updated; `CONTEXT.md` join flow; `security-fixes.sql` rationale appended.
+
+## `search_treks` bounds its own work, and the image optimizer serves public storage only (2026-09-14)
+
+**Status:** ✅ — [`0023_bound-the-work-search-treks-will-do-per-call.sql`](supabase/migrations/0023_bound-the-work-search-treks-will-do-per-call.sql) **applied and verified live 2026-09-14 06:35:41+00**; code half merged. 284 tests green, `npm run build` clean, `npm run lint` 0 errors.
+
+**Verified from the catalogue over the read-only MCP server**, not from the ledger: `pg_proc` body carries both clamps and no longer the `0001` `limit greatest(p_limit, 0)` line, still SECURITY INVOKER with `search_path` pinned, EXECUTE true for `anon` and `authenticated`, exactly one overload. Called live: `p_limit => 2147483647` returns 14 rows with `total_count` 14 against a 14-trek visible catalogue (the cap cannot bind yet — the DB test proves it on 131), `p_limit => -1` → 0, `p_offset => 2147483647` → 0, and the Explore page-1 (6) and home (3) shapes are unchanged. No new advisor findings.
+
+Two ends of TEST.md §7.4.6's "paths with no rate limit", handled as what they actually are — bounds on per-request work, not rate limits:
+
+- **`search_treks`** is the one RPC anon may call, and `0001`'s `limit greatest(p_limit, 0)` only stopped negatives — `p_limit = 2147483647` returned the whole catalogue in one response, each row carrying the window count, the per-trek rating average and the next-batch lookup. `0023` is `0001`'s body with two lines changed: `limit least(greatest(p_limit, 0), 100)` and `offset least(greatest(p_offset, 0), 10000)`. 100 is already the app's ceiling ([`server-queries.ts:141`](src/lib/server-queries.ts#L141), the storefront), Explore asks for 6 and the home page for 3, so **no caller changes**. The catalogue is 14 treks, so nothing hurts today; the point is that the worst case of one call is now fixed by the server rather than chosen by the caller, so the catalogue can grow without the endpoint's worst case growing with it.
+- **`images.remotePatterns`** lost its `images.unsplash.com` `/**` entry. Every `<Image>` in the app renders a DB-stored storage URL or a storage-hosted default (`TrekDetailClient`, `company/[slug]`), and the live data confirmed it: 0 unsplash values across `treks.cover_image_url`, `companies.cover_image_url`, `companies.logo_url` (the one non-storage value is an empty string, which `|| DEFAULT_IMAGE` already handles). The nine unsplash fallbacks are plain `<img>` tags that never touch `/_next/image`. The optimizer's fetch-and-cache surface is now Supabase public storage only — bounded by the bucket `file_size_limit`, cacheable.
+
+**Deliberately not done:** a per-caller rate limit on `search_treks`. An anon read has no actor to key one on inside Postgres; it needs Supabase platform limits or a WAF in front of the project host — an infrastructure decision. Also left alone: the CSP `img-src` unsplash entry, which the `<img>` fallbacks still need (different control), and moving those nine fallbacks to local `/public` assets, which would let it go.
+
+Evidence: the migration; [`next.config.mjs:20-33`](next.config.mjs#L20-L33); [`tests/db/search-limits.test.ts`](tests/db/search-limits.test.ts) — 7 cases on a 131-trek catalogue seeded and rolled back inside the test, called as `anon`. **1 of 7 fails with the migration removed** (the `p_limit` cap); the offset case is titled to say so — the clamp changes the work, not the answer, so it cannot be observed from a result on a catalogue under 10 000. `TEST.md` §6.4.1, §6.4.3, §7.4.6 and open items #3/#6 corrected; `DATABASE.md` `search_treks` row updated.
+
+## Leaving a trek now takes the chat seat with it (2026-09-09)
+
+**Status:** ✅ — [`0019_bind-the-chat-seat-to-the-trek-booking.sql`](supabase/migrations/0019_bind-the-chat-seat-to-the-trek-booking.sql) **applied and verified live 2026-09-09 07:30:49+00**, client half merged. 257 tests green, `npm run build` clean, `npm run lint` 0 errors.
+
+Joining a batch is one atomic RPC (`join_trek_and_chat`): the `trek_participants` row and, for a confirmed joiner, the `conversation_participants` row are written together. **Leaving was not.** `leaveTrek()` issued two independent deletes from the browser — chat first, then booking — with nothing in the database tying them to each other, so the invariant the rest of the schema maintains (*confirmed ⇔ in the chat*, the other half of which `promote_waitlist_on_leave()` already held up) survived only as long as the client chose to honour it. Two ways it broke:
+
+- **Send only the second delete.** The `"Users can leave treks"` policy allows a direct `DELETE` on `trek_participants` over PostgREST, so this needs nothing beyond the publishable key and a signed-in session. The leaver disappears from the roster and keeps reading the group indefinitely — and being off the roster is exactly why nobody would think to look for them there.
+- **Let the first delete fail.** The old code logged the chat error and removed the booking anyway (`// We continue to try removing from trek participants even if chat fails`), reaching the same state with nobody trying.
+
+Fixed in the schema, not the client, because the direct table `DELETE` above skips any RPC by construction — an RPC would only have fixed the honest path. Same reasoning that put the join rate limit in a row trigger rather than inside `join_trek_and_chat()`. `leave_chat_on_trek_leave()` (AFTER DELETE FOR EACH ROW, SECURITY DEFINER) drops the seat in the same transaction as the booking.
+
+**It also closed the mirror, which was the more damaging of the two in practice.** The `conversation_participants` DELETE policy let a user drop their own seat while their booking stayed `confirmed`, and `join_trek_and_chat()` returns an existing membership *untouched* without re-inserting the seat — so a self-removal locked a paying participant out of their own trek's chat permanently, with no route back through the UI. The policy is now own-row **AND** no `confirmed` booking on that conversation's batch; seats with nothing behind them (a waitlister's, or a leftover) are still self-deletable. SECURITY DEFINER on the trigger is therefore required rather than incidental: after the policy change the leaver is *denied* that delete, so the seat is released only as a consequence of giving up the booking.
+
+**Verified live over the read-only MCP server**, not from the file: trigger present in `pg_trigger` and enabled, function body + `prosecdef` + pinned `search_path` + EXECUTE false for `anon` **and** `authenticated` from `pg_proc`, and the `NOT EXISTS` qual from `pg_policy`. A forensic sweep found **no residue** — 9 chat seats against 9 confirmed bookings, zero orphans in either direction — so the hole was never exploited in production data. No new advisor findings.
+
+Evidence: [supabase/migrations/0019_bind-the-chat-seat-to-the-trek-booking.sql](supabase/migrations/0019_bind-the-chat-seat-to-the-trek-booking.sql), [src/lib/joinTrek.ts:88](src/lib/joinTrek.ts#L88) (one delete, no branch that can half-succeed; the dead `conversationId` param and its call site went with it), `schema.sql` §7 Triggers + the `conversation_participants` policies, [tests/db/leave-binds-chat.test.ts](tests/db/leave-binds-chat.test.ts) — 8 cases, **5 of which fail with the migration removed**.
+
+> Two existing tests encoded the old rule and were rewritten: `acl.test.ts`'s trigger-only allowlist gains `leave_chat_on_trek_leave`, and `chat.test.ts`'s "lets a member remove themself" became the two assertions that now hold.
+>
+> The first draft of `leave-binds-chat.test.ts` **passed while proving nothing** — it read `conversation_participants` back *as the leaver*, whose SELECT policy is `is_chat_participant()`, so an empty result was guaranteed whether the trigger had fired or not. Every ground-truth assertion now escalates to `postgres` first. Worth remembering for any future test of a table whose own read policy depends on the row under test.
 
 ## Dependency upgrade — Tailwind 4, Next 16.3.4, lucide 1, ESLint flat config (2026-09-05)
 
@@ -609,7 +987,8 @@ follow-up). `npx vitest run --project db` 108/108, `npm test` 152/152,
 
 ## EDGE-004 fix — webhook secret compared in constant time (2026-08-26)
 
-**Status:** 🟡 — in the repo, **not yet deployed**. Closes the last untracked
+**Status:** ✅ — **deployed 2026-09-04** (v12 / v7, read back over MCP on
+2026-09-05 — see "Both functions are now deployed" in §3). Closes the last untracked
 item from the 2026-08-24 pentest's source-only edge-function assessment.
 
 Both functions authorized the DB trigger with
@@ -642,9 +1021,9 @@ Verified: the helper's logic run against 7 cases in Node (same Web Crypto API) �
 exact match true; `null`, empty string, wrong value, a prefix of the secret, the
 secret plus a suffix, and a case-flipped secret all false.
 
-**Deploy required** — run `supabase functions deploy send-trek-notification` and
-`supabase functions deploy send-trek-leave-notification`. Until then the repo is
-ahead of production, which is the state the two corrected notes above warn about.
+~~**Deploy required** — run `supabase functions deploy send-trek-notification` and
+`supabase functions deploy send-trek-leave-notification`.~~ Deployed 2026-09-04;
+production matches the repo.
 
 Evidence: [`send-trek-notification/index.ts`](supabase/functions/send-trek-notification/index.ts),
 [`send-trek-leave-notification/index.ts`](supabase/functions/send-trek-leave-notification/index.ts).
@@ -679,8 +1058,10 @@ different pair of triggers on the same table — `trek-join-notification` /
 that do exist — which this migration does not touch.
 
 Evidence: `supabase/migrations/0007_drop-dead-trek-email-notification-triggers.sql`;
-`supabase/schema.sql` §5/§6 (regenerated, both functions and both triggers now
-absent); `npx vitest run --project db` 106/106.
+`supabase/schema.sql` (regenerated — the `0007` section at the end drops both
+functions and both triggers; the `0001` §5/§6 definitions stay in the file as
+history, because it is the migrations concatenated in order);
+`npx vitest run --project db` 106/106.
 
 **Applied 2026-08-26** via the SQL Editor, confirmed by the user — and the
 ledger row is now **read back over MCP (2026-08-26)**: `0007
@@ -808,8 +1189,10 @@ it. The suite had never inserted a storage object, so nothing had surfaced it.
 Column added; this also retires the "not expressible in PGlite" half of the
 storage gap in [§1.4](#test-coverage-gaps).
 
-⚠️ **Not yet applied to production.** The ledger is authoritative — see the
-verification block at the top of this file.
+**Applied 2026-08-26 07:00:33+00** — ledger row `0006 /
+scope-storage-select-to-own-prefix` read back over the read-only MCP server;
+the live storage SELECT policies match the migration (re-verified with the
+three TEST.md accounts the same day — see §1.9).
 
 ## STORAGE-002 mitigated — nosniff is not settable on the Supabase domain, so the MIME allowlist is the control (2026-08-25)
 
@@ -829,7 +1212,7 @@ live 2026-08-25 with `curl -D -` against a real object
 (`/storage/v1/object/public/avatars/{uid}/{ts}.jpeg`): `200`, `content-type:
 image/jpeg`, `cache-control: public, max-age=3600`, and **no
 `x-content-type-options`**. The `nosniff` in
-[next.config.mjs:93](next.config.mjs#L93) is real but applies to the Next.js
+[next.config.mjs:36](next.config.mjs#L36) is real but applies to the Next.js
 origin, and no image resolves there — `getPublicUrl()` returns
 `dtjmyqogeozrzzbdjokr.supabase.co`, which is storage-api behind Cloudflare with
 no header configuration exposed. Not fixable from `next.config.mjs`, and not
@@ -1075,7 +1458,7 @@ Every DB change is now `supabase/migrations/NNNN_description.sql`, append-only.
 as of 2026-08-13 — the original schema, the multi-tenant migration, phases A–I,
 the security fixes and the rate-limit work folded into one end state.
 [`0002`](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) is the
-§1.7/§1.8 policy pair that followed hours later the same day. `phases/` and
+`createTrek()` RETURNING / chat-policy-roles pair (both in §2 below) that followed hours later the same day. `phases/` and
 `security-fixes.sql` stay as the historical record of *why*; nothing new goes in
 them.
 
@@ -1157,7 +1540,7 @@ non-members), plus chat isolation including announcement forgery, catalogue
 write scoping and the publishing tier, `account_type` pinning, favourites,
 invites, and an EXECUTE-grant invariant file.
 
-**Vitest now has two projects** (`vitest.config.ts`): `unit` (jsdom, `src/**`)
+**Vitest now has two projects** (`vitest.config.mts`): `unit` (jsdom, `src/**`)
 and `db` (node, `tests/db/**`). PGlite needs node, not jsdom.
 
 **⚠️ What a green run does and does not prove.** It replays the migrations, which
@@ -1196,10 +1579,10 @@ Both shipped in [`phases/fix-trek-returning-and-chat-policy-roles.sql`](supabase
 
 - **`createTrek()` is broken in production** — `insert … returning` cannot
   satisfy a SELECT policy whose predicate is a STABLE function reading the same
-  table. See [§1.7](#17-createtrek-returning-bug), including why the obvious
+  table. See [the `createTrek()` entry](#createtrek-returning-bug--fixed-in-0002-shipped-2026-08-13) below, including why the obvious
   one-line fix would have taken `/explore` down for anonymous visitors.
 - Chat policies were `to public` but called a function `anon` cannot execute —
-  see [§1.8](#18-chat-policies-to-public--to-authenticated).
+  see [the chat-policies entry](#chat-policies-to-public--to-authenticated--fixed-in-0002-shipped-2026-08-13) below.
 
 ### `src/lib/company.ts`
 
@@ -1215,6 +1598,104 @@ decides whether an edit preserves or wipes the cover image), and
 screen). `trekRow` and `inviteErrorMessage` were changed from module-private to
 exported for this; no behaviour changed.
 
+## `createTrek()` RETURNING bug — fixed in `0002` (shipped 2026-08-13)
+
+**Status:** ✅ **applied + verified live 2026-08-13** — now
+[`migrations/0002_trek-returning-and-chat-policy-roles.sql`](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) §A
+(applied as `phases/fix-trek-returning-and-chat-policy-roles.sql`; split into its
+own migration 2026-08-14 — see the `0002` note in
+[`migrations/README.md`](supabase/migrations/README.md)).
+Found by `tests/db/catalogue-writes.test.ts`. Post-apply `pg_policies` read back
+from production: `treks` carries two SELECT policies, `view treks` `{public}`
+and `company members view own treks` `{authenticated}`, and `is_trek_visible`
+still holds its `anon` EXECUTE grant.
+
+`INSERT … RETURNING` applies the table's SELECT policy to the returned row.
+`view treks` is `using (public.is_trek_visible(id))`, and `is_trek_visible` is
+declared `stable` with a body of
+`select 1 from public.treks t join public.companies c … where t.id = p_trek_id`.
+A STABLE function sees the snapshot taken at the start of the calling statement,
+so the row the INSERT is creating is not visible to it. The predicate returns
+false, the returned row fails the SELECT check, and the statement is rejected
+with `new row violates row-level security policy for table "treks"` — an error
+that reads like a `with_check` failure and sends you looking at the wrong policy.
+
+`src/lib/company.ts` does `.insert({...}).select('id').single()`, which PostgREST
+compiles to exactly that, so **no company can publish a trek**. It fails for
+platform admins too: the `or is_platform_admin()` arm sits inside the same
+unsatisfiable `FROM`. `createBatch()` is unaffected — it inserts without
+`.select()`.
+
+Confirmed the same statement **without** `RETURNING` succeeds for the same user,
+isolating the cause to the SELECT policy rather than `company members create
+treks`. `pg_policies` for `treks` was read from production on 2026-08-13 and
+matched `schema.sql` exactly, so it reproduces live.
+
+### The fix, and the wrong version of it
+
+⚠️ **The obvious fix would take the public site down.** Folding the arm into
+`view treks` itself —
+
+```sql
+using (public.is_trek_visible(id) or public.is_approved_company_member(company_id))
+```
+
+— fails because `view treks` is `to public`, which includes `anon`, and
+`is_approved_company_member` is revoked from `anon` (§17.3 of `schema.sql`).
+Every anonymous `/explore` and `/trek/[id]` read would raise
+`permission denied for function is_approved_company_member`. This is the same
+trap as the load-bearing trio in [Known Gotchas](#known-gotchas).
+
+The applied fix is a **second permissive policy scoped `to authenticated`**.
+Postgres only applies policies whose roles include the current role, so `anon`
+never evaluates it, and permissive policies on the same command are OR'd:
+
+```sql
+create policy "company members view own treks" on public.treks for select to authenticated
+using (public.is_approved_company_member(company_id));
+```
+
+It grants **no new visibility**: `is_trek_visible` already carries
+`or is_company_member(t.company_id)` with no status gate, and this is the
+strictly narrower approved-only form. It exists only to be evaluable during
+`INSERT … RETURNING`, since it reads `company_members`/`companies` and never
+`treks`.
+
+Three tests in `tests/db/catalogue-writes.test.ts` cover it: that
+`insert … returning` now works, that `anon` still sees exactly the public
+catalogue, and that no cross-tenant visibility was opened.
+
+## Chat policies `to public` → `to authenticated` — fixed in `0002` (shipped 2026-08-13)
+
+**Status:** ✅ **applied + verified live 2026-08-13** — now
+[`migrations/0002_trek-returning-and-chat-policy-roles.sql`](supabase/migrations/0002_trek-returning-and-chat-policy-roles.sql) §B
+(see the `createTrek()` entry above for the file move).
+Post-apply read-back confirms the four `is_chat_participant()` policies are
+`{authenticated}` with quals intact (`is_announcement = false` still pinned on
+`"Send messages"`), and the four left as `{public}` are unchanged.
+
+The chat policies were declared `to public`, which includes `anon`, but their
+quals call `is_chat_participant()` — which `anon` does not hold EXECUTE on
+(§17.5 of `schema.sql`). An anonymous read of `conversation_messages` therefore
+raised `permission denied for function is_chat_participant` rather than
+returning an empty set. It failed closed and nothing in the app reads chat
+anonymously, so this is tidiness, not exposure.
+
+Note this is the **opposite** resolution to the load-bearing trio in
+[Known Gotchas](#known-gotchas) — same definer-called-from-a-`to public`-policy
+shape, different answer, because chat genuinely has no anonymous read path while
+`/explore` does. That is exactly why both are written down.
+
+Only the four policies that actually call `is_chat_participant()` are re-scoped.
+Left as `to public` on purpose: `"System adds participants"` (its `with_check` is
+`auth.role() = 'service_role'`, so re-scoping to `authenticated` would exclude
+the only role it admits), and `"Users can leave conversation"` /
+`"Edit own messages"` / `"Delete own messages"` (they test
+`user_id = auth.uid()`, already NULL for anon, and call no revoked function).
+
+`tests/db/chat.test.ts` now asserts anon gets an empty set across all three
+tables, so re-scoping these back to `to public` fails the test.
+
 ## Core (pre-existing)
 
 | Feature | Status | Notes |
@@ -1224,20 +1705,20 @@ exported for this; no behaviour changed.
 | Trek detail (reviews, join/leave, favorite) | ✅ | `src/app/trek/[id]/page.tsx` |
 | Join / leave trek | ✅ | Always via `joinTrekBatchAndChat()` / `leaveTrek()` → `join_trek_and_chat` RPC |
 | Group chat | ✅ | Upgraded to realtime — see below |
-| Reviews (submit + showcase) | ✅ | `src/app/review/`, photo uploads compressed |
-| Favorites | ✅ | `src/app/favorites/` |
-| Profile view + edit | ✅ | `src/app/profile/` |
+| Reviews (submit + showcase) | ✅ | `src/app/(trekker)/review/`, photo uploads compressed |
+| Favorites | ✅ | `src/app/(trekker)/favorites/` |
+| Profile view + edit | ✅ | `src/app/(trekker)/profile/` |
 | Seasonal theme (rain / snow) | ✅ | Switchable cosmetic theme. `src/components/ui/WeatherEffect.tsx` picks one effect from a single `WEATHER` const in `src/lib/weather.ts` (`'rain' \| 'snow' \| 'none'`); currently `'rain'`. **Rain**/**snow** (`RainEffect`/`SnowEffect`) are `z-50` pointer-events-none foreground particle overlays (CSS keyframes; falling rain lines / falling snowflakes). Flip the const to switch. Mounted once globally in `src/app/layout.tsx` (after `<Providers>`), so it overlays every route site-wide. (The earlier `'summit'` glassmorphism-droplet theme was removed.) |
 
 ## Phase 2 — Features (shipped)
 
 | Feature | Status | Evidence |
 |---------|--------|----------|
-| 🔥 Realtime chat | ✅ | commit `696c385`; `src/app/messages/page.tsx` — `postgres_changes`, presence, typing, unread badges; `src/lib/chat.ts`. DB deps verified live 2026-06-20: `mark_conversation_read()` + `get_unread_counts()` RPCs, `conversation_participants.last_read_at`, and `conversation_messages` in the `supabase_realtime` publication all present |
+| 🔥 Realtime chat | ✅ | commit `696c385`; `src/app/(trekker)/messages/page.tsx` — `postgres_changes`, presence, typing, unread badges; `src/lib/chat.ts`. DB deps verified live 2026-06-20: `mark_conversation_read()` + `get_unread_counts()` RPCs, `conversation_participants.last_read_at`, and `conversation_messages` in the `supabase_realtime` publication all present |
 | Real ratings rollup | ✅ | DB: `get_trek_avg_rating()` in `supabase/schema.sql`; wired via `src/lib/utils.ts`, `src/components/ui/TrekCard.tsx` |
 | Search & filters on Explore | ✅ | DB: `search_treks()` + `fts` tsvector/GIN in `supabase/schema.sql` (filters/sort/pagination + total_count in one RPC); wired at `src/app/explore/page.tsx`, `src/components/ui/FilterSection.tsx`. Empty / punctuation-only search returns no matches (follow-up #3, applied 2026-06-22). `FilterSection` is now a controlled component (single source of truth in the page); applied filters **and** the current page persist across navigation via `sessionStorage` (`explore-filters`, shape `{ filters, page }`) so leaving and returning to Explore keeps the same results. Writes happen on user actions (filter/page change), not via a `filters` effect — an effect would write the default state back over the saved value on the first render after remount and reset everything. The key is cleared on `SIGNED_OUT` in `src/contexts/AuthContext.tsx` (shared constant in `src/lib/exploreFilters.ts`) — `sessionStorage` is keyed to the tab, not the session, so without that a search survived the sign-out and greeted the next sign-in |
-| Capacity + waitlist | ✅ | DB: `trek_participants.status` + `promote_waitlist_on_leave()` in `supabase/schema.sql` (per-batch capacity, FIFO promotion trigger); wired into `src/lib/joinTrek.ts`. `participants_joined` counts confirmed only (#1); `waitlist_position` tie-breaks by id (#5); trek-detail button no longer asserts a misleading trek-wide full state (#4) — all applied 2026-06-22 |
-| Trekker profiles & gamification | ✅ | DB: `award_user_achievements()` + `get_user_profile()` in `supabase/schema.sql`; `src/lib/achievements.ts` (15 badges); wired at `src/app/profile/page.tsx`. Includes `src/components/ui/ItineraryView.tsx`. Stats + badges count confirmed participations only (follow-up #2, applied 2026-06-22) |
+| Capacity + waitlist | ✅ | DB: `trek_participants.status` + `promote_waitlist_on_leave()` in `supabase/schema.sql` (per-batch capacity, FIFO promotion trigger); wired into `src/lib/joinTrek.ts`. `participants_joined` counts confirmed only (#1); `waitlist_position` tie-breaks by id (#5); trek-detail button no longer asserts a misleading trek-wide full state (#4) — all applied 2026-06-22. **`0022` gives `promote_waitlist_on_leave()` the same `(joined_at, id)` tie-break** (applied + verified live 2026-09-09 12:18:27+00), so equal timestamps promote in the order the joiners were numbered; cases in `tests/db/waitlist-order.test.ts` |
+| Trekker profiles & gamification | ✅ | DB: `award_user_achievements()` + `get_user_profile()` in `supabase/schema.sql`; `src/lib/achievements.ts` (15 badges); wired at `src/app/(trekker)/profile/page.tsx`. Includes `src/components/ui/ItineraryView.tsx`. Stats + badges count confirmed participations only (follow-up #2, applied 2026-06-22). **Badge farming closed by `0020`** (applied + verified live 2026-09-09 07:48:50+00): a trek counts only once it has *ended* and the booking predates its departure, `joined_at` is pinned server-side, and badges are reconciled rather than accumulated. Regression cases in `tests/db/badge-farming.test.ts`. The 15 unlock rules (metric, source, threshold) are tabulated in `DATABASE.md` → `user_achievements`; live functions and the TS catalog verified in sync 2026-09-09, though nothing enforces that — see §1.2 |
 
 ## Multi-tenant platform (phases; remaining work tracked in §1)
 
@@ -1251,7 +1732,7 @@ exported for this; no behaviour changed.
 
 **Status:** ✅
 
-`companyApplicationSchema` in `src/lib/schemas.ts` (slug regex/60-char cap mirror the DB CHECKs); `src/lib/company.ts` — `applyForCompany()` → `apply_for_company` RPC (only known user-facing RPC messages surface to the UI), `getMyCompanies()`, `getCompany(slug)`; `useMyCompanies`/`useCompany` hooks + query keys in `src/lib/queries.ts`; public `/company/apply` form (`src/app/company/apply/page.tsx`, Zod-validated, `useAuth()` login prompt); `/company` added to `publicRoutes` in `src/utils/supabase/middleware.ts`; guard layouts — `src/app/dashboard/layout.tsx` (server component: no membership → redirect `/company/apply`, non-approved → pending banner) and `src/app/admin/layout.tsx` (server component: `is_platform_admin()` RPC else redirect `/`)
+`companyApplicationSchema` in `src/lib/schemas.ts` (slug regex/60-char cap mirror the DB CHECKs); `src/lib/company.ts` — `applyForCompany()` → `apply_for_company` RPC (only known user-facing RPC messages surface to the UI), `getMyCompanies()`, `getCompany(slug)`; `useMyCompanies` hook + query keys in `src/lib/queries.ts`; public `/company/apply` form (`src/app/company/apply/page.tsx`, Zod-validated, `useAuth()` login prompt); `/company` was added to `publicRoutes` in `src/utils/supabase/middleware.ts` (since removed — the storefront is admitted by an explicit `isPublicCompanyRoute` match, see the `/company/apply` entry in §1.5); guard layouts — `src/app/dashboard/layout.tsx` (server component: no membership → redirect `/company/apply`, non-approved → pending banner) and `src/app/admin/layout.tsx` (server component: `is_platform_admin()` RPC else redirect `/`)
 
 ### C — company admin dashboard (`/dashboard`)
 
@@ -1274,16 +1755,17 @@ exported for this; no behaviour changed.
 - **Hooks**: `useAdminOverview`/`useAdminCompanies`/`useAdminCompany` + `['admin', …]` query keys in `src/lib/queries.ts`.
 - **Chrome**: `src/components/admin/AdminShell.tsx` (sidebar nav) + `src/components/admin/CompanyActions.tsx` (approve/reject/suspend with inline reason, invalidates `['admin']`).
 - **Pages**: `/admin` overview (4 stat cards + pending-review CTA), `/admin/companies` (status filter tabs, per-row actions, `?status=` deep-link from overview), `/admin/companies/[id]` (profile, owner contact, audit trail, its treks). Guard already in `src/app/admin/layout.tsx` (server `is_platform_admin()` check), now wraps children in `AdminShell`. Owner contact uses the company's own `contact_*` fields — `get_company_members` gates on membership so it returns nothing to a non-member platform admin.
+- **`/admin/logins`** (2026-09-17) — every sign-in with account type, method, duration, sign-out time, IP, device and a new-device flag, from `login_events` (`0027` + `0028`). See the entry at the top of §2.
 
 ### E — public-facing surface
 
 **Status:** ✅
 
 - App layer shipped, `npm run build` clean, no schema change (Phase A's `search_treks` already returns `company_id`/`company_name`/`company_slug`, and the `treks.company_id → companies` FK plus the `to public` "view companies" RLS policy let anon read approved companies).
-- **Storefront** `src/app/company/[slug]/page.tsx` (public, under existing `/company` `publicRoutes` entry): cover + logo, name, Verified badge derived from `status='approved'`, website, description, and the company's active treks via new `useStorefrontTreks(companyId)` hook (calls `search_treks` with `p_company_id`, `p_limit: 100`).
+- **Storefront** `src/app/company/[slug]/page.tsx` (public via the explicit `isPublicCompanyRoute` match in `middleware.ts`, not `publicRoutes`): cover + logo, name, Verified badge derived from `status='approved'`, website, description, and the company's active treks via `getStorefrontTreks(companyId)` in `src/lib/server-queries.ts` (server component, no client hook; calls `search_treks` with `p_company_id`, `p_limit: 100`).
 - **Trek attribution**: `/trek/[id]` now embeds `companies(name, slug)` in both fetch + refresh selects and renders "Organized by {name}" linking to `/company/[slug]`.
 - **Card label**: `TrekCard` gained optional `companyName`/`companySlug` props (small "By {company}" link), wired from `search_treks` fields in `/explore`.
-- **Data/types**: `company_id`/`company_name`/`company_slug` added to `SearchTrek` in `src/lib/queries.ts`; `storefrontTreks` query key.
+- **Data/types**: `company_id`/`company_name`/`company_slug` added to `SearchTrek` in `src/lib/queries.ts`.
 
 ### H — frozen companies (rejected/suspended → read-only)
 
@@ -1332,7 +1814,7 @@ Earlier in this row's history: it claimed the `is_trek_visible()` participant ar
 
 **Status:** ✅
 
-- [`supabase/phases/phase-f-account-types.sql`](supabase/phases/phase-f-account-types.sql) **applied 2026-08-06**, folded into [`supabase/schema.sql`](supabase/schema.sql) §14 + `DATABASE.md` + `security-fixes.sql`. `profiles.account_type` enum (`trekker`/`company`, NOT NULL default `trekker`), set at signup from `raw_user_meta_data` in `handle_new_user()` and pinned by `trg_protect_profile_account_type` — without that pin the own-row UPDATE policy lets any company account demote itself with one PATCH and bypass everything below. All restrictions route through one predicate, `is_trekker() := account_type='trekker' OR is_platform_admin()`: `join_trek_and_chat()` raises `'Company accounts cannot join treks'`; `trek_participants` + `favorites` INSERT policies require it; `apply_for_company()` requires `account_type='company'`. Reviews needed no rule (reviewing already requires having joined); `conversation_participants` INSERT is service_role-only. Backfill: everyone in `company_members` → `company` (2 company / 2 trekker profiles, 0 stragglers).
+- [`supabase/phases/phase-f-account-types.sql`](supabase/phases/phase-f-account-types.sql) **applied 2026-08-06**, folded into [`supabase/schema.sql`](supabase/schema.sql) §14 + `DATABASE.md` + `security-fixes.sql`. `profiles.account_type` enum (`trekker`/`company`, NOT NULL default `trekker`), set at signup from `raw_user_meta_data` in `handle_new_user()` and pinned by `trg_protect_profile_account_type` — without that pin the own-row UPDATE policy lets any company account demote itself with one PATCH and bypass everything below. All restrictions route through one predicate, `is_trekker() := account_type='trekker' OR is_platform_admin()`: `join_trek_and_chat()` raises `'Company accounts cannot join treks'`; `trek_participants` + `favorites` INSERT policies require it; `apply_for_company()` requires `account_type='company'` — live since phase F, but the migrations lost that block when phase F was folded into `0001` (§14.7 kept it only as a comment), so the PGlite suite was proving a function without the gate until [`0029`](supabase/migrations/0029_gate-apply-for-company-on-a-company-account.sql) restated the body (2026-09-19; `tests/db/company-application-gate.test.ts` pins it). Reviews needed no rule (reviewing already requires having joined); `conversation_participants` INSERT is service_role-only. Backfill: everyone in `company_members` → `company` (2 company / 2 trekker profiles, 0 stragglers).
 - **✅ Behaviourally verified 2026-08-08** via [`supabase/phases/verify-phase-f.sql`](supabase/phases/verify-phase-f.sql), run block by block from the SQL Editor, every block rolled back, all results as expected. This closes the last structural-only gap in the account split. What the run proved, and why each half was needed:
   - **A** — `is_trekker()` returns `f` for the non-admin company account and `t` for the trekker. The predicate itself, not a policy that happens to mention it.
   - **B / B2** — `favorites` INSERT refused the company account with `42501`, **and the identical insert as a trekker succeeded**. Only the pair is evidence: a rejection alone is equally consistent with a missing grant, a unique violation or an unrelated policy.
@@ -1345,7 +1827,7 @@ Earlier in this row's history: it claimed the `is_trek_visible()` participant ar
 **Status:** ✅
 
 - `npm run build` clean; all URLs unchanged (route groups don't affect paths).
-- **Route group** `src/app/(trekker)/` now holds `profile`, `favorites`, `messages`, `edits`, `review` behind [`src/app/(trekker)/layout.tsx`](src/app/(trekker)/layout.tsx) — server guard calling the same `is_trekker()` RPC the RLS policies use, so the UI can never disagree with what the DB allows; company accounts are redirected to `/dashboard`. Middleware deliberately untouched: it runs on every request and this matters on 6 routes.
+- **Route group** `src/app/(trekker)/` now holds `profile`, `favorites`, `messages`, `review` behind [`src/app/(trekker)/layout.tsx`](src/app/(trekker)/layout.tsx) — server guard calling the same `is_trekker()` RPC the RLS policies use, so the UI can never disagree with what the DB allows; company accounts are redirected to `/dashboard`. Middleware deliberately untouched: it runs on every request and this matters on 6 routes.
 - **Reverse guard**: [`src/app/dashboard/layout.tsx`](src/app/dashboard/layout.tsx) no longer dead-ends trekkers at `/company/apply` (which now rejects them) — no membership + trekker → `/`, no membership + company → `/company/apply`.
 - **Data**: `isTrekker()` in `src/lib/company.ts`, `useIsTrekker` + `isTrekker` query key in `src/lib/queries.ts`. **Nav**: `Header` renders Favorites/Profile/Messages only for trekkers (desktop + mobile); avatar link points at `/dashboard/settings` for company accounts.
 - **Booking controls**: `TrekCard` drops the Join button (View Details spans full width) and `TrekDetailClient` replaces Book This Trek with an explanatory note and hides the favourite heart — all gated on `canJoin`/`canBook`, which stay true for signed-out visitors so the login prompt survives. Company accounts still browse `/explore` and `/trek/[id]`. (The one page this missed, `src/app/test/trek/[id]`, was deleted with the rest of `src/app/test/*` on 2026-08-08 — L4.)
@@ -1403,11 +1885,11 @@ Earlier in this row's history: it claimed the `is_trek_visible()` participant ar
 
 **Status:** ✅ — **applied + verified live 2026-08-12**, [`supabase/phases/perf-chat-hot-path-indexes.sql`](supabase/phases/perf-chat-hot-path-indexes.sql). DDL mirrored into `supabase/schema.sql` §3 (beside each table) with the rationale in a new **§18**; `DATABASE.md` rows updated.
 
-**The gap:** `conversation_messages` carried only its `(created_at, id)` pkey and `conversation_messages_user_created_idx (user_id, created_at desc)` (added by §13 for the flood trigger) — **nothing led with `conversation_id`**, which is exactly what `fetchMessagesPage()` filters on ([src/app/(trekker)/messages/page.tsx:169](src/app/(trekker)/messages/page.tsx#L169): `.eq('conversation_id').order('created_at', desc).limit(30)`, plus `.lt('created_at', cursor)` for older pages). Every conversation open and every scroll-back page was a sequential scan of the fastest-growing table in the schema. Harmless at 59 rows; a cliff around 50k. Same shape on `conversation_participants`, whose two indexes both led with `conversation_id`, leaving "which chats am I in?" unindexed.
+**The gap:** `conversation_messages` carried only its `(created_at, id)` pkey and `conversation_messages_user_created_idx (user_id, created_at desc)` (added by §13 for the flood trigger) — **nothing led with `conversation_id`**, which is exactly what `fetchMessagesPage()` filters on ([src/app/(trekker)/messages/page.tsx:199](src/app/(trekker)/messages/page.tsx#L199): `.eq('conversation_id').order('created_at', desc).limit(30)`, plus `.lt('created_at', cursor)` for older pages). Every conversation open and every scroll-back page was a sequential scan of the fastest-growing table in the schema. Harmless at 59 rows; a cliff around 50k. Same shape on `conversation_participants`, whose two indexes both led with `conversation_id`, leaving "which chats am I in?" unindexed.
 
 Four indexes:
 - **`conversation_messages (conversation_id, created_at desc)`** — the one that matters. Column order is the point: equality on `conversation_id` then a descending range on `created_at` is served by one index range scan that stops after 30 rows, sort included. Also the inner half of `get_unread_counts()`.
-- **`conversation_participants (user_id, conversation_id)`** — serves the sidebar read ([page.tsx:125](src/app/(trekker)/messages/page.tsx#L125)) and the **driving** side of `get_unread_counts()`, which runs on every page load for the unread badge, not just on `/messages`. Covering for both (they select only `conversation_id`); also indexes the `user_id` FK.
+- **`conversation_participants (user_id, conversation_id)`** — serves the sidebar read ([page.tsx:142](src/app/(trekker)/messages/page.tsx#L142)) and the **driving** side of `get_unread_counts()`, which runs on every page load for the unread badge, not just on `/messages`. Covering for both (they select only `conversation_id`); also indexes the `user_id` FK.
 - **`favorites (trek_id)`** and **`trek_reviews (user_id)`** — the other two unindexed FKs; each table's unique leads with the other column.
 
 Plus a **duplicate dropped**: `conversation_participants` carried two byte-identical uniques on `(conversation_id, user_id)` — `…_conv_user_key` (declared in `schema.sql`) and `…_conversation_id_user_id_key` (Postgres default name, never documented). Both btrees were maintained on every chat join for one guarantee. Safe to drop either because every `on conflict (conversation_id, user_id)` in the codebase (`join_trek_and_chat`, `promote_waitlist_on_leave`) infers its arbiter from the **column list**, not a constraint name, and no FK targeted either; the documented name was kept. This supersedes [`fix-duplicate-participant-unique.sql`](supabase/phases/fix-duplicate-participant-unique.sql) (written 2026-08-05, never applied — folded in so the whole hot path was one paste; that file is now marked superseded and is a no-op).
@@ -1428,7 +1910,7 @@ All four removed from `package.json`; only Tailwind remains. Last MUI use (`Trek
 
 **Status:** ✅
 
-Closes M4. Shared, framework-agnostic schemas in `src/lib/schemas.ts` (`zod ^4`): sign-up/in, forgot/reset password, profile update, chat message + `fieldErrors()` helper. Wired into all 4 auth pages (`src/app/auth/*`), both profile editors (`src/app/profile/edit/page.tsx`, `src/app/edits/page.tsx`), and chat send (`src/app/messages/page.tsx`). New-password min unified to 8 chars (was 6 on sign-up). Module is React/Next/Supabase-free so the future Server layer can reuse it server-side
+Closes M4. Shared, framework-agnostic schemas in `src/lib/schemas.ts` (`zod ^4`): sign-up/in, forgot/reset password, profile update, chat message + `fieldErrors()` helper. Wired into all 4 auth pages (`src/app/auth/*`), the profile editor (`src/app/(trekker)/profile/edit/page.tsx`; the second editor, `/edits`, was deleted 2026-08-14), and chat send (`src/app/(trekker)/messages/page.tsx`). New-password min unified to 8 chars (was 6 on sign-up). Module is React/Next/Supabase-free so the future Server layer can reuse it server-side
 
 ### Input validation — database CHECK constraints
 
@@ -1461,7 +1943,7 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 
 **Status:** ✅
 
-- **Unit/component:** Vitest + jsdom + React Testing Library — `vitest.config.ts`, `vitest.setup.ts`; 26 tests across `src/lib/schemas.test.ts` (all Zod schemas + `fieldErrors`), `src/components/ui/TrekPagination.test.tsx`, `src/components/ui/ConfirmationModal.test.tsx`.
+- **Unit/component:** Vitest + jsdom + React Testing Library — `vitest.config.mts`, `vitest.setup.ts`; 29 tests across `src/lib/schemas.test.ts` (all Zod schemas + `fieldErrors`), `src/components/ui/TrekPagination.test.tsx`, `src/components/ui/ConfirmationModal.test.tsx`.
 - **E2E:** Playwright — `playwright.config.ts` (webServer: dev locally / prod `npm run start` in CI), `e2e/smoke.spec.ts` (home + explore smoke). **CI:** `.github/workflows/ci.yml` — lint → unit tests → build, then a Playwright job; runs with dummy public Supabase env. Scripts: `npm run test` / `test:watch` / `test:e2e`. Test/config files excluded from the Next build type-check (`tsconfig.json`); test artifacts gitignored; Deno edge functions added to ESLint ignores (already excluded from the TS build)
 
 ### Rate limiting — core write paths
@@ -1471,7 +1953,7 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 - **Applied + verified live 2026-08-05** ([`supabase/phases/rate-limiting.sql`](supabase/phases/rate-limiting.sql), folded into `supabase/schema.sql` §13 + `supabase/security-fixes.sql` + `DATABASE.md`). Every limit is enforced **in Postgres, not a Route Handler** — the publishable key ships in the client bundle, so anything enforced in Next.js is skipped by calling PostgREST directly; and in **triggers, not RPC bodies**, because these tables carry a direct client INSERT policy alongside their RPC.
 - **Chat flood** 30 msg/min — `AFTER INSERT … FOR EACH STATEMENT` on `conversation_messages` (a per-row `WITH CHECK` cannot see its own statement's siblings, so a PostgREST array insert would pass 1000 rows through a count of 0; a statement trigger also raises a real message where a failed check gives an opaque 42501). Counts real rows — messages are soft-deleted, never removed.
 - **Join/leave email amplification** 10/hr — row trigger on `trek_participants`; `notify_trek_participation()` fires on INSERT *and* DELETE so a cycle mails real people twice, `UNIQUE (user_id, batch_id)` doesn't help because leaving frees the slot, and the guard can't live in `join_trek_and_chat()` since the "Users can join treks" policy permits a direct INSERT.
-- **Invite enumeration** 20/hr — inline in `invite_company_member()`, whose "no account found" branch changed from `raise` to `return {error:'not_found'}`: a raised exception rolls back the `rate_events` row recording the attempt, so every failed probe erased its own evidence and the limit counted nothing (the distinct not-found answer is kept on purpose — it's how an admin learns they mistyped the address). New `rate_events` table is log-only, used *only* where evidence doesn't survive; RLS on with **zero policies + grants revoked**, so it's unreachable via PostgREST and a user can neither read their counter nor delete it to reset a limit; `pg_cron` job `prune-rate-events` (jobid 2, `17 * * * *`) keeps a day. Verified live that `favorites`/`trek_reviews`/`company_members`/`trek_batches`/`companies` are already bounded by unique indexes and need nothing. Client side: `src/lib/company.ts` reads the new `error` codes; `src/app/messages/page.tsx` rolls back the optimistic bubble and returns the text to the composer on rejection. `npm run build` clean. Storage-upload limits followed as Phase 2 — see the row below. ⚠️ First apply attempt failed with `42P01 relation "public.conversation_messages" does not exist` — the SQL Editor tab was open on a **different Supabase project**; the file was correct. Confirm `current_database()`/`to_regclass()` before concluding a phase file is broken
+- **Invite enumeration** 20/hr — inline in `invite_company_member()`, whose "no account found" branch changed from `raise` to `return {error:'not_found'}`: a raised exception rolls back the `rate_events` row recording the attempt, so every failed probe erased its own evidence and the limit counted nothing (the distinct not-found answer is kept on purpose — it's how an admin learns they mistyped the address). New `rate_events` table is log-only, used *only* where evidence doesn't survive; RLS on with **zero policies + grants revoked**, so it's unreachable via PostgREST and a user can neither read their counter nor delete it to reset a limit; `pg_cron` job `prune-rate-events` (jobid 2, `17 * * * *`) keeps a day. Verified live that `favorites`/`trek_reviews`/`company_members`/`trek_batches`/`companies` are already bounded by unique indexes and need nothing. Client side: `src/lib/company.ts` reads the new `error` codes; `src/app/(trekker)/messages/page.tsx` rolls back the optimistic bubble and returns the text to the composer on rejection. `npm run build` clean. Storage-upload limits followed as Phase 2 — see the row below. ⚠️ First apply attempt failed with `42P01 relation "public.conversation_messages" does not exist` — the SQL Editor tab was open on a **different Supabase project**; the file was correct. Confirm `current_database()`/`to_regclass()` before concluding a phase file is broken
 
 ### Rate limiting — storage uploads
 
@@ -1480,8 +1962,8 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 - **Applied + verified live END TO END 2026-08-05** — a real avatar upload produced `rate_events(action='upload', actor=662d9204-…)` at 12:43:55. ⚠️ **It shipped broken first and every structural check passed anyway.** The original version keyed off `auth.uid()`, which returns **NULL inside a trigger on the storage-api path** even though RLS policies on the very same INSERT resolve it correctly — so the guard fired, hit its "service-role write" null guard, returned early, and recorded nothing while `pg_trigger`/`pg_proc` reported everything healthy (`tgenabled='O'`, `tgtype=21`, `SECURITY DEFINER`, `search_path` pinned). Found by instrumenting the trigger with an unconditional debug write ahead of the null guard ([`supabase/phases/diagnose-storage-rate-limit.sql`](supabase/phases/diagnose-storage-rate-limit.sql)): one upload returned `tg_op=INSERT bucket=avatars uid=NULL session_replication_role=origin`, proving it fired and the uid was the problem. Fixed in [`supabase/phases/fix-storage-rate-limit-owner.sql`](supabase/phases/fix-storage-rate-limit-owner.sql) by taking identity from `coalesce(new.owner, auth.uid())` — storage-api populates `owner` from the JWT sub on every upload (live: avatars 6/7 with owner, the 1 null being the seeded `image.jpg`; trek-reviews 11/11) and the client cannot forge it since the storage schema isn't exposed through PostgREST. **Process lesson: structural verification cannot distinguish a working trigger from an inert one, and the two Phase 1 triggers were not evidence for this one — they fire on PostgREST writes where the claims GUC IS present.** Original entry: **Applied 2026-08-05** ([`supabase/phases/rate-limiting-storage.sql`](supabase/phases/rate-limiting-storage.sql), folded into `supabase/schema.sql` §13.4 + the bucket caps in §9/§12.7, `supabase/security-fixes.sql`, `DATABASE.md`). Phase 2 of the rate-limiting work. Before this, **every bucket had `file_size_limit = null` and `allowed_mime_types = null`** — the only ceiling was Supabase's global 50MB, any content type was accepted, and there was no per-user cap at all; `compressImage()` runs in the browser and is skipped entirely by calling the Storage API directly with the publishable key. **Two layers, because they stop different things** — Layer A alone still allows 10,000 × 3MB, Layer B alone still allows 6 × 50MB. **A — per-upload ceiling:** `file_size_limit = 3 MiB` + `allowed_mime_types = image/jpeg,image/png,image/webp` on `avatars`/`trek-reviews`/`company-logos`/`trek-images`, enforced by storage-api at the edge before the bytes are stored; 3 MiB rather than tighter because `compressImage()` returns the **original** file when compression fails (`src/utils/imageCompression.ts:14`). `trek-profile` deliberately uncapped — 14 legacy objects, no policies, no client write path.
 - **B — per-user rate:** `storage_objects_rate_limit`, an `AFTER INSERT OR UPDATE FOR EACH ROW` trigger on `storage.objects` running `enforce_storage_rate_limit()`, **6 uploads/hour/user** with **`trek-reviews` carved out at 20/hour** (the review form is `multiple` with no file-count cap and uploads every photo in one `Promise.all`, so at 6 a single legitimate 8-photo submission would fail partway through its own submit).
 - **`INSERT OR UPDATE`, not `INSERT`, is load-bearing:** `avatars` writes the fixed path `{uid}.{ext}` with `upsert:true`, so after the first upload *every* avatar write is an UPDATE — an INSERT-only guard would have left the single worst path (no compression, fixed path, unbounded repeat) completely unguarded; a `version` check stops renames/metadata touches from consuming budget. Counted in `rate_events`, **not** from `storage.objects`, because avatars are one row forever and review photos are user-deletable — the object table isn't a truthful counter in exactly the two places that matter. A trigger rather than four RLS `WITH CHECK` predicates: a `WITH CHECK` can't record an attempt, the INSERT policies don't cover the UPDATE path, and a trigger raises a real message where a failed check gives an opaque 42501. The function lives in `public` because `postgres` holds `TRIGGER` on `storage.objects` (so the trigger is creatable despite `supabase_storage_admin` owning the table) but **not** `CREATE` on the `storage` schema.
-- **Client side:** there turned out to be **four** upload call sites, not three — `src/app/profile/edit/page.tsx` was missed on the first pass because the grep for `storage.from(` was single-line and that call splits `supabase.storage` / `.from('avatars')` across two. It is the **real** profile editor (`/edits` is an unused duplicate, CODE_REVIEW.md §7) and it uploaded raw files, so it broke first under the 3 MiB cap while reporting `[object Object]` — its catch block ran `String(error)` on a Supabase error, which are plain objects rather than `Error` instances, hiding the cause. `compressImage()` added to both avatar paths; new `src/lib/uploadErrors.ts` maps 413 / 415 / rate-limit rejections to actionable text across all four call sites ("try again" is wrong advice for a rate limit); the object-shaped-error fallback fixed in `/profile/edit`. `npm run build` clean.
-- **Live verification (MCP):** 4 buckets at `3145728` + 3 MIME types with `trek-profile` null; trigger `tgtype=21` (ROW + INSERT + UPDATE, AFTER) and enabled; `enforce_storage_rate_limit` `SECURITY DEFINER` owned by `postgres` with `search_path` pinned; `rate_events` still 0 policies and unreadable by `anon`+`authenticated`. ⚠️ **The cap works; the message did not reach the user (2026-08-08).** Seven avatar uploads in an hour produced exactly 6 `rate_events` rows and a rejected 7th — the Postgres log carries the raise verbatim and the storage log shows `POST /object/avatars/… → 500`. But **storage-api does not forward a database error message**: it answers 500 with a body of `{}`, so supabase-js builds its `StorageApiError` message from `JSON.stringify(body)` — literally `"{}"` (which is also why the console showed `Avatar upload error: {}`). `uploadErrors.ts` matched on `/too many images/i`, that never matched, and the user got the generic "please try again" — the one wrong answer, since retrying cannot succeed for another hour. No errcode fixes this: storage-api maps `42501` to its own hardcoded RLS text, `23505`/`23503` to key/bucket errors, everything else to an opaque 500.
+- **Client side:** there turned out to be **four** upload call sites, not three — `src/app/(trekker)/profile/edit/page.tsx` was missed on the first pass because the grep for `storage.from(` was single-line and that call splits `supabase.storage` / `.from('avatars')` across two. It is the **real** profile editor (`/edits` is an unused duplicate, CODE_REVIEW.md §7) and it uploaded raw files, so it broke first under the 3 MiB cap while reporting `[object Object]` — its catch block ran `String(error)` on a Supabase error, which are plain objects rather than `Error` instances, hiding the cause. `compressImage()` added to both avatar paths; new `src/lib/uploadErrors.ts` maps 413 / 415 / rate-limit rejections to actionable text across all four call sites ("try again" is wrong advice for a rate limit); the object-shaped-error fallback fixed in `/profile/edit`. `npm run build` clean.
+- **Live verification (MCP):** 4 buckets at `3145728` + 3 MIME types with `trek-profile` null (superseded by `0005`, applied 2026-08-25 — all five buckets now carry the cap); trigger `tgtype=21` (ROW + INSERT + UPDATE, AFTER) and enabled; `enforce_storage_rate_limit` `SECURITY DEFINER` owned by `postgres` with `search_path` pinned; `rate_events` still 0 policies and unreadable by `anon`+`authenticated`. ⚠️ **The cap works; the message did not reach the user (2026-08-08).** Seven avatar uploads in an hour produced exactly 6 `rate_events` rows and a rejected 7th — the Postgres log carries the raise verbatim and the storage log shows `POST /object/avatars/… → 500`. But **storage-api does not forward a database error message**: it answers 500 with a body of `{}`, so supabase-js builds its `StorageApiError` message from `JSON.stringify(body)` — literally `"{}"` (which is also why the console showed `Avatar upload error: {}`). `uploadErrors.ts` matched on `/too many images/i`, that never matched, and the user got the generic "please try again" — the one wrong answer, since retrying cannot succeed for another hour. No errcode fixes this: storage-api maps `42501` to its own hardcoded RLS text, `23505`/`23503` to key/bucket errors, everything else to an opaque 500.
 - **Fix: stop parsing the error, ask the DB.** New `upload_rate_limited(p_bucket)` — read-only `SECURITY DEFINER` probe over the same counter, `authenticated`-only, returns one boolean about the caller's own row and nothing else (`rate_events` stays 0-policy/0-grant); `uploadErrorMessage()` is now `async` and calls it **only after an upload has already failed with an unrecognised error**, so the happy path costs no round trip. New `storage_rate_rule(p_bucket)` holds the bucket → (action, limit) mapping once, because the trigger and the probe would otherwise carry separate copies of "6" and drift on the first tuning pass. All four call sites now `await` (`profile/edit`, `edits`, `dashboard/settings`, `TrekForm`) and pass their own client + bucket — `settings`/`TrekForm` use the `@supabase/ssr` browser client, `profile/edit`/`edits` the singleton, so the client is a parameter rather than an import. `npm run build` clean. **Process lesson (second one from this trigger): a guard that fires correctly in Postgres can still be invisible to the user, and neither the SQL verify block nor the build catches that — only reading the actual toast does.** [`supabase/phases/fix-storage-rate-limit-message.sql`](supabase/phases/fix-storage-rate-limit-message.sql)
 - **applied + verified live 2026-08-08** — `upload_rate_limited` `prosecdef=t`/`provolatile=s`, anon execute `f`, authenticated execute `t`; `storage_rate_rule` execute denied to anon + authenticated (the MCP role itself gets `42501` calling it); end-to-end, a rate-limited avatar upload now surfaces "You have uploaded too many images in the last hour. Please try again later." Folded into [`supabase/schema.sql`](supabase/schema.sql) §13.4 + new §13.5, [`supabase/security-fixes.sql`](supabase/security-fixes.sql), `DATABASE.md` §7/§9.
 - **Follow-on cleanup:** the four call sites no longer `console.error` the raw `StorageError` — on this path it prints `{}` and repeats nothing the returned message doesn't, and Next 16's dev overlay turns every `console.error` into a red popup, so an expected rate-limit rejection looked like two crashes. `uploadErrorMessage()` now logs once, and only for the case it could **not** explain. `/profile/edit` also stopped re-logging + prefixing a handled `UploadError` (the toast read "Error updating profile: You have uploaded too many images…"), matching what `settings`/`TrekForm` already did, and its `finally` now clears `uploading` — a failed upload left the avatar spinner running forever
@@ -1492,7 +1974,7 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 
 - **Toasts:** `sonner` `<Toaster>` in `src/app/providers.tsx`; all 38 app-side `alert()` calls replaced with `toast.success/error/info` across treks, messages, auth, profile, edits, reviews, cards (the 8 `alert()`s left in `src/app/test/*` went with the directory on 2026-08-08 — L4).
 - **Error boundaries:** `src/app/error.tsx` + `src/app/global-error.tsx`, both report to Sentry via `captureException`.
-- **Sentry:** `@sentry/nextjs` wired via `src/instrumentation.ts` (server/edge + `onRequestError`), `src/instrumentation-client.ts` (browser + router-transition tracing), and `withSentryConfig` in `next.config.js`. Inert until `NEXT_PUBLIC_SENTRY_DSN` is set; source-map upload gated on `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN` (CI only). Env documented in `.env.local.example`
+- **Sentry:** `@sentry/nextjs` wired via `src/instrumentation.ts` (server/edge + `onRequestError`), `src/instrumentation-client.ts` (browser + router-transition tracing), and `withSentryConfig` in `next.config.mjs`. Inert until `NEXT_PUBLIC_SENTRY_DSN` is set; source-map upload gated on `SENTRY_ORG`/`SENTRY_PROJECT`/`SENTRY_AUTH_TOKEN` (CI only). Env documented in `.env.local.example`
 
 
 ## Phase 0 — Security tail (shipped)
@@ -1507,7 +1989,7 @@ Provider `src/app/providers.tsx` (wired in `layout.tsx`); shared query-keys + ho
 | `postcss` | 8.5.15 | 8.5.26 | Path traversal in source-map auto-loading → arbitrary `.map` file disclosure (`GHSA-r28c-9q8g-f849`, `GHSA-fxqj-rqcc-2cmp`) |
 | `sharp` | 0.34.5 | ≥0.35.0 | 4 inherited libvips CVEs (`CVE-2026-33327`, `-33328`, `-35590`, `-35591`) — transitive via `next`, not a direct dependency |
 
-The Server Function disclosure and the image-optimization DoS both applied directly — this app runs `output: 'standalone'` with `next/image` over two remote hosts. All three resolved inside the existing `^16` / `^8` ranges, so **`package.json` is unchanged**; only `package-lock.json` moved.
+The Server Function disclosure and the image-optimization DoS both applied directly — this app ran `output: 'standalone'` at the time (dropped 2026-08-26 in `d1c6aa3` — see Known Gotchas) with `next/image` over two remote hosts. All three resolved inside the existing `^16` / `^8` ranges, so **`package.json` is unchanged**; only `package-lock.json` moved.
 
 **Verified:** `npm run build` passes (all 31 routes emit, CSP still builds from `NEXT_PUBLIC_SUPABASE_URL` at config load) and `npm test` is green at 124/124.
 
@@ -1531,7 +2013,7 @@ Enforced immediately, none of which can break a working page:
 
 **CSP — what it buys, now that it is nonce-based.** Enforcing since 2026-09-01 (`CSP_ENFORCE=1` in Vercel, Production + Preview); `script-src` reads `'self' 'nonce-<128 bits>' 'strict-dynamic'` since 2026-09-05. Injected inline script no longer runs, which is the thing the old policy could not claim — an attacker would have to guess a per-request nonce. `connect-src` still caps where data can be *sent*, so even a bypass cannot POST the browser-held Supabase session to an attacker origin, and `object-src 'none'`, `base-uri 'self'`, `form-action 'self'` are unchanged. `'unsafe-eval'` is added **only** under `next dev` (React Refresh); verified absent from the production policy.
 
-**`style-src` keeps `'unsafe-inline'` and that is not going away.** Emotion/MUI inject `<style>` at runtime and Framer Motion writes `style` attributes — and a nonce cannot cover a style *attribute* at all, at any price. Dropping it means finishing the "one UI system" migration in §2 first.
+**`style-src` keeps `'unsafe-inline'` and that is not going away.** Framer Motion writes `style` attributes — and a nonce cannot cover a style *attribute* at all, at any price. (Earlier text also blamed Emotion/MUI, but those were removed 2026-06-20 — see "One UI system" in §2; Framer Motion alone is the reason.) Dropping it means dropping Framer Motion first.
 
 **The cost was static rendering, and it was already spent.** Nonces only exist once there is a request, so every route now renders at request time — [`layout.tsx`](src/app/layout.tsx) calls `connection()` once for the whole tree rather than eight pages doing it individually. Before the change 24 of 31 routes were already `ƒ`; the eight that were prerendered were `/about`, the four auth screens, `/company/apply`, `/invites` and `/_not-found`, none of which the SEO work depends on — and every one of their document requests already blocked on the proxy's `auth.getUser()` round trip, so what was actually given up is a React render, not a CDN hit. **This is why the 2026-08 rationale for keeping `'unsafe-inline'` ("nonces would undo the server-rendered SEO work") no longer holds: `/`, `/explore`, `/trek/[id]` and `/company/[slug]` are all request-time rendered anyway.**
 
@@ -1541,7 +2023,7 @@ Enforced immediately, none of which can break a working page:
 - `img-src` — Supabase storage, `images.unsplash.com`, `www.transparenttextures.com` (chat background in [`messages/page.tsx`](src/app/(trekker)/messages/page.tsx)), plus `data:`/`blob:` for upload previews
 - `worker-src 'none'` — nothing in the app spawns a worker; see §1.5
 - `font-src 'self' data:` only — `next/font/google` self-hosts at build, so **no** Google Fonts origin is needed
-- `images.remotePatterns` — a separate allowlist from CSP, governing what `/_next/image` will fetch and cache server-side. Supabase is scoped to `/storage/v1/object/public/**` (2026-08-27) so the optimizer cannot be used as a proxy for the project's auth/REST/functions endpoints; `images.unsplash.com` stays `/**`
+- `images.remotePatterns` — a separate allowlist from CSP, governing what `/_next/image` will fetch and cache server-side. Supabase is scoped to `/storage/v1/object/public/**` (2026-08-27) so the optimizer cannot be used as a proxy for the project's auth/REST/functions endpoints. `images.unsplash.com` was **removed 2026-09-14** — every `<Image>` src is a storage URL, and the unsplash fallbacks are plain `<img>` tags that never touch `/_next/image`. The CSP `img-src` unsplash entry is a different control and stays until those fallbacks move to local assets
 
 **Verified** by curling a real `next start` server: all six headers present, `script-src` free of `'unsafe-eval'` in production and carrying it under `next dev`. Re-verified for the nonce (2026-09-05, `CSP_ENFORCE=1`, `next start`): every `<script>` on `/`, `/about`, `/auth/login` and `/explore` carries the same nonce the header names — 16–18 tags per page, none without — and headless Chromium loads `/`, `/about`, `/explore`, `/auth/login`, `/auth/forgot-password` and a real `/trek/[id]` with **zero CSP violations and zero page errors**, hydration included, JSON-LD present in the DOM.
 
@@ -1551,8 +2033,8 @@ Enforced immediately, none of which can break a working page:
 | L4 — delete `src/app/test/*` | ✅ 2026-08-08 | All 16 files removed: 8 routable pages (`/test`, `/test/batch`, `/test/fav`, `/test/profile`, `/test/profilet`, `/test/review`, `/test/storage-check`, `/test/trek/[id]`), one non-routable `editprofiletest.tsx`, and 6 `.html` design scratch files. Nothing imported from the directory. `/test` also removed from `publicRoutes` ([src/utils/supabase/middleware.ts](src/utils/supabase/middleware.ts)) and from the `robots.ts` disallow list (a rule for a route that no longer exists). Verified absent from the `npm run build` route table |
 | Client-side logout / session guard | ✅ | Logout now navigates to `/` (`handleSignOut` in `src/components/layout/Header.tsx`) instead of leaving stale authenticated content on screen. New `useRequireAuth()` hook (`src/hooks/useRequireAuth.ts`) redirects to `/` when the session disappears in-place (logout, multi-tab sign-out, or expiry); applied to all protected pages: `profile`, `profile/edit`, `favorites`, `messages`, `edits`. Complements the middleware guard, which only fires on navigation/refresh |
 | M3 — build error-checking on | ✅ | No `ignoreBuildErrors`/`ignoreDuringBuilds`; `noEmit: true` |
-| NEW-5 — delete dead `increment_participants` | ✅ 2026-08-08 | [`supabase/phases/fix-drop-dead-increment-participants.sql`](supabase/phases/fix-drop-dead-increment-participants.sql) **applied**. Backed the legacy `src/lib/database.ts` join path, itself dead. Verified live after the apply: `increment_participants` absent, `update_participants_count` **present** with `trek_participants_count_trigger` still attached. ⚠️ `update_participants_count()` is **not** dead — it maintains the `participants_joined` counter Explore/Favorites read; the two names look interchangeable and are not. Doc debt: still present in `supabase/schema.sql` + `DATABASE.md` — see §1.5 |
-| 3 open security advisors | ✅ | Resolved-by-design — no actionable dashboard toggle (`supabase/security-fixes.sql:376`). **(1)** `security_definer_view` on `public_profiles` is intentional (Known Gotcha — keep). **(2)** `auth_leaked_password_protection` toggle is Pro-only; enforced in app via `isPasswordPwned()` ([src/lib/auth.ts](src/lib/auth.ts), commit `65dfe82`). **(3)** `vulnerable_postgres_version` upgrade is Pro-only; acknowledged on free plan. Advisors keep flagging (1)+(2) since they only inspect the toggle, not the design/app-level mitigation. |
+| NEW-5 — delete dead `increment_participants` | ✅ 2026-08-08 | [`supabase/phases/fix-drop-dead-increment-participants.sql`](supabase/phases/fix-drop-dead-increment-participants.sql) **applied**. Backed the legacy `src/lib/database.ts` join path, itself dead. Verified live after the apply: `increment_participants` absent, `update_participants_count` **present** with `trek_participants_count_trigger` still attached. ⚠️ `update_participants_count()` is **not** dead — it maintains the `participants_joined` counter Explore/Favorites read; the two names look interchangeable and are not. Doc debt cleared 2026-08-12 — see §1.5 |
+| 3 open security advisors | ✅ | Two resolved-by-design, the third upgraded away 2026-09-15 (`supabase/security-fixes.sql`, LEAKED-PASSWORD block, corrected 2026-09-14). **(1)** `security_definer_view` on `public_profiles` is intentional (Known Gotcha — keep). **(2)** `auth_leaked_password_protection` toggle is Pro-only (docs-confirmed 2026-09-14); enforced in app via `isPasswordPwned()` ([src/lib/auth.ts](src/lib/auth.ts), commit `65dfe82`) — **decided 2026-09-15: accepted as the control, no plan upgrade** ([§2](#leaked-password-protection-stays-app-side-2026-09-15)); the WARN is expected, not actionable. GoTrue min password length set to 8 and verified live the same day. **(3)** `vulnerable_postgres_version` — **Postgres upgraded in place from the dashboard 2026-09-15** ([§2](#postgres-security-patches-applied-and-the-last-three-dashboard-actions-closed-2026-09-15)); the old "Pro-only; acknowledged on free plan" note was wrong, in-place upgrades are offered to every plan. Re-read the advisor to confirm the WARN is gone. Advisors keep flagging (1)+(2) since they only inspect the toggle, not the design/app-level mitigation. |
 
 ## Review follow-ups (resolved 2026-06-22)
 
@@ -1563,9 +2045,9 @@ Correctness/quality items surfaced by `/code-review` on the Phase 2 + TanStack Q
 | 1 | High | Capacity + waitlist | `update_participants_count()` filters `tp.status = 'confirmed'`, so `treks.participants_joined` excludes waitlisted joiners (verified: no counter drift on live DB). | `schema.sql` · `update_participants_count()` |
 | 2 | Med | Gamification + stats | `award_user_achievements()` + `recompute_user_stats()` aggregate only `status = 'confirmed'` participations (badges, completions, distance, monthly joined/distance). | `schema.sql` · those two functions |
 | 3 | Med | Search & filters | `search_treks()` tracks `v_has_search`; a non-empty search that sanitizes to empty returns no matches instead of the whole catalog (verified live: `'!!!'` → 0 rows). | `schema.sql` · `search_treks()` |
-| 4 | Low | Trek detail | Misleading trek-wide `isFull` removed; button always reads "Book This Trek" — server + post-join toast report the true confirmed/waitlist status. | `src/app/trek/[id]/page.tsx` |
+| 4 | Low | Trek detail | Misleading trek-wide `isFull` removed; button always reads "Book This Trek" — server + post-join toast report the true confirmed/waitlist status. | `src/app/trek/[id]/TrekDetailClient.tsx` (the button moved into the client island when the page became a server wrapper) |
 | 5 | Low | Waitlist position | `waitlist_position` tie-breaks by `(joined_at, id)`, so identical timestamps yield distinct positions. | `schema.sql` · `join_trek_and_chat()` |
-| 6 | Low | TanStack Query | `useToggleFavorite`/`useRemoveFavorite` do optimistic updates with scoped (`exact`) invalidation; `useFeaturedTreks` is a single `search_treks` RPC (no N+1). | `src/lib/queries.ts` |
+| 6 | Low | TanStack Query | `useToggleFavorite`/`useRemoveFavorite` do optimistic updates with scoped (`exact`) invalidation (`useFeaturedTreks`, once a single `search_treks` RPC, was since removed as dead — see the TanStack row). | `src/lib/queries.ts` |
 
 ---
 
@@ -1573,17 +2055,29 @@ Correctness/quality items surfaced by `/code-review` on the Phase 2 + TanStack Q
 
 Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog items (linked where they do); others document intentional designs that look like bugs — don't "fix" them.
 
+- **A trigger on `auth.sessions` or `auth.mfa_amr_claims` that raises blocks every sign-in. `record_login_event()` and `record_login_method()` must stay fail-open.** GoTrue writes the session row *and* its AMR claim inside the sign-in request (and deletes the session inside sign-out); a trigger on either table that throws rolls that write back, and the user gets an error instead of a session — for *everyone*, until the trigger is dropped. That is why both functions wrap their whole body in `exception when others` (`0027`, extended by `0028`), and why `tests/db/login-events.test.ts` renames the target table away and asserts the session INSERT, the session DELETE and the claim INSERT all still land. The rule now covers **four triggers** (`on_auth_session_created` / `_refreshed` / `_deleted` on `auth.sessions`, `on_auth_amr_claim_created` on `auth.mfa_amr_claims`) and **two functions**. Do not "tighten" either by removing the handler, and do not add another trigger on an `auth.*` table without the same wrap. (`handle_new_user()` on `auth.users` has the same exposure at signup and *no* handler — `0010` chose to clamp `full_name` rather than raise for exactly this reason.)
 - **Writing a behavioural verification script? Three traps that all produce a *confidently wrong* result, not an obvious failure.** Learned the hard way on phases F and H (2026-08-08); [`verify-phase-f.sql`](supabase/phases/verify-phase-f.sql) and [`verify-phase-h.sql`](supabase/phases/verify-phase-h.sql) are the worked examples. **(1) In the SQL Editor `auth.uid()` is null, so `is_platform_admin()` is false** — which means `trg_protect_company_admin_fields` silently reverts any direct `update companies set status=…`, and a script that freezes a company that way tests nothing while looking like it tested everything. Change status through `reject_company()`/`suspend_company()` under an admin's `request.jwt.claims`, or the setup step is inert. **(2) The editor shows only the last statement's result, and a deliberate error aborts everything after it** — so `-- expect: UPDATE 0` comments are invisible and a pasted multi-block file returns one error and no controls. End every block in exactly one row-returning statement and surface row counts with a data-modifying CTE (`with c as (update … returning 1) select count(*) from c`). **(3) A refusal alone is not evidence.** A missing grant, a unique violation or an unrelated policy all look identical to the guard firing. Pair every negative with the same statement run under conditions where it must succeed.
+- **Write `(select auth.uid())` in every policy, never bare `auth.uid()`** — and the same for `auth.role()` / `auth.jwt()`. The bare form is a function call the planner makes per candidate row; the subquery form is hoisted into an InitPlan and evaluated once per statement. Same answer (auth.uid() is STABLE and reads only the request's JWT), different cost curve. `0025` rewrote all 22 policies that had it and `tests/db/performance-advisors.test.ts` fails on any new one — **in `public` only**: the test filters `schemaname = 'public'`, and 7 `storage.objects` policies still use the bare form. Extending the test (and a migration to rewrite them) is an open decision. It does **not** change a policy's role — the five `to public` chat/activity policies stay `to public` for the reasons in `0002` §B.
+- **The two permissive SELECT policies on `treks` are two on purpose; the `multiple_permissive_policies` WARN is accepted (2026-09-15).** `company members view own treks` exists so `INSERT … RETURNING` can pass (`0002` §A — `is_trek_visible()` is STABLE and cannot see the row being inserted); it cannot move into `view treks` because that policy is `to public` and anon holds no EXECUTE on `is_approved_company_member()` — the same trap as the load-bearing trio below. And merging buys nothing: Postgres ORs permissive policies into one predicate already. A "get the advisor to zero" pass here breaks trek creation or the public catalogue.
+- **`unused_index` on a table with single-digit rows is noise.** `trek_participants_batch_status_idx` and `trek_reviews_user_idx` show `idx_scan = 0` since stats began because the planner reads a 9-row table whole — the next bullet is the same lesson from the other side. The first is exactly the shape the seat-count / waitlist code needs (`batch_id, status, joined_at`). Kept 2026-09-15; re-check once `trek_participants` passes ~1,000 rows (`PERFORMANCE.md` §4.4).
 - **`explain` showing `Seq Scan` on a small table is not a missing index, and `set enable_seqscan = off` is how you tell the difference.** After adding `conversation_messages_conv_created_idx` (2026-08-12) the unforced plan still sequentially scanned — correctly, because 59 rows live in 2 heap pages and an index scan would cost more. The check that actually proves the index is *usable and correctly shaped* is to force it: look for `Index Cond` on the filter column **and the absence of a Sort node**. The missing Sort is the real signal — a wrongly-ordered composite index still index-scans and then sorts, which looks fine at 59 rows and falls over at 50k. **Corollary: don't add an index and conclude from a fast query that it worked; on a small table everything is fast.**
 
 - **A phase file in `supabase/phases/` is a proposal, not an applied change — and this cuts both ways.** The established rule ("a SQL file's own comment is not evidence of database state") came from two files mislabeled *pending* that were actually live. The opposite happened on 2026-08-12: [`fix-duplicate-participant-unique.sql`](supabase/phases/fix-duplicate-participant-unique.sql) was written 2026-08-05, said nothing about its status, and sat **unapplied** for a week while the duplicate index it described kept costing writes on every chat join — caught only by querying `pg_indexes` directly. Verify against the catalog in both directions. Superseded files get a ⚠️ banner at the top rather than being deleted, so the reasoning stays readable — read the banner before running one.
 
+- **A green `npm test` is not evidence that a guard is live in production, and the drift has now run in both directions.** The `db` project boots PGlite and replays `supabase/migrations/*.sql`, so the database the tests grade is the **migrations folder**, not production. For most of this project's life that made the tests *weaker* than live — `0001` recorded the `is_trekker()` join guard at §14.5 as a **comment** describing an in-place edit, so production had a guard a rebuilt database did not (`0021` restates the body and closes it). On 2026-09-09 it ran the opposite way for several hours: `0016` and `0021` were committed, replayed and covered by `tests/db/booking-gate.test.ts` (9 cases, 7 of which fail without the migration) while the live database had neither, so **the booking gate was green in CI and absent in production** and `supabase/schema.sql` described a state the cluster was not in. Both are applied now and the ledger is gapless, but the lesson is the standing one: **a claim about live behaviour needs a `pg_proc`/`pg_policy`/`pg_trigger` read, never a passing suite and never a file comment** — and when the suite is the stricter of the two, the failure mode is silent: nothing goes red.
+
 - **Three SECURITY DEFINER functions must keep their `anon` EXECUTE grant. Revoking them takes the public site down.** `is_trek_visible`, `is_company_member` and `is_platform_admin` are called from **PUBLIC-role SELECT policies** on `treks`, `trek_batches` and `companies`. RLS quals evaluate as the *querying* role, so every anonymous read on `/explore`, `/trek/[id]` and `/company/[slug]` executes them — they are load-bearing for `anon`, not inert. The `anon_security_definer_function_executable` advisor flags them anyway: **3 WARNs stay open by design**, and a future "let's get that to zero" pass is a production outage. Everything else was revoked 2026-08-08 (§2 "Multi-tenant platform → F"). **Related:** `revoke … from public` also strips `authenticated`, which almost all of these inherit rather than hold directly — so any new definer RPC ships `revoke … from public, anon` **paired with** `grant execute … to authenticated`, or it breaks the dashboard while re-opening the lint.
 
-- **A security check that runs in the browser, in front of a public API, raises the floor and enforces nothing.** The publishable key means every gate in `src/lib/` sits in front of an endpoint the attacker can call directly. `isPasswordPwned()` ([src/lib/auth.ts:32](src/lib/auth.ts#L32)) is the live example: a real HIBP k-anonymity check, genuinely useful against honest users picking a breached password, and skipped entirely by `POST /auth/v1/signup`. It is a UX feature that reads like a control — the control is the Supabase Auth platform setting, still disabled (§1.5). Same shape as the rate limiting note: that got moved *into Postgres* precisely because a Route Handler could not enforce it. **When reviewing, ask which role runs the check, not where the code lives.**
+- **A security check that runs in the browser, in front of a public API, raises the floor and enforces nothing.** The publishable key means every gate in `src/lib/` sits in front of an endpoint the attacker can call directly. `isPasswordPwned()` ([src/lib/auth.ts:36](src/lib/auth.ts#L36)) is the live example: a real HIBP k-anonymity check, genuinely useful against honest users picking a breached password, and skipped entirely by `POST /auth/v1/signup`. It is a UX feature that reads like a control — the control is the Supabase Auth platform setting, which stays off by decision (Pro-only; see "Leaked-password protection stays app-side" in §2). Same shape as the rate limiting note: that got moved *into Postgres* precisely because a Route Handler could not enforce it. **When reviewing, ask which role runs the check, not where the code lives.**
 - **`grant execute … to authenticated` does not remove the default PUBLIC grant, so `schema.sql` can silently describe a more permissive database than production.** Postgres attaches `EXECUTE` to `PUBLIC` at `CREATE FUNCTION`; a later `grant` to `authenticated` adds nothing and revokes nothing. The 2026-08-08 revokes were applied live but never encoded in the generated schema, so from then until 2026-08-14 `schema.sql` said "anon may call all 15 multi-tenant RPCs" while production said otherwise — including a §10 comment asserting it as fact. Nothing was exposed, but the file that the DB suite builds its Postgres *from* was wrong, so the suite was testing a database that does not exist. Caught only when the roster test asserted `permission denied` and got an empty set; both the revokes and the test landed 2026-08-14. **Pair the revoke with the grant in the same migration** (as the note above already requires), and treat a green DB suite as evidence about `schema.sql`, **not** about production — the migration ledger and `has_function_privilege()` are what speak for production. The suite proves the two agree only if the revoke is written down.
+- **Badges are reconciled, not permanent — `award_user_achievements()` must keep its DELETE, and `user_achievements` is no longer append-only.** It looks like a rewards table and every instinct says a trophy, once given, stays given; that instinct *was* the code until `0020`, and it is what made badges free. Every metric behind them is recomputed from live rows, so leaving a trek zeroes the numbers — an insert-only awarder therefore turns a badge into a high-water mark over a source the user resets at will, and one join plus one leave buys it permanently. The visible tell was `ultra_explorer` sitting beside 0 km on the profile. The DELETE is scoped to the 15 keys the function owns, so widening the catalog is safe but writing a key from anywhere else is not. **Related, and the other half of the same fix:** "completed" means the trek has *ended* (`batch_date + whole days spanned - 1 < current_date`) **and** the booking predates its departure — never a bare `batch_date < current_date`, which both banks a multi-day trek mid-trip and lets `join_trek_and_chat`'s one-day backdating slack complete a trek at the instant it is joined. That expression is shared verbatim with the `0018` review policies and, since `0026`, the `user_completed_treks` view; if you change one, change all three.
+
+- **`trek_participants.joined_at` is a system timestamp, pinned by a trigger — the INSERT policy pins nothing else, and that is a live gap.** `"Users can join treks"` checks only `auth.uid() = user_id and is_trekker()`, so before `0020` a direct PostgREST insert could set `joined_at` 400 days back (verified, accepted). Anything reading that column as evidence — the `0020` completion gate, the `user_monthly_activity` rollup — needs the pin to mean anything. **`status` is pinned the same way** — `0024`'s `trek_participants_assign_status` trigger overwrites whatever the client sends with the confirmed/waitlisted result of the capacity check, so a direct insert of `confirmed` on a full batch no longer bypasses the waitlist. Treat every unpinned column on that table as client input until a trigger says otherwise; `UPDATE` needs no equivalent guard only because the table has no UPDATE policy at all.
+
 - **A trekker could forge an operator announcement if `is_announcement` is ever left out of a `conversation_messages` write policy.** The publishable key ships in the client bundle, so `POST /rest/v1/conversation_messages` with `is_announcement:true` is one request away; the INSERT and UPDATE `with check` clauses both pin it to `false`, and `post_batch_announcement()` (SECURITY DEFINER, owned by `postgres`, table not `FORCE ROW LEVEL SECURITY`) is the only writer that can set it. If either policy is ever rewritten, carry the conjunct — the badge is a trust signal in a chat full of strangers. Consequence to expect, not a bug: announcements are immutable through the table API, soft-delete included.
 
+- **A `CLOSED → SUBSCRIBED` pair per realtime channel in the `next dev` console is React Strict Mode, not flapping.** Strict Mode is on by default in the App Router and mounts → unmounts → remounts every effect once, so each channel in `messages/page.tsx` subscribes, is removed and subscribes again on first render — by design, dev only. The `messagesGateRef` / `presenceGateRef` chain ([messages/page.tsx:107-115](src/app/(trekker)/messages/page.tsx#L107-L115)) exists so that second subscribe gets a fresh channel instead of the dying one. It was misread as a bug on 2026-09-15 and checked live on 2026-09-17 (§2); production never double-mounts. A real problem looks different: `CLOSED` *after* the page has settled, or `JoinRateLimitReached` in `realtime_logs`.
+- **The steady one-request-per-minute `search_treks` from AWS us-east-1 with user-agent `node` is Sentry's uptime monitor, not a scraper and not users.** Monitor `8178532` fetches `https://trekker-tan.vercel.app` every 60 s; the homepage renders at request time (nonce CSP) and calls `search_treks` server-side, so it is ~1,440 calls a day and, at today's usage, almost the entire PostgREST log. Subtract it (`request.cf.country = 'US'`, UA `node`) before reading any traffic number; the interval is a §1.0 decision.
 - **Every `<script>` the app renders itself needs the nonce passed to it by hand — Next only tags its own.** Next mints the nonce onto the framework bundles and its inline hydration/flight scripts by re-reading the policy off the *request* headers ([app-render.js:209](node_modules/next/dist/server/app-render/app-render.js#L209) reads `content-security-policy` **or** `content-security-policy-report-only`, which is why [`src/proxy.ts`](src/proxy.ts) sets whichever name it is about to send). Markup of ours is not covered: [`JsonLd.tsx`](src/components/ui/JsonLd.tsx) reads `x-nonce` through `headers()` and sets `nonce` itself. `script-src` applies to **every** `<script>` element regardless of `type`, so an un-nonced `application/ld+json` block is a blocked tag and a violation report on every page view — the same page-load noise the Zod eval probe made. Any `next/script` or third-party embed added later has the same obligation.
 - **A prerendered page cannot carry a nonce, so the whole app renders at request time.** `connection()` in [`src/app/layout.tsx`](src/app/layout.tsx) is load-bearing, not a leftover: remove it and any page Next can prerender ships script tags with no nonce and hydrates into nothing under the enforced policy. It is one call in the root layout rather than per-page on purpose — a new page must not be able to opt itself back into prerendering by omission.
 - **`process.env.NODE_ENV` is `undefined` while `next.config.mjs` is being loaded — don't branch on it there.** A `NODE_ENV !== 'production'` check in the config reads as *dev in every phase*, so a dev-only relaxation silently ships to production. This bit the CSP on 2026-08-12: `'unsafe-eval'` landed in the production policy. Branch on the `phase` argument Next passes to a function-style config (`export default function config(phase)`, compared against `PHASE_DEVELOPMENT_SERVER` from `next/constants.js`) — `withSentryConfig` still wraps the returned object fine. The one branch that needed it has since moved out: the CSP is built in [`src/utils/csp.ts`](src/utils/csp.ts), which runs per request in the proxy where `NODE_ENV` is set normally, so the config is a plain object again. **Related trap while verifying this:** `headers()` results are baked into `.next/routes-manifest.json` at **build** time, and `next start` silently exits with `EADDRINUSE` if a stale server holds the port — so `curl` cheerfully returns the *old* server's headers and the fix looks like it failed. Check `lsof -ti:3000` and read the manifest (`.next/routes-manifest.json`) before believing a header didn't change.
@@ -1606,7 +2100,7 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **`accept_company_invite()` opts out of the `account_type` pin with a transaction-local GUC, and that is the ONLY sanctioned way through it.** `protect_profile_account_type()` returns NEW unchanged when `app.account_type_change = 'allow'`; the RPC sets it with `set_config(..., is_local => true)` immediately before its UPDATE and clears it immediately after. This is safe only because PostgREST gives clients no way to call `set_config` — it is not in the exposed schema, and the only GUCs a request can influence are the `request.*` ones PostgREST sets itself. If a future change exposes an RPC that takes a GUC name, or moves this logic somewhere a client can reach, the pin from step 1 is gone and with it every rule that depends on `account_type`.
 
-- **A trekker can book several departures of the same trek — never read `trek_participants` for a trek with `.maybeSingle()`.** The unique constraint is `(user_id, batch_id)`, not `(user_id, trek_id)`, and `join_trek_and_chat()` has no rule against a second date. `.maybeSingle()` **raises** on two rows and hands back `data: null`, which reads exactly like "not booked" — so the trek page offered "Book This Trek" to someone already booked, hid the Leave button, and told them to join before using the chat they were already in. Fixed 2026-08-18 in [`TrekDetailClient`](src/app/trek/[id]/TrekDetailClient.tsx) (both the status read and `handleChat`) by taking all rows and picking the earliest departure. **The failure mode is the trap**: one booking is the state you develop and test in, and the bug only appears on the second.
+- **A trekker can book several departures of the same trek — never read `trek_participants` for a trek with `.maybeSingle()`.** The unique constraint is `(user_id, batch_id)`, not `(user_id, trek_id)`, and `join_trek_and_chat()` has no rule against a second date. `.maybeSingle()` **raises** on two rows and hands back `data: null`, which reads exactly like "not booked" — so the trek page offered "Book This Trek" to someone already booked, hid the Leave button, and told them to join before using the chat they were already in. Fixed 2026-08-18 in [`TrekDetailClient`](src/app/trek/[id]/TrekDetailClient.tsx) (both the status read and `handleChat`) by taking all rows and picking the earliest upcoming departure (`pickCurrentBooking()`). **The failure mode is the trap**: one booking is the state you develop and test in, and the bug only appears on the second.
 
 - **When a gate protects an irreversible action, "still loading" must resolve to the *safe* side, not to `false`.** `useAccountType` returns `undefined` while in flight, so `accountType === 'trekker'` is false for a trekker for as long as the query takes — and [`/invites`](src/app/invites/page.tsx) used that to decide whether to show the conversion warning and the two-step confirm. The Header's `showTrekkerNav` comment makes the opposite call on purpose (unknown ⇒ hide the trekker links, so nothing flashes), and copying that default here removed the consent gate on an account change only a platform admin can undo. Read the direction off the *consequence*: cosmetic nav ⇒ default to hiding; destructive action ⇒ default to asking, and disable the control until the answer arrives. Fixed 2026-08-18.
 
@@ -1626,19 +2120,17 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 - **`treks.participants_joined` is a denormalised counter** kept in sync by the `trek_participants_count_trigger`. As of follow-up #1 (2026-06-22) it counts **confirmed only** — matching `get_trek_participant_count()`. It's still trigger-maintained (recomputed on the next join/leave), so for guaranteed-fresh reads prefer the RPC.
 
-- **No realtime subscriptions in chat.** ⚠️ *Outdated as of the realtime-chat work (commit `696c385`) — `src/app/messages/page.tsx` now uses `postgres_changes`/presence/typing. The trek-detail `Chat` component stub may still lack live updates; verify before relying on this note.*
-
 - **`public_profiles` view is `security_definer`.** Supabase's advisor flags this as an error. It's intentional — it lets `full_name` and `avatar_url` be readable cross-user (for chat/reviews) without exposing PII from the `profiles` base table. Don't "fix" it by making the view `security_invoker`.
 
 - **Storage buckets are `public: true` (CDN delivery) but object listing requires auth *and* your own prefix (`0006`, 2026-08-25).** The SELECT policies on `storage.objects` used to test only `bucket_id`, which blocked anon listing but let any signed-in account enumerate everyone else's folders (STORAGE-001). They are now scoped to the caller's own prefix — `{uid}` for `avatars`/`trek-reviews`, a company the caller belongs to for `company-logos`/`trek-images`. **`avatars` must keep matching both `{uid}/file` and the legacy flat `{uid}.ext`**: `foldername()` returns `{}` for a flat name, so a folder-only qual hides that object from its own owner *and* breaks their upsert, because `upload({ upsert: true })` inserts with `RETURNING` and `RETURNING` is checked against the SELECT policy. `getPublicUrl()` bypasses RLS entirely — it always works regardless of policy, which is why none of this touches image delivery. **Object *reads* have no authorization at all, on either route:** because the buckets are public, storage-api short-circuits auth, so even `/object/{bucket}/{key}` (the "authenticated" route) serves bytes with no token. Only key unguessability protects an object, which is what `0006` reinforced by removing listing. **This is the expected answer to any "I read another user's file" report** — before treating one as a finding, request the object directly with no credentials and no `../`; if that returns the same bytes, the reported trick did nothing (STORAGE-003, 2026-08-26).
 
-- **Two env vars only:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. The `SUPABASE_SERVICE_ROLE_KEY` slot exists in `.env.local.example` but is unused in app code and must never reach the browser.
+- **The only Supabase env vars are** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` (the rest are Sentry, site URL, CSP and runtime flags). The `SUPABASE_SERVICE_ROLE_KEY` slot exists in `.env.local.example` but is unused in app code and must never reach the browser.
 
 - **Password recovery uses the `token_hash` flow, not PKCE.** `resetPasswordForEmail()` (in `src/lib/auth.ts`) redirects to `/auth/reset-password`, whose page calls `supabase.auth.verifyOtp({ token_hash, type })`. This is deliberate — PKCE breaks when the reset email is opened on a different device than the one that requested it. It depends on two dashboard settings that are **not** in the repo: the Supabase "Reset Password" email template must link to `{{ .SiteURL }}/auth/reset-password?token_hash={{ .TokenHash }}&type=recovery` (the default `{{ .ConfirmationURL }}` will NOT work), and `/auth/reset-password` must be in Authentication → URL Configuration → Redirect URLs. The old `src/auth/{callback,confirm}/route.ts` handlers were deleted (they sat outside `src/app/`, so App Router never registered them — dead code with a latent open-redirect).
 
-- **`/admin` "owner contact" is the company's own `contact_*` fields, not the owner's account.** The detail page ([`src/app/admin/companies/[id]/page.tsx`](src/app/admin/companies/[id]/page.tsx)) shows `contact_email`/`contact_phone`/`website` from the `companies` row — the values entered at application time. It deliberately does **not** call `get_company_members`, because that RPC gates on `is_company_member(p_company_id)` and returns an empty set to a platform admin who isn't a member of that company. If you want the actual owner's account email/name in the admin view, that needs a new `is_platform_admin()`-gated RPC — don't try to reuse `get_company_members`.
+- **`/admin` "Company contact" (formerly "Owner contact") is the company's own `contact_*` fields, not the owner's account.** The detail page ([`src/app/admin/companies/[id]/page.tsx`](src/app/admin/companies/[id]/page.tsx)) shows `contact_email`/`contact_phone`/`website` from the `companies` row — the values entered at application time. It deliberately does **not** call `get_company_members`, because that RPC gates on `is_company_member(p_company_id)` and returns an empty set to a platform admin who isn't a member of that company. If you want the actual owner's account email/name in the admin view, that needs a new `is_platform_admin()`-gated RPC — don't try to reuse `get_company_members`.
 
-- **`/admin` overview "Users" is counted from `public_profiles`, not `profiles`.** `getAdminOverview()` ([`src/lib/company.ts`](src/lib/company.ts)) counts users via the `public_profiles` view because `profiles` is own-row-only under RLS (a platform admin can't count rows they can't select), and there's no admin-count RPC. Same reason the audit trail on the company detail page renders `approved_by` as a **raw UUID** — it references `auth.users`, which isn't resolvable to an email/name without a new SECURITY DEFINER RPC. Both are intentional trade-offs to avoid adding schema; add an admin RPC if you later want real user totals or a human-readable "approved by".
+- **`/admin` overview "Users" is counted from `public_profiles`, not `profiles`.** `getAdminOverview()` ([`src/lib/company.ts`](src/lib/company.ts)) counts users via the `public_profiles` view because `profiles` is own-row-only under RLS (a platform admin can't count rows they can't select), and there's no admin-count RPC. The audit trail on the company detail page resolves `created_by`/`approved_by` to display names through the same `public_profiles` view (`getAdminCompany`), falling back to a shortened UUID when there is no profile row. Both are intentional trade-offs to avoid adding schema; add an admin RPC if you later want real user totals.
 
 - **A departure can't be deleted once anyone has ever joined it — including after everyone leaves.** `join_trek_and_chat` creates one `conversations` row per batch on the first join and nothing ever deletes it (`leaveTrek` clears only `conversation_participants` + `trek_participants`). The `company deletes empty batches` DELETE policy blocks a batch with participants *or* a chat conversation (`batch_has_participants` / `batch_has_conversation`, both SECURITY DEFINER — an inline subquery would be blind under the caller's RLS). `deleteBatch` ([`src/lib/company.ts`](src/lib/company.ts)) surfaces this as *"has bookings or chat history — archive the trek instead."* This is deliberate (no orphaned/lost chat); if you ever want owners to hard-delete a vacated departure, it needs a SECURITY DEFINER RPC that cascade-removes the conversation + messages transactionally — don't loosen the FK to `CASCADE` or the guard silently destroys chat history.
 
@@ -1658,6 +2150,620 @@ Caveats, invariants, and "don't break this" notes. Some overlap with §1 backlog
 
 Every entry below was previously crammed into a single `_Last updated:` paragraph.
 Text is unchanged; only the structure is new. Most entries also have a row in §2.
+
+## Doc audit passes 2–4 closed — `0029` restores the `apply_for_company()` gate the migrations lost  ·  2026-09-19
+
+**One real drift, twenty-odd stale sentences.** The audit's §2 pass (`FEATURES-AUDIT.md`
+E26) noticed that the "`apply_for_company()` requires `account_type='company'`" claim
+held for production but not for the repo: `pg_get_functiondef` of the live function
+(read over the read-only MCP server today) has the `'Only company accounts can apply'`
+block; `0001_baseline.sql` §12.4 does not, because folding phase F into the baseline
+kept the gate only as a comment in §14.7. So every green run of the PGlite suite had been
+proving a function that lets a trekker create a company. **`0029`** restates the live
+body verbatim — no behaviour change in production, a real one for any database rebuilt
+from the migrations — and `tests/db/company-application-gate.test.ts` (2 cases) fails
+against `0001`–`0028` alone, which was checked by removing the file and re-running.
+Written and tested; **not yet applied** — it is row #1 in §1.0.
+
+**§1.7 and §1.8 moved to §2.** Both had read "✅ applied + verified live 2026-08-13" since
+August while sitting in the To-do half; they are now the two `0002` entries after
+"Automated RLS + tenant-isolation tests", and the four links to them (three here, one in
+`CODE_REVIEW.md`) follow. §1 keeps its remaining numbering.
+
+**Corrected in place** (each verified against the file, the live database or the MCP
+servers before editing, not against the audit's own claim): STORAGE-001 still said "not
+yet applied to production" — `0006` landed 2026-08-26 07:00:33+00; the storage rate-limit
+row's "4 buckets … `trek-profile` null" — `0005` capped all five on 2026-08-25; the
+dependency-CVE row's "this app runs `output: 'standalone'`" — dropped 2026-08-26; the
+`style-src 'unsafe-inline'` rationale in both the §2 headers entry and the 2026-09-05 §3
+entry blamed Emotion/MUI, which had been gone since 2026-06-20 (Framer Motion alone is the
+reason); NEW-5's "doc debt still present" against §1.5's "cleared 2026-08-12"; the `0007`
+evidence read as if `schema.sql` no longer *contained* the dead functions (the `0007`
+section drops them; the `0001` text stays, since the file is the migrations concatenated).
+Stale pointers: `isPasswordPwned()` :32 → :36, nosniff `next.config.mjs` :93 → :36,
+`fetchMessagesPage()` :169 → :199 and the sidebar read :125 → :142, `login-events.test.ts`
+19 → 20, the three-file unit-test count 26 → 29, `next.config.js` → `.mjs`, a `useCompany`
+hook and a `useStorefrontTreks` hook / `storefrontTreks` key that never existed (the
+storefront is a server component on `getStorefrontTreks` in `server-queries.ts`), the
+deleted `edits` route in the `(trekker)` list, the `isFull` evidence now living in
+`TrekDetailClient.tsx`, and `useFeaturedTreks` cited as live in a row that shares a section
+with the note saying it was removed. Every "§1.0 #N" reference outside the dated
+changelog now names the row instead — the numbers had gone stale twice (D10, A36) and
+would have again the moment `0029` is applied.
+
+Also: `DATABASE.md`'s `apply_for_company` row now states the gate; `security-fixes.sql`
+gains the `0029` entry; `schema.sql` regenerated from 29 migrations. `npx vitest run
+--project db` 311/311.
+
+**Pass 4 (same day)** re-read every ❌ / 🔁 row of `FEATURES-AUDIT.md` against this file
+rather than against the tracker's own "fixed" markers: all 50 are applied, nothing was
+left to move or reword, and the ledger still ends at `0028` (so `0029` stays in §1.0). The
+35 ⚠️ rows — dashboard settings, historical live probes, past rolled-back verification
+runs, suite counts at ship time — are collected once under "Unverified — needs live
+check" at the bottom of the tracker; none of them changes a status here.
+
+## Doc audit pass 1 — nine stale evidence paths, one stale ledger note, one dangling pointer  ·  2026-09-18
+
+**Docs only — no code, schema or database change.** A scripted pass over every backticked
+`src/`, `supabase/`, `tests/`, `e2e/` and `.github/` path in this file (155 distinct) and
+every `00NN` migration number found nine current-state rows still citing
+`src/app/{review,favorites,profile,messages}` — those pages have lived under the
+`src/app/(trekker)/` route group since 2026-08-08 (`c4bf50c`) — and one still naming
+`src/app/edits/page.tsx` as a Zod call site, a page deleted 2026-08-14. All nine now point
+at the real paths. §1.0's "backlog is empty" note stopped at `0001`–`0026`; the live ledger
+reads `0001`–`0028` (both applied 2026-09-17), so a 2026-09-17 paragraph now heads the
+block. The `0020` bullet still sent readers to "#2 in §1.0" for the backfill caveat, but that
+row was closed 2026-09-15 and #2 is now the Gmail SMTP item — it links to the §2 closure
+instead. The remaining 20 misses the script raised were all intentional (deleted files,
+a template placeholder, dated §3 entries). Tracker: `FEATURES-AUDIT.md`.
+
+## Login log gains session end, method, account type and new-device flag  ·  2026-09-17
+
+`0028` adds `ended_at` (a third, AFTER DELETE trigger on `auth.sessions`), `method` (from
+`auth.mfa_amr_claims`, via a trigger on that table — GoTrue writes the claim after the
+session row, so the session trigger cannot see it), an `account_type` snapshot and
+`is_new_device` (no earlier row with the same IP *and* none with the same version-stripped
+user-agent). Both functions fail-open. `/admin/logins` swaps "Last seen" for Duration and
+adds Type · Method · Signed out (green "Active" while the session row exists) and a
+"New device" badge. 19 DB tests + 22 unit tests; `auth.mfa_amr_claims` added to the shim.
+Applied 11:05:36+00 and verified live: four triggers enabled, both functions DEFINER with
+no client EXECUTE, grants unchanged, all 60 rows backfilled.
+
+## Login activity log for platform admins  ·  2026-09-17
+
+New `/admin/logins`: every sign-in with email, time, last-seen, IP and device, searchable
+by email. Filled by `0027`'s trigger on `auth.sessions` into `public.login_events` — Supabase
+records IP + user-agent there but deletes the row on sign-out, and its audit log has neither.
+Trigger is SECURITY DEFINER and fail-open (a raise would fail the sign-in). Admin-only read,
+no client write, 180-day prune. 6 DB tests + 9 unit tests; `auth.sessions` added to the shim.
+`0027` applied 10:23:19+00 and verified live: both triggers on `auth.sessions`, grants and
+policy as written, cron job present, 59 sessions backfilled.
+
+## Chat channel stable, Sentry ingest verified, uptime monitor repointed  ·  2026-09-17
+
+Three console-dump findings from 2026-09-15 checked live over MCP. The realtime "flapping"
+is React Strict Mode double-mounting in `next dev`; production has run the `uid`-keyed,
+teardown-gated channels since 2026-09-01, and today's live chat session left a clean
+realtime log. The Sentry 408 is the owner's Safari content blocker; pageloads (including
+`/messages`) arrive tagged `67c2ebf`. Sentry's auto-created uptime monitor had been polling
+a stale August preview URL once a minute — 1,455 of 1,460 API requests in a day — and now
+watches `trekker-tan.vercel.app`; the 60 s interval is the uptime-monitor row in §1.0. No code changed.
+
+## Join-RPC abuse paths, storage writes and the login mismatch pinned; CI lints; Sentry scrubbed  ·  2026-09-15
+
+§1.4 "Test coverage gaps" is closed: `join-abuse.test.ts` (16), `storage-writes.test.ts`
+(30) and `e2e/auth-mismatch.spec.ts` (2, GoTrue mocked so it runs in CI) cover the three
+boundaries the harness had not reached — the SECURITY DEFINER guards in
+`join_trek_and_chat()`, the INSERT/UPDATE/DELETE side of the M1 storage fix, and
+`signInAs()`'s no-session-persisted guarantee. `npm run lint` now runs in CI before the
+tests. CODE_REVIEW §4.3 closed two ways: `logError()` in `src/lib/log.ts` replaces all 79
+raw `console.error(…, error)` sites so a Postgres `details` (the failing row) never hits
+the log, and `scrubConsoleBreadcrumb` on both Sentry inits strips the same fields from any
+console breadcrumb that still carries a raw error object. 351 tests, build and lint green.
+
+## Postgres patched, site URL set, links re-scraped, `0020` backfill confirmed  ·  2026-09-15
+
+The three dashboard actions in §1.0 — #2 Postgres upgrade, #3 `NEXT_PUBLIC_SITE_URL`
+(`https://trekker-tan.vercel.app`), #4 OG re-scrape — were done by the owner, and #1
+(the `0020` backfill) was confirmed from the data: `explorer` is gone and the nightly
+cron succeeded five nights running (09-10 → 09-14). The dashboard items are recorded
+from the owner's confirmation — the Supabase and Vercel MCP servers were unreachable at
+the time — so the Postgres build string and the advisor state are to be re-read at the
+next opportunity (`vulnerable_postgres_version` should be gone). The site-URL change
+is invisible over HTTP by construction (same string as the fallback). §1.0 is down to
+one row (Gmail SMTP, deferred, renumbered #5 → #1); §1.5 loses its Postgres section;
+§1.3 SEO keeps only the company OG card; the "3 open security advisors" row in §2
+goes 🟡 → ✅. `DATABASE.md`, `CONTEXT.md` and `security-fixes.sql` updated to match.
+Nothing in `src/` changed. Full detail in
+[§2](#postgres-security-patches-applied-and-the-last-three-dashboard-actions-closed-2026-09-15).
+
+## Leaked-password protection stays app-side  ·  2026-09-15
+
+§1.0 #5 was a plan decision — pay for Pro to get the HIBP toggle, or accept
+`isPasswordPwned()`. Decided: accept it. The bypass (a hand-crafted
+`POST /auth/v1/signup`) can only weaken the caller's own account, so the Pro
+toggle would close a gap with no victim. The advisor WARN is now expected, not
+actionable; `DATABASE.md`, `CONTEXT.md` and `security-fixes.sql` say so. The one
+free-plan password control that does bind — GoTrue's minimum password length,
+default 6 — was set to 8 in the dashboard the same day and verified live (a
+1-char `POST /auth/v1/signup` now says "at least 8 characters"; the app has
+required 8 since 2026-09-07 — §1.5's "the app currently allows 6" was stale).
+§1.0 #5 and the §1.5 section are gone; #6 (Gmail) renumbered to #5. Nothing in
+`src/` changed. Full detail in
+[§2](#leaked-password-protection-stays-app-side-2026-09-15).
+
+## Gmail SMTP stays until there is a domain  ·  2026-09-15
+
+§1.0 #6 (move auth mail off Gmail) is blocked on owning a domain — every
+transactional provider verifies the sender by DNS, and `vercel.app` can't be
+verified — so it is deferred rather than "still open". The Gmail side was hardened
+instead: rate limit confirmed at 20/hour (right under Gmail's ~500/day), sender name
+`Trekker`, and the three account-level ways it can silently break written down.
+Also recorded that both edge functions send from Resend's testing-only
+`onboarding@resend.dev`, so join/leave notifications to other users are very
+likely undelivered — same fix, same blocker. Full detail in
+[§2](#gmail-smtp-stays-until-there-is-a-domain-2026-09-15).
+
+## Node 24 everywhere, Vitest 5, and the audit is clean  ·  2026-09-14
+
+The two follow-ups from the morning's dependency pass, closed. Local Node moved
+from Homebrew's stale unversioned `node` (23.10.0, EOL) to the `node@24` keg
+(24.21.0 LTS) — the version Vercel already runs — with `.nvmrc` = `24` and both
+CI jobs reading it instead of the hard-coded 20; no `engines.node`, so prod is
+untouched. Vitest 3.2.7 → 5.0.0 and jsdom 27 → 30 against the v4 + v5 migration
+guides needed **no test or config edits** (all 93 async assertions already
+awaited, every mock per-test) and clear the 2 moderate `@vitest/mocker` audit
+findings — `npm audit` is 0. `vitest.config.ts` → `.mts` to silence Vite 8's
+native-config-loader warning. With Node 24, `npm outdated` stopped hiding
+`eslint` 10 and surfaced `framer-motion` 13.3.0 (published today), applied.
+Build, 291 tests, lint green. Full detail in
+[§2](#node-24-everywhere-vitest-5-and-the-audit-is-clean-2026-09-14).
+
+## The in-range dependency refresh, and neither lint pin can move yet  ·  2026-09-14
+
+`npm update` for the 12 within-range packages (Next 16.3.5, React 19.3.0, zod
+4.6.5, lucide 1.46.0, Sentry 10.74.0, supabase-js 2.116.0, ssr 0.12.7, Playwright
+1.63.0, the three `@types`) plus an explicit `eslint-config-next` 16.3.4 → 16.3.5,
+which bundles `typescript-eslint` 8.70.0. Both toolchain pins were re-tested live
+as `CLAUDE.md` requires on every `eslint-config-next` bump: **TS 7.0.2** is still
+refused at load by `typescript-eslint`'s `versionMajor >= 7` guard (while `tsc` 7
+type-checks clean), and **ESLint 10.10.0** still crashes in `eslint-plugin-react`
+7.37.5 — pinned down this time to the removed `context.getFilename()`. Build, 291
+tests and lint (0 errors, same 15 warnings) green. Found in passing: the local
+Node is the EOL 23 line, which makes `npm outdated` hide the `vitest` 4/5 and
+`jsdom` 28+ majors; and the 2 moderate `npm audit` findings (`@vitest/mocker`)
+predate this pass and need the Vitest major. Full table in
+[§2](#dependency-upgrade--the-in-range-refresh-and-both-lint-pins-re-tested-2026-09-14).
+
+## The two Supabase dashboard advisors had their plan-gating backwards  ·  2026-09-14
+
+Re-checked the "yours, not doable over read-only MCP" dashboard items against the live
+advisors and the current Supabase docs instead of the repo's own notes. Both advisors
+are still open — `auth_leaked_password_protection` disabled, `vulnerable_postgres_version`
+still `17.4.1.069` — but the docs had them the wrong way round. **Leaked-password
+protection is Pro-only** ("available on the Pro Plan and above",
+[password security](https://supabase.com/docs/guides/auth/password-security)), so
+§1.0's "enable it in the dashboard" could never be done on this plan; it is now a plan
+decision (§1.0 #5) with `isPasswordPwned()` as the recorded compensating control. **The
+Postgres upgrade is not plan-gated** — the
+[Upgrading guide](https://supabase.com/docs/guides/platform/upgrading) offers in-place
+`pg_upgrade` to every project and pause-and-restore as the free-tier fallback — so the
+"Pro-only, acknowledged on free plan" line that sat in §2's advisor row, `DATABASE.md`
+and `security-fixes.sql` since 2026-06-17 was wrong and had kept the one actionable item
+off the list. It is now §1.0 #2 with the click path; §1.0 #3–#6 renumbered and the two
+cross-references repointed. §2's "3 open security advisors" row drops ✅ → 🟡: (1)
+resolved-by-design, (2) accepted pending the plan decision, (3) open.
+`NEXT_PUBLIC_SITE_URL` stays unverifiable from outside: the Vercel MCP project and
+deployment payloads carry no env vars, and no Vercel CLI login exists on this machine.
+Nothing in `src/` changed.
+
+## `0024` applied — a booking's status comes from the seat count, not the POST body  ·  2026-09-14
+
+The last security ❌ in the DB: `POST /rest/v1/trek_participants` with `status =
+'confirmed'` (or nothing — the default) took a seat on a full departure that
+`join_trek_and_chat` would have waitlisted. `0024` adds `trek_participants_assign_status`,
+a SECURITY DEFINER BEFORE INSERT trigger that locks the batch, counts confirmed seats and
+overwrites `NEW.status` — `0020`'s `joined_at` pattern. Rewrites rather than refuses (a
+`WITH CHECK` arm runs after BEFORE triggers and would only see the trigger's value);
+skips writes with no session, like `protect_profile_account_type()`. The RPC is restated
+as `0021`'s body minus its own capacity block, reading `status` back from `RETURNING` so
+one rule has one implementation. New
+[`tests/db/seat-capacity.test.ts`](tests/db/seat-capacity.test.ts), 7 cases; `acl.test.ts`
+list extended. **Applied and verified live 09:15:46+00** — trigger, function, ACL and
+RPC body read back from the catalogue; no new advisor findings. The first paste
+deadlocked against a transient session and rolled back whole; the retry landed clean.
+
+## `search_treks` gets a per-call work bound; `/_next/image` drops unsplash  ·  2026-09-14
+
+`0023` clamps `search_treks`' `p_limit` to `[0, 100]` and `p_offset` to `[0, 10 000]` —
+`0001`'s body with those two lines changed, grant restated. **Applied and verified live
+06:35:41+00** — body, ACL and behaviour read back from the catalogue, not the ledger. `next.config.mjs` `images.remotePatterns` is now the Supabase
+public-storage path alone: no `<Image>` renders an unsplash URL (checked in code and in
+the live rows), and the `<img>` fallbacks that do are covered by CSP `img-src`, which is
+untouched. New [`tests/db/search-limits.test.ts`](tests/db/search-limits.test.ts), 7
+cases. `TEST.md` caught up: §6.4.1/§6.4.3 describe the narrowed allowlist, §7.4.6 records
+the decision on each unprotected path, open items #3 (edge-function rate limit, closed
+2026-08-24) and #6 (`/_next/image` proxy, closed 2026-08-27) struck through. Both were
+stale for weeks — the plan's "Last updated" was 2026-08-18. `DATABASE.md` `search_treks`
+row notes the cap.
+
+## `0021` and `0016` applied — the ledger is gapless and the DB backlog is empty  ·  2026-09-09
+
+`0021_refuse-bookings-for-treks-that-left-the-catalogue` (12:55:52+00) and
+`0016_revoke-authenticated-execute-on-trigger-functions` (12:56:20+00) were applied in
+the SQL editor, closing the two version holes `0017`–`0020` and `0022` had opened over
+them. `supabase_migrations.schema_migrations` now reads **`0001`–`0022` with no gaps**;
+both sit last by `applied_at`, so the ledger must be ordered by `version`.
+
+Verified against the catalogue rather than the ledger. `0021`: `is_trek_bookable()`
+exists with EXECUTE true for `authenticated` and false for `anon`, `join_trek_and_chat()`
+references it, and the `"Users can join treks"` policy reads
+`auth.uid() = user_id AND is_trekker() AND EXISTS (SELECT 1 FROM trek_batches tb WHERE
+tb.id = trek_participants.batch_id AND is_trek_bookable(tb.trek_id))` — so the direct
+`POST /rest/v1/trek_participants` path is closed alongside the RPC. `0016`: all four
+`enforce_*` rate-limit functions answer `has_function_privilege` false for `anon`,
+`authenticated` and `public`, while all four triggers remain in `pg_trigger` and enabled
+(`tgenabled='O'`) — the CREATE-TRIGGER-time-not-fire-time invariant holding as predicted,
+so the join (10/hr), message (30/min), storage (6/hr, 20/hr for `trek-reviews`) and
+trek-email caps go on firing with no client role able to call the function behind them.
+`0022`'s `promote_waitlist_on_leave()` still carries its `(joined_at, id)` tie-break, so
+neither late apply overwrote it. Nothing to reconcile in either case: the `0021` sweep
+had already found zero bookings on unbookable treks, and `0016` grants no rights and
+touches no rows.
+
+**Docs corrected in the opposite direction to the 2026-09-09 entry below.** That one
+fixed `CONTEXT.md` and `DATABASE.md` for describing `0021` as live when it was not; this
+one removes the ⚠️ "NOT YET LIVE" markers now that it is — two `CONTEXT.md` sections,
+three `DATABASE.md` rows plus its advisor note, the §1.0 next-actions table (two items
+gone, the rest renumbered 1–5), the migration-ledger callout, both §3 entries, and the
+Known Gotcha that claimed the booking gate was "green in CI and absent in production".
+The gotcha itself stays — both drift directions have now bitten this project, and the
+standing rule is unchanged: **a claim about live behaviour needs a
+`pg_proc`/`pg_policy`/`pg_trigger` read, never a passing suite and never a file comment.**
+
+## The reference docs described `0021` as if it were live  ·  2026-09-09
+
+**Docs only — no code, schema or database change.** A verification pass re-read all six
+recent migrations against `pg_proc` / `pg_policy` / `pg_trigger` rather than the ledger
+alone, and confirmed the split §1.0 already records: `0018`, `0019`, `0020` and `0022`
+live; `0016` and `0021` absent (`is_trek_bookable` returns null from `to_regprocedure`,
+`join_trek_and_chat` has no bookability arm, the `"Users can join treks"` policy has no
+third arm, and all four `enforce_*` functions still answer true to
+`has_function_privilege('authenticated', …, 'EXECUTE')`). `npm test` 277/277,
+`npm run build` clean.
+
+`FEATURES.md` was right. **`CONTEXT.md` and `DATABASE.md` were not** — both described the
+`0021` behaviour in the present tense ("since `0021`, treks that are archived … are
+refused"), and `DATABASE.md` carried `is_trek_bookable()` as a row in the live-functions
+table and `0016` as a completed advisor cleanup. Anyone reading them would have concluded
+the frozen-company booking hole was closed. Corrected in five places with a ⚠️ marker and
+the date the absence was confirmed: `CONTEXT.md` §"Join a trek (+ chat)" and §company
+application, `DATABASE.md` `join_trek_and_chat` / `is_trek_bookable` rows, the
+`trek_participants` RLS matrix row, and the `authenticated_security_definer_…` advisor
+note.
+
+Two stale `#1 in §1.0` cross-references in the `0016` and `0020` bullets were repointed to
+`#3` and `#2` — §1.0 was reordered when `0021` took the top slot and the anchors did not
+follow. One new Known Gotcha records the reversed drift direction: **the test suite is now
+stricter than production**, so a green run no longer implies a live guard.
+
+## The waitlist was promoted in a different order than it was numbered  ·  2026-09-09
+
+**Applied and verified live 2026-09-09 12:18:27+00** —
+[`0022_promote-the-waitlist-in-the-order-it-was-shown.sql`](supabase/migrations/0022_promote-the-waitlist-in-the-order-it-was-shown.sql).
+Read back over the read-only MCP server: the live `promote_waitlist_on_leave()` body
+is md5-identical to the migration's, with the tie-break, `prosecdef`, the pinned
+`search_path` and EXECUTE false for `anon` and `authenticated`. Applied ahead of
+`0021`, which leaves the ledger with two version holes (`0016`, `0021`).
+
+Two orderings of the same queue disagreed on ties. `join_trek_and_chat()` tells a
+joiner their place with a row comparison — `(joined_at, id) <= (…)`, the id added
+by follow-up #5 on 2026-06-22 precisely because `joined_at` is not unique — while
+`promote_waitlist_on_leave()` ordered by `joined_at` alone and took the first row
+the plan handed back. Among rows sharing a timestamp that is insertion order in
+practice and nothing at all in principle, so the number shown to a waitlisted
+trekker was never a promise the trigger was keeping.
+
+Ties are reachable rather than theoretical: `0020` pins `joined_at` to `now()`,
+which is the **transaction** timestamp, so two joins in one transaction are
+exactly equal and two joins a microsecond apart are equal often enough on a
+departure that fills. The fix is the tie-break and nothing else — `0001`'s body
+with `, id asc` appended to the `ORDER BY`, so both functions read the queue the
+same way and `(joined_at, id)` is unique because `id` is.
+
+Two cases in [`tests/db/waitlist-order.test.ts`](tests/db/waitlist-order.test.ts).
+The tie-break is on `trek_participants.id`, a random uuid, so the incumbent
+waitlisted row is seeded with a **chosen** id — `ff…` to sort behind the joiner,
+`00…` to sort ahead of them — with the insertion order identical in both
+scenarios, which is what makes the id the only thing either assertion can be
+reading. The first fails with the migration removed; the second is the control
+(when the incumbent really is first, they are still promoted) and passes either
+way.
+
+## A frozen company's treks could still be booked if you had the link  ·  2026-09-09
+
+**Applied and verified live 2026-09-09 12:55:52+00** —
+[`0021_refuse-bookings-for-treks-that-left-the-catalogue.sql`](supabase/migrations/0021_refuse-bookings-for-treks-that-left-the-catalogue.sql).
+Read back over the read-only MCP server: `is_trek_bookable()` exists and is
+`authenticated`-only, `join_trek_and_chat()` references it, and the
+`"Users can join treks"` policy carries the batch → trek bookability arm.
+
+Phase H (2026-08-08) froze rejected and suspended tenants out of every write path
+they own and wrote down one deliberate exception: *"every participant-facing flow
+(`join_trek_and_chat` + the waitlist/count triggers are all SECURITY DEFINER, so
+no existing booking or chat on a suspended company's trek is touched)."* The
+intent was to protect bookings people already held. What shipped was **no company
+check at all on the join path**, which is a different and much larger thing — it
+also left *new* bookings open.
+
+Suspension only hides the catalogue. `is_trek_visible()` drops the treks from
+every listing and `search_treks()` filters on `is_active and status =
+'approved'`, so the rows stop being *discoverable* — but `join_trek_and_chat()`
+is handed a trek id and re-derives nothing from it, and a trek id is not a
+secret. It is the `/trek/[id]` URL of every page the company published while it
+was approved: browser history, shared links, the favourites of anyone who saved
+it. Paste one back after the suspension and the RPC creates the batch, creates
+the conversation, writes a **confirmed** booking and seats the buyer in the group
+chat — for a tenant the platform has pulled. `is_company_writable()` was never
+going to catch this: it answers *"may this member edit their own company's
+rows"*, and a buyer is not a member.
+
+Two paths reach a booking and both are now closed against the same predicate the
+public catalogue already uses (`t.is_active and c.status = 'approved'`, lifted
+into `is_trek_bookable()` so "bookable" cannot drift from "listed"): the RPC
+raises before its first insert, and the `"Users can join treks"` policy carries
+the check for a direct `POST /rest/v1/trek_participants`, which needs only a
+batch id and the publishable key. Fixing only the RPC would have left the hole
+open one HTTP call to the side — the mistake `0019` and `0020` were written to
+undo. Archived treks come along with it: `is_active = false` is the schema's only
+delete path for a trek, and a soft-deleted trek that still takes money is the
+same bug through the same door.
+
+**Never exploited, because the feature that triggers it has never been used.** The
+pre-apply sweep found zero bookings on unbookable treks — there are no unbookable
+treks: 4 approved companies, 1 pending, 0 suspended, 0 rejected, 0 archived. So
+this is not damage to repair, it is a moderation tool that does not yet do what
+the dashboard says it does. Nothing to backfill on apply.
+
+> **It also closes a silent drift.** `0001` recorded phase F's *"company accounts
+> cannot join treks"* guard at §14.5 as a **comment** describing an in-place edit
+> rather than as SQL, so production has had the guard since 2026-08-06 and a
+> database rebuilt from `supabase/migrations/` has not — `catalogue-writes.test.ts`
+> already carried the comment *"the real guard is `join_trek_and_chat()`"* beside a
+> test that could only ever have exercised the policy. `0021` restates the function
+> in full, gate included, so the live and replayed definitions agree again. That is
+> the seventh failing case below.
+
+Nine cases in [`tests/db/booking-gate.test.ts`](tests/db/booking-gate.test.ts);
+**seven fail with the migration removed**, and the two that pass either way are
+the deliberate control — an approved company must still be able to sell.
+
+## You could farm badges without ever walking anywhere  ·  2026-09-09
+
+**Applied and verified live 2026-09-09 07:48:50+00** —
+[`0020_earn-badges-only-from-treks-actually-held.sql`](supabase/migrations/0020_earn-badges-only-from-treks-actually-held.sql).
+
+Three defects compounded into free badges, and the exploit was reproduced end to
+end against the migrations before anything was changed: joining a single
+yesterday-dated 500 km Expert trek granted `trailblazer`, `first_steps`,
+`warming_up`, `centurion`, `ultra_explorer` and `peak_conqueror` in one
+statement, and leaving reset `user_stats` to 0/0 while all six badges stayed.
+
+`join_trek_and_chat` accepts a batch dated `current_date - 1 day` (UTC/IST
+slack), and every completion metric read `batch_date < current_date` — so a trek
+was completed at the instant it was joined. That same predicate also banked a
+multi-day trek mid-trip, which is the defect `0018` fixed for reviews and never
+reached these two functions. `joined_at` could not be used to tell the two apart
+because it was client input: the `"Users can join treks"` policy checks only
+`auth.uid() = user_id and is_trekker()`, and a direct PostgREST insert setting it
+400 days back was accepted. And `award_user_achievements()` only ever inserted,
+which made a badge a high-water mark over metrics the user resets at will by
+leaving — the reason the profile could show `ultra_explorer` beside 0 km.
+
+A badge is now a pure function of the bookings held right now: the trek must have
+ended (the `0018` end-date expression, reused verbatim), the booking must predate
+its departure, `joined_at` is pinned by a BEFORE INSERT trigger, and badges that
+stop qualifying are taken back. Farming now requires *holding* the qualifying
+bookings, which is the honest state. Nine cases in
+`tests/db/badge-farming.test.ts`; six fail without the migration.
+
+**Blast radius, measured live before handing it over:** exactly one row changes
+across the whole database — one user loses `explorer` (5 distinct locations held
+against 2 confirmed bookings), and nothing is newly granted. That badge is
+already stale, which is the bug in miniature. The date half of the fix revokes
+nothing in production; only the append-only half bites. A sweep for the related
+capacity hole found zero over-capacity batches.
+
+**Verified live after applying**, read back from the catalog rather than trusted
+from the file: `trek_participants_pin_joined_at` present as `BEFORE INSERT` and
+enabled; all three functions with a pinned `search_path` and EXECUTE false for
+both `anon` and `authenticated`; the reconciling DELETE and both new gates
+present in the function bodies; `pin_participant_joined_at` correctly INVOKER,
+not DEFINER. Advisors unchanged and none of the three appear among the 34
+signed-in-executable DEFINER functions.
+
+**The migration reconciles nobody on apply, by design** — it replaces two
+functions and recomputes no rows. So the new rules bound immediately for all
+*new* activity (any join, leave or review fires `trg_participant_stats`), while
+the one pre-existing stale badge survived the apply and waits for the nightly
+`recompute_user_stats` cron (jobid 1, `5 0 * * *` UTC — next run 2026-09-10
+00:05). Confirmed still present at 07:49 UTC with its original `earned_at` of
+2026-06-20. Worth remembering as a general shape: **replacing a function does
+not restate the data it produced.**
+
+**Not fixed here** (pre-existing, wider than gamification): that same INSERT
+policy also lets a client write `status = 'confirmed'` directly, bypassing the
+capacity and waitlist logic in `join_trek_and_chat`. And the unused
+`user_completed_treks` view still carries the old bare `batch_date <
+current_date` definition — nothing reads it, but it will disagree with the
+functions if something starts.
+
+## Leaving a trek did not remove you from the group chat  ·  2026-09-09
+
+**Applied and verified live 2026-09-09 07:30:49+00** —
+[`0019_bind-the-chat-seat-to-the-trek-booking.sql`](supabase/migrations/0019_bind-the-chat-seat-to-the-trek-booking.sql).
+
+Leaving was two unrelated deletes issued by the browser, with nothing in the
+database tying them together: send only the `trek_participants` delete (a plain
+PostgREST call the `"Users can leave treks"` policy permits) and the chat seat
+survived, so the leaver kept reading a group they had publicly quit. The same
+state also arrived by accident whenever the chat delete failed, because the
+client logged it and removed the booking anyway. A trigger,
+`leave_chat_on_trek_leave()`, now drops the seat in the same transaction; the
+mirror — dropping the seat while still booked, which permanently locked a
+participant out of their own trek's chat — is closed by a narrowed DELETE
+policy. Full write-up in [§2](#leaving-a-trek-now-takes-the-chat-seat-with-it-2026-09-09).
+
+## Anyone holding a ticket could review, including for a trip that had not happened  ·  2026-09-09
+
+**Applied and verified live 2026-09-09 07:09:15+00** —
+[`0018_gate-reviews-on-a-finished-confirmed-booking.sql`](supabase/migrations/0018_gate-reviews-on-a-finished-confirmed-booking.sql).
+Both rewritten policies read back from `pg_policy` matching the migration text.
+Before the fix, `pg_policy` confirmed production carried the identical unguarded
+`with check` as `schema.sql`, so this was live behaviour and not a file-only
+defect.
+
+**The gate asked one question and needed three.** NEW-3's `with check` asks only
+whether the caller holds a `trek_participants` row on some batch of the trek. It
+never asks whether that booking was honoured, and it never asks whether the trip
+has happened:
+
+- **A `waitlisted` booker can review.** Waitlisted means the batch was full and
+  the seat is promoted FIFO by `promote_waitlist_on_leave()` only if someone
+  leaves. Until that runs they did not go — and they could still post five stars.
+- **A future booking can be reviewed the same afternoon.** Book a departure next
+  March, review it in September. This is the cheap version of rating
+  manipulation: one booking buys one review on any trek in the catalogue, with
+  no requirement to ever show up. `get_trek_avg_rating()` and `search_treks()`
+  both average `trek_reviews.rating` live, so it moves the number on the cards
+  and the `rating` sort immediately.
+
+**Two things that look like adjacent holes are not.** Double-reviews are blocked
+— by the `UNIQUE (trek_id, user_id)` constraint, not by the policy, which is
+worth stating because the policy is where a reader looks. And "cancelled batch"
+is not a case to handle: `trek_batches` has no status column and a batch with
+bookings cannot be deleted (`batch_has_participants`), so a finished date is the
+only end-of-trip signal the schema carries.
+
+**`duration_hours` is hours, not days, and that decides the rule.** A plain
+`batch_date < current_date` matches the phrase "the day after" but opens reviews
+mid-trip for multi-day treks: **5 of 14 live treks exceed 24 hours, the longest
+at 35.** The gate instead computes the last day as
+`batch_date + (ceil(duration_hours / 24) - 1)` and requires `< current_date`, so
+a 35-hour trek departing the 1st is reviewable from the 3rd, and a day-trek is
+reviewable from the day after — collapsing to exactly `batch_date <
+current_date` for anything null, zero or under 24h. The cost accepted knowingly:
+`duration_hours` is company-editable, so a company can shorten it to unlock
+reviews a day early. It cannot unlock them *before* the departure date, which is
+the abuse that mattered.
+
+**The UPDATE policy had to be rewritten too, or the INSERT gate is decorative.**
+Its `with check` pinned only `user_id`, leaving `trek_id` rewritable: post a
+legitimate review on a finished trek, then `PATCH` it onto a trek departing next
+year. Same shape as the `trek_participants` `batch_id` hole the M-update fix
+closed, and the same reason it cannot be fixed by pinning the column — a
+`with check` cannot see the OLD row, so the whole gate is restated. The unique
+constraint blocks only a move onto a trek the author already reviewed.
+
+**Joining `public.treks` costs no visibility.** RLS applies inside a policy's
+subqueries, so the new join is a new way to fail. It isn't one here:
+`trek_batches`' SELECT policy is already `is_trek_visible(trek_id)` — the same
+predicate `treks`' own SELECT applies — so any trek hidden from the reviewer
+already failed the pre-existing `trek_batches` join. No `SECURITY DEFINER`
+helper, and no new EXECUTE grant to audit.
+
+**Coverage:** [tests/db/review-gate.test.ts](tests/db/review-gate.test.ts), 10
+tests, closing the §1.4 gap that had been open since 2026-08-14. Each case
+reshapes Ridge Walk's one batch inside its own rolled-back transaction rather
+than adding fixtures, so the date under test is visible in the test. Both
+boundaries are pinned — departure day denied, next day allowed — because a gate
+that denies everything passes every negative test.
+
+**Verified against live data, not just `pg_policy`.** Evaluating the new
+predicate over every real booking: 7 confirmed bookings on finished treks
+resolve `true`, and the 2 confirmed bookings on "Coastal Hike Expedition aaa"
+(departing 2026-09-30) resolve `false` — those two people could have posted a
+review three weeks before the trip and now cannot. The duration arm is load-
+bearing on real rows too: "Desert Sands Trek" is 28h, so its 2026-08-31
+departure ends 2026-09-01 rather than the same day.
+
+⚠️ **Both pre-existing reviews are unearned, and RLS does not reach them.**
+`94918b6e…` (4★, Triund Trek, 2025-12-26) and `46f93923…` (3★, River Valley
+Trek, 2026-06-05) were written by users holding **no booking on the trek they
+reviewed** — they fail the *old* NEW-3 gate, never mind `0018`, so they predate
+it or were inserted out-of-band. A policy gates writes, not rows already
+committed, so both are still live and still the sole input to
+`get_trek_avg_rating()` for their treks (River Valley 3.0, Triund 4.0 — one
+review each). **Left in place deliberately, pending a decision**: they look like
+seed/demo data, and deleting rows is not something a migration should do on a
+guess.
+
+⚠️ **The review UI cannot exercise any of this.** `src/app/(trekker)/review/page.tsx`
+is a mockup: hardcoded `pastReviews`, a hardcoded 4.5 average, and a
+`ReviewForm` whose `onSubmit` is an optional prop that page never passes, so
+submitting toasts "Review submitted successfully!" and writes nothing. Nothing
+in `src/` inserts into `trek_reviews` — the only read is `getTrekReviews()` in
+`src/lib/server-queries.ts`. **RLS is therefore the whole enforcement surface,
+and the §2 Core row marking "Reviews (submit + showcase)" ✅ overstates it.**
+
+## The two range rules 0009 missed, and the field with nowhere to land  ·  2026-09-07
+
+Found by re-checking the `CODE_REVIEW.md` §2 Zod↔DB table against live
+`pg_constraint` rather than against the files. **All seven findings in that
+table are closed and live** — `conversation_messages.message` ≤ 2000 (the "key
+gap" it names), `estimated_cost >= 0`, both `max_participants > 0`, `full_name`
+≤ 100, `bio` ≤ 500, and the phone columns bounded and formatted by `0011`/`0013`.
+The two things
+[`0017_trek-range-checks-and-emergency-relationship-column.sql`](supabase/migrations/0017_trek-range-checks-and-emergency-relationship-column.sql)
+closes were never *in* that table, which is why nothing had been chasing them.
+**Applied and verified live 2026-09-07 14:35:04+00** — all three constraints
+read back from `pg_constraint`, all `convalidated`, matching the migration text;
+the new column is `text`, nullable, `attacl` null, with `authenticated` holding
+SELECT and UPDATE through the table grant as predicted below.
+
+⚠️ **`0017` was applied without `0016`, so the ledger reads `0001`–`0015`,
+`0017`** — the first version gap here. Harmless (`0016` only revokes EXECUTE and
+nothing in `0017` touches it) but worth knowing before the next reader treats a
+gap as a failed apply.
+
+**`treks.distance_km` / `duration_hours` had no range rule.** `trekFormSchema`
+builds Distance, Duration and Cost from one helper —
+`optionalNumber()`, `… Number(v) >= 0 …` — so all three carry the same rule, and
+`0009` mirrored it for Cost alone. There is no reasoning behind the split to
+preserve: unlike `treks.plan` and `treks.rating`, which `0011` lists as
+deliberately skipped, these two appear in no migration, no finding list and no
+doc, and `0011` was text-only so it did not sweep them up. Same shape as the
+`estimated_cost` case — a caller who skips the form writes a trek that is −5 km
+long and takes −12 hours, and every consumer that formats or sums those numbers
+renders it. `>= 0` and not `> 0`, matching Zod and matching `estimated_cost`:
+zero is a real answer for both, and NULL stays the unset value a blank field
+writes.
+
+**`profiles.emergency_contact_relationship` did not exist.** `0011` recorded
+this while mapping the same columns and left it, correctly, as a client bug with
+no column to constrain: the form asks who the emergency contact is,
+`profileUpdateSchema` validates the answer at 60 chars, and
+[`profile/edit/page.tsx`](src/app/(trekker)/profile/edit/page.tsx) built an
+`updates` object with `emergency_contact` and `emergency_no` and no third key.
+The loader compensated with a hardcoded `relationship: ''`, so the field also
+read back empty — a user who filled it in twice watched it vanish twice. An
+emergency contact whose relationship is unknown is worth less than one that
+stores it, so this closes by adding the column and writing it, not by deleting
+the input. 60 is `optionalText(60)`, the schema's existing number; no format
+rule, since "Mother" / "Brother-in-law" / "Team lead" is the whole domain.
+
+No grant needed — `profiles` carries table-wide `arwdDxtm` for `anon`,
+`authenticated` and `service_role` with no column ACLs, so the new column
+inherits the table's privileges and RLS stays the only gate. That is a real
+difference from `companies`, where `0001`'s 12-column allowlist means a new
+column would have needed an explicit one; checked over the read-only MCP before
+writing.
+
+Live data checked first: 14 treks, 0 with a negative `distance_km` or
+`duration_hours` (widest 55 km / 35 h), and the new column starts NULL
+everywhere. No backfill, no `NOT VALID` staging. Nine cases added to
+`tests/db/input-constraints.test.ts` (67 in that file now); 238 tests green,
+`npm run build` exit 0, lint 0 errors.
 
 ## The companies table gets the caps 0009 and 0011 skipped  ·  2026-09-05
 
@@ -1713,14 +2819,19 @@ added to `tests/db/input-constraints.test.ts` and two to
 
 ## The four trigger functions `authenticated` could still call  ·  2026-09-05
 
+**Applied and verified live 2026-09-09 12:56:20+00** —
+[`0016_revoke-authenticated-execute-on-trigger-functions.sql`](supabase/migrations/0016_revoke-authenticated-execute-on-trigger-functions.sql).
+All four functions now read EXECUTE false for `anon`, `authenticated` and
+`public`, and all four triggers are still enabled (`tgenabled='O'`).
+
 Found by re-running the Supabase security advisors after `0014`/`0015` landed.
 Under `authenticated_security_definer_function_executable` — 34 findings, most
 of them the intended RPC surface — sat `enforce_join_rate_limit`,
 `enforce_message_rate_limit`, `enforce_storage_rate_limit` and
 `enforce_trek_email_rate_limit`, which are trigger functions and not an API.
 
-**It is not drift.** `pg_proc` on the live database reads
-`authenticated=X/postgres` on all four, and `schema.sql` says the same thing —
+**It was not drift.** `pg_proc` on the live database read
+`authenticated=X/postgres` on all four, and `schema.sql` said the same thing —
 their revokes were written `from public, anon` where every other trigger
 function in the schema names all three roles:
 
@@ -1841,8 +2952,9 @@ against no longer existed.
   `x-nonce` and sets `nonce` on the tag. `script-src` covers
   `application/ld+json` like any other script element.
 
-`style-src 'unsafe-inline'` stays: Emotion/MUI inject `<style>` at runtime and
-Framer Motion writes `style` attributes, and no nonce can cover an attribute.
+`style-src 'unsafe-inline'` stays: Framer Motion writes `style` attributes, and
+no nonce can cover an attribute. (This entry originally also blamed Emotion/MUI,
+which had been gone since 2026-06-20 — corrected 2026-09-19.)
 
 **Verified before believing it.** `CSP_ENFORCE=1 next start`, then: every
 `<script>` tag on `/`, `/about`, `/auth/login`, `/explore` carries the header's

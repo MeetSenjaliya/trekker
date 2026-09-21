@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/client';
+import { logError } from '@/lib/log';
 
 export type CompanyStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 export type CompanyRole = 'owner' | 'admin' | 'staff';
@@ -77,7 +78,7 @@ export async function applyForCompany(
         });
 
         if (error) {
-            console.error('Error applying for company:', error);
+            logError('Error applying for company:', error);
             const message = KNOWN_APPLY_ERRORS.includes(error.message)
                 ? error.message
                 : 'Failed to submit your application. Please try again.';
@@ -90,7 +91,7 @@ export async function applyForCompany(
             companyId: data?.company_id,
         };
     } catch (error: unknown) {
-        console.error('Unexpected error applying for company:', error);
+        logError('Unexpected error applying for company:', error);
         return {
             success: false,
             message: 'Unexpected error submitting your application. Please try again.',
@@ -123,7 +124,7 @@ export async function getMyCompanies(): Promise<CompanyMembership[]> {
         .eq('user_id', user.id);
 
     if (error) {
-        console.error('Error loading company memberships:', error);
+        logError('Error loading company memberships:', error);
         throw new Error('Failed to load your companies. Please try again.');
     }
 
@@ -147,7 +148,7 @@ export async function getCompany(slug: string): Promise<Company | null> {
         .maybeSingle();
 
     if (error) {
-        console.error('Error loading company:', error);
+        logError('Error loading company:', error);
         throw new Error('Failed to load company. Please try again.');
     }
 
@@ -168,7 +169,7 @@ export async function getMyCompanyById(companyId: string): Promise<Company | nul
         .maybeSingle();
 
     if (error) {
-        console.error('Error loading company:', error);
+        logError('Error loading company:', error);
         throw new Error('Failed to load company. Please try again.');
     }
 
@@ -198,7 +199,7 @@ export async function getCompanyOverview(companyId: string): Promise<CompanyOver
         .eq('company_id', companyId);
 
     if (error) {
-        console.error('Error loading overview:', error);
+        logError('Error loading overview:', error);
         throw new Error('Failed to load overview. Please try again.');
     }
 
@@ -219,7 +220,7 @@ export async function getCompanyOverview(companyId: string): Promise<CompanyOver
             .in('trek_id', ids)
             .gte('batch_date', today);
         if (bErr) {
-            console.error('Error counting upcoming batches:', bErr);
+            logError('Error counting upcoming batches:', bErr);
             throw new Error('Failed to load overview. Please try again.');
         }
         upcomingBatches = count ?? 0;
@@ -312,7 +313,7 @@ export async function getCompanyTreks(
 
     const { data, error } = await query;
     if (error) {
-        console.error('Error loading company treks:', error);
+        logError('Error loading company treks:', error);
         throw new Error('Failed to load treks. Please try again.');
     }
     return (data as CompanyTrek[]) ?? [];
@@ -329,7 +330,7 @@ export async function getTrek(trekId: string): Promise<EditableTrek | null> {
         .maybeSingle();
 
     if (error) {
-        console.error('Error loading trek:', error);
+        logError('Error loading trek:', error);
         throw new Error('Failed to load trek. Please try again.');
     }
     return (data as EditableTrek | null) ?? null;
@@ -348,7 +349,7 @@ export async function createTrek(
         .single();
 
     if (error) {
-        console.error('Error creating trek:', error);
+        logError('Error creating trek:', error);
         return { success: false, message: 'Failed to create trek. Please try again.' };
     }
     return { success: true, message: 'Trek created.', trekId: data.id };
@@ -366,7 +367,7 @@ export async function updateTrek(
         .eq('id', trekId)
         .select('id');
     if (error) {
-        console.error('Error updating trek:', error);
+        logError('Error updating trek:', error);
         return { success: false, message: 'Failed to save changes. Please try again.' };
     }
     if (!data || data.length === 0) {
@@ -388,7 +389,7 @@ export async function setTrekActive(
         .eq('id', trekId)
         .select('id');
     if (error) {
-        console.error('Error updating trek status:', error);
+        logError('Error updating trek status:', error);
         return { success: false, message: 'Failed to update trek. Please try again.' };
     }
     if (!data || data.length === 0) {
@@ -422,7 +423,7 @@ export async function getTrekBatches(trekId: string): Promise<TrekBatch[]> {
         .order('batch_date', { ascending: true });
 
     if (error) {
-        console.error('Error loading batches:', error);
+        logError('Error loading batches:', error);
         throw new Error('Failed to load departures. Please try again.');
     }
 
@@ -433,7 +434,7 @@ export async function getTrekBatches(trekId: string): Promise<TrekBatch[]> {
         p_trek_id: trekId,
     });
     if (cErr) {
-        console.error('Error counting participants:', cErr);
+        logError('Error counting participants:', cErr);
         throw new Error('Failed to load departures. Please try again.');
     }
 
@@ -459,7 +460,7 @@ export async function createBatch(
         .insert({ trek_id: trekId, batch_date: input.batchDate, max_participants: input.maxParticipants });
 
     if (error) {
-        console.error('Error creating batch:', error);
+        logError('Error creating batch:', error);
         if (error.code === '23505') {
             return { success: false, message: 'A departure on that date already exists.' };
         }
@@ -481,7 +482,7 @@ export async function deleteBatch(batchId: string): Promise<{ success: boolean; 
 
     const { data, error } = await supabase.from('trek_batches').delete().eq('id', batchId).select('id');
     if (error) {
-        console.error('Error deleting batch:', error.code, error.message);
+        logError('Error deleting batch:', error);
         if (error.code === '23503') {
             return { success: false, message: blockedMessage };
         }
@@ -513,7 +514,7 @@ export async function getBatchParticipants(batchId: string): Promise<BatchPartic
 
     const { data, error } = await supabase.rpc('get_company_batch_participants', { p_batch_id: batchId });
     if (error) {
-        console.error('Error loading participants:', error);
+        logError('Error loading participants:', error);
         throw new Error('Failed to load participants. Please try again.');
     }
     return (data ?? []) as BatchParticipant[];
@@ -539,7 +540,7 @@ export async function getBatchAnnouncements(batchId: string): Promise<BatchAnnou
 
     const { data, error } = await supabase.rpc('get_batch_announcements', { p_batch_id: batchId });
     if (error) {
-        console.error('Error loading announcements:', error);
+        logError('Error loading announcements:', error);
         throw new Error('Failed to load announcements. Please try again.');
     }
     return (data ?? []) as BatchAnnouncement[];
@@ -563,7 +564,7 @@ export async function postBatchAnnouncement(
     });
 
     if (error) {
-        console.error('Error posting announcement:', error);
+        logError('Error posting announcement:', error);
         return {
             success: false,
             message: error.code === 'P0001'
@@ -612,7 +613,7 @@ export async function updateCompany(
         .eq('id', companyId)
         .select('id');
     if (error) {
-        console.error('Error updating company:', error);
+        logError('Error updating company:', error);
         return { success: false, message: 'Failed to save changes. Please try again.' };
     }
     if (!data || data.length === 0) {
@@ -642,7 +643,7 @@ export async function getCompanyMembers(companyId: string): Promise<CompanyMembe
 
     const { data, error } = await supabase.rpc('get_company_members', { p_company_id: companyId });
     if (error) {
-        console.error('Error loading company members:', error);
+        logError('Error loading company members:', error);
         throw new Error('Failed to load your team. Please try again.');
     }
     return (data ?? []) as CompanyMember[];
@@ -671,7 +672,7 @@ export async function inviteMember(
     });
 
     if (error) {
-        console.error('Error inviting member:', error);
+        logError('Error inviting member:', error);
         const message = error.message === NOT_ADMIN_ERROR
             ? error.message
             : 'Failed to send the invite. Please try again.';
@@ -719,7 +720,7 @@ export async function listCompanyInvites(companyId: string): Promise<CompanyInvi
         .order('created_at', { ascending: false });
 
     if (error) {
-        console.error('Error loading company invites:', error);
+        logError('Error loading company invites:', error);
         throw new Error('Failed to load pending invites. Please try again.');
     }
     return (data ?? []) as CompanyInvite[];
@@ -739,15 +740,14 @@ const KNOWN_INVITE_ERRORS = [
 
 // Only the unrecognised errors are logged: the known ones are ordinary outcomes
 // the user is about to be told about, and console.error turns each into a red
-// Console Error panel in dev. The message and code are logged rather than the
-// error object, which the Next dev overlay renders as `{}`.
+// Console Error panel in dev.
 export function inviteErrorMessage(
     action: string,
     error: { message: string; code?: string },
     fallback: string
 ): string {
     if (KNOWN_INVITE_ERRORS.includes(error.message)) return error.message;
-    console.error(`Error ${action} invite:`, error.code, error.message);
+    logError(`Error ${action} invite:`, error);
     return fallback;
 }
 
@@ -784,7 +784,7 @@ export async function getMyInvites(): Promise<MyInvite[]> {
 
     const { data, error } = await supabase.rpc('get_my_invites');
     if (error) {
-        console.error('Error loading invitations:', error);
+        logError('Error loading invitations:', error);
         throw new Error('Failed to load your invitations. Please try again.');
     }
     return (data ?? []) as MyInvite[];
@@ -839,7 +839,7 @@ export async function updateMemberRole(
         .select('id');
 
     if (error) {
-        console.error('Error updating member role:', error);
+        logError('Error updating member role:', error);
         return { success: false, message: 'Failed to update role. Please try again.' };
     }
     if (!data || data.length === 0) {
@@ -860,7 +860,7 @@ export async function removeMember(
         .select('id');
 
     if (error) {
-        console.error('Error removing member:', error);
+        logError('Error removing member:', error);
         return { success: false, message: 'Failed to remove member. Please try again.' };
     }
     if (!data || data.length === 0) {
@@ -901,7 +901,7 @@ export async function isPlatformAdmin(): Promise<boolean> {
 
     const { data, error } = await supabase.rpc('is_platform_admin');
     if (error) {
-        console.error('Error checking platform admin:', error);
+        logError('Error checking platform admin:', error);
         return false;
     }
     return data === true;
@@ -918,7 +918,7 @@ export async function isTrekker(): Promise<boolean> {
 
     const { data, error } = await supabase.rpc('is_trekker');
     if (error) {
-        console.error('Error checking account type:', error);
+        logError('Error checking account type:', error);
         return false;
     }
     return data === true;
@@ -947,7 +947,7 @@ export async function getMyAccountType(): Promise<AccountType | null> {
         .maybeSingle();
 
     if (error) {
-        console.error('Error loading account type:', error);
+        logError('Error loading account type:', error);
         return null;
     }
     return (data?.account_type as AccountType | undefined) ?? null;
@@ -977,7 +977,7 @@ export async function getAdminOverview(): Promise<AdminOverview> {
 
     for (const res of [companies, pending, treks, users]) {
         if (res.error) {
-            console.error('Error loading admin overview:', res.error);
+            logError('Error loading admin overview:', res.error);
             throw new Error('Failed to load overview. Please try again.');
         }
     }
@@ -996,7 +996,7 @@ export async function getAllCompanies(status: CompanyStatusFilter): Promise<Admi
 
     const { data, error } = await supabase.rpc('admin_list_companies', { p_status: status });
     if (error) {
-        console.error('Error loading companies:', error);
+        logError('Error loading companies:', error);
         throw new Error('Failed to load companies. Please try again.');
     }
     return (data as AdminCompany[]) ?? [];
@@ -1009,7 +1009,7 @@ export async function getAdminCompany(companyId: string): Promise<AdminCompany |
     const { data, error } = await supabase.rpc('admin_get_company', { p_company_id: companyId });
 
     if (error) {
-        console.error('Error loading company:', error);
+        logError('Error loading company:', error);
         throw new Error('Failed to load company. Please try again.');
     }
     const rows = (data as AdminCompany[]) ?? [];
@@ -1026,7 +1026,7 @@ export async function getAdminCompany(companyId: string): Promise<AdminCompany |
             .select('id, full_name')
             .in('id', ids);
         if (pErr) {
-            console.error('Error loading audit names:', pErr);
+            logError('Error loading audit names:', pErr);
         } else {
             const names = new Map(
                 ((profiles ?? []) as { id: string; full_name: string | null }[]).map((p) => [p.id, p.full_name])
@@ -1046,7 +1046,7 @@ export async function approveCompany(
 
     const { error } = await supabase.rpc('approve_company', { p_company_id: companyId });
     if (error) {
-        console.error('Error approving company:', error);
+        logError('Error approving company:', error);
         return { success: false, message: 'Failed to approve company. Please try again.' };
     }
     return { success: true, message: 'Company approved.' };
@@ -1063,7 +1063,7 @@ export async function rejectCompany(
         p_reason: reason.trim() || null,
     });
     if (error) {
-        console.error('Error rejecting company:', error);
+        logError('Error rejecting company:', error);
         return { success: false, message: 'Failed to reject company. Please try again.' };
     }
     return { success: true, message: 'Company rejected.' };
@@ -1080,7 +1080,7 @@ export async function suspendCompany(
         p_reason: reason.trim() || null,
     });
     if (error) {
-        console.error('Error suspending company:', error);
+        logError('Error suspending company:', error);
         return { success: false, message: 'Failed to suspend company. Please try again.' };
     }
     return { success: true, message: 'Company suspended.' };

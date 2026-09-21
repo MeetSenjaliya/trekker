@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import type { CompanyStatus } from '@/lib/company';
 import DashboardShell from '@/components/admin/DashboardShell';
+import { logError } from '@/lib/log';
 
 interface MembershipStatusRow {
   companies: { status: CompanyStatus } | { status: CompanyStatus }[] | null;
@@ -29,7 +30,7 @@ export default async function DashboardLayout({
     .eq('user_id', user.id);
 
   if (error) {
-    console.error('Error loading company memberships:', error);
+    logError('Error loading company memberships:', error);
     redirect('/');
   }
 

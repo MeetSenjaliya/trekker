@@ -42,9 +42,22 @@ Guidelines to reduce common coding mistakes. Bias toward caution over speed — 
 
 ---
 
+## Communication & Decisions
+
+The user is a beginner/intermediate developer. Give the **direct answer first**, then a short structured explanation. Keep it plain; briefly define any jargon you can't avoid.
+
+- **Small, low-risk decisions:** use engineering judgment and proceed.
+- **Architecture, DB/schema, security, auth, APIs, dependencies, cost, scalability, data migration, major UI/UX:** never decide silently. Lay out *decision → options → simple pros/cons → recommendation and why → long-term impact*, then ask. Don't re-ask what this file already settles.
+- **Hard problems:** before building something complex from scratch, check for a free, lightweight, well-maintained library or an established example. Say when one is worth it and ask before adding a significant dependency or changing architecture.
+- **New project-wide rules:** say *"Consider adding this to CLAUDE.md because it is a project-wide rule/decision"* and give the exact short text.
+
+Always prioritize correctness, simplicity, security, and maintainability.
+
+---
+
 ## Tech Stack
 
-Versions live in `package.json`. Two things it doesn't tell you: styling is **Tailwind-first** — MUI + Emotion and Bootstrap are partial legacy holdovers, don't reach for them in new code; and there is **no custom backend server**. All data access goes through the Supabase publishable key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
+Versions live in `package.json`. Two things it doesn't tell you: styling is **Tailwind only** (MUI, Emotion and Bootstrap were removed — don't reintroduce them); and there is **no custom backend server**. All data access goes through the Supabase publishable key; security is enforced entirely by Postgres RLS and SECURITY DEFINER RPCs.
 
 ---
 
@@ -61,7 +74,7 @@ App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src
 - `supabase/migrations/` — every DB change, append-only. See its `README.md`; `schema.sql` is generated from it.
 
 **Two Supabase client styles coexist:**
-- `src/lib/supabase.ts` — plain singleton, used by most page components
+- `src/lib/supabase.ts` — plain singleton, legacy; now imported only by `opengraph-image.tsx`
 - `src/utils/supabase/*` — `@supabase/ssr` factories, used by middleware and route handlers
 
 **Use the `utils/supabase` factories everywhere.** The singleton keeps its session in localStorage; sign-in writes it to cookies, so the singleton is permanently signed out and its queries run as `anon` — which RLS answers with an empty result, not an error. `src/lib/supabase.ts` survives only for `opengraph-image.tsx` (server-side anon reads) and its exported types. See Known Gotchas in `FEATURES.md`.
@@ -72,7 +85,7 @@ App Router under `src/app/`; reusable UI in `src/components/ui/`, layout in `src
 
 - **TypeScript strict mode is on.** Build fails on type errors (`noEmit: true`). Fix types properly — don't cast to `any` or use `// @ts-ignore`.
 - **Path alias:** always use `@/` for imports from `src/`. Never use relative `../../` paths across feature boundaries.
-- **Supabase queries:** always handle both `.data` and `.error`. Log errors but don't expose Supabase error detail to the UI.
+- **Supabase queries:** always handle both `.data` and `.error`. Log errors with `logError()` from `src/lib/log.ts` — never `console.error(error)` with the raw object, whose `details` can carry the failing row into Sentry — and don't expose Supabase error detail to the UI.
 - **Auth:** derive the acting user from `auth.uid()` server-side (RLS / SECURITY DEFINER RPCs), not from a client-supplied `user_id`.
 - **Join/leave trek:** always go through `joinTrekBatchAndChat()` / `leaveTrek()` in `src/lib/joinTrek.ts` → RPC `join_trek_and_chat`. Never insert into `trek_participants` directly from the client.
 - **Image uploads:** compress with `compressImage()` before uploading. Store under `{uid}/filename` in the relevant bucket. Never store PII in file names.
@@ -87,17 +100,17 @@ Scripts are in `package.json`. `npm test` is Vitest and takes ~1.4s.
 
 **Don't assume a change is safe because `npm test` passes**; assume only that the tested surface still works. The heaviest coverage is `tests/db/**` — **RLS policies, definer RPCs and EXECUTE grants against real Postgres**, plus a check that `schema.sql` still matches the migrations. Read `tests/db/README.md` before adding to those.
 
-**Vitest runs two projects** (`vitest.config.ts`): `unit` (jsdom, `src/**/*.test.{ts,tsx}`) and `db` (node, `tests/db/**/*.test.ts`). The DB project boots PGlite — Postgres 18 compiled to WASM, in-process, no Docker — and replays `supabase/migrations/*.sql` in order, so every run also proves the migrations rebuild a database from nothing. Target it with `npx vitest run --project db`.
+**Vitest runs two projects** (`vitest.config.mts`): `unit` (jsdom, `src/**/*.test.{ts,tsx}`) and `db` (node, `tests/db/**/*.test.ts`). The DB project boots PGlite — Postgres 18 compiled to WASM, in-process, no Docker — and replays `supabase/migrations/*.sql` in order, so every run also proves the migrations rebuild a database from nothing. Target it with `npx vitest run --project db`.
 
 **The DB tests are only as true as `supabase/migrations/`.** They prove the policies *as committed* are sound, not that production matches them — read `supabase_migrations.schema_migrations` over the MCP server for that. Their first run found 20 functions whose live EXECUTE grants the file could not reproduce.
 
-Config is `vitest.config.ts` (jsdom, `vitest.setup.ts`, `@` alias mirrored from tsconfig) and `playwright.config.ts` (chromium only). **Vitest only collects `src/**/*.test.{ts,tsx}` and explicitly excludes `e2e/**`** — a Playwright spec placed under `src/` would be picked up by Vitest and fail on the missing Playwright fixtures. Add unit tests beside the code as `*.test.ts(x)`; add browser specs to `e2e/` as `*.spec.ts`.
+Config is `vitest.config.mts` (jsdom, `vitest.setup.ts`, `@` alias mirrored from tsconfig) and `playwright.config.ts` (chromium only). **Vitest only collects `src/**/*.test.{ts,tsx}` and explicitly excludes `e2e/**`** — a Playwright spec placed under `src/` would be picked up by Vitest and fail on the missing Playwright fixtures. Add unit tests beside the code as `*.test.ts(x)`; add browser specs to `e2e/` as `*.spec.ts`.
 
 `npm run test:e2e` binds port 3000 and reuses an existing server locally (`reuseExistingServer`), so a dev server you already have running will serve the specs — stop it first if you want a clean run.
 
-A stale `.eslintrc.json` is still in the repo turning four rules off — ESLint 9 reads `eslint.config.mjs` and ignores it entirely, so none of that applies; don't trust it. It's queued for deletion in `FEATURES.md` §1.5.
+There is no `.eslintrc.json` — ESLint 9 reads `eslint.config.mjs` only, and it sets no rule overrides (the stale legacy file that turned four rules off was deleted 2026-09-15).
 
-So every rule the `next/core-web-vitals` + `next/typescript` presets ship is live at its default severity — including ones previously documented here as off. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
+So every rule the `next/core-web-vitals` + `next/typescript` presets ship is live at its default severity. Notably `@typescript-eslint/no-explicit-any` is an **error**: a bare `catch (e: any)` fails `npm run lint`. Type the caught value properly (`e instanceof Error ? … : …`) or avoid touching its properties.
 
 `eslint-config-next` 16 ships **native flat config**, so `eslint.config.mjs` imports `eslint-config-next/core-web-vitals` and `/typescript` directly — it no longer wraps them in `FlatCompat`, which throws on the v16 package. That version also turns on two React Compiler rules, both **errors**, both already at zero violations — keep them there:
 
@@ -135,6 +148,14 @@ Before marking any task complete: run `npm run build` and `npm test`. If either 
 **After adding, changing, or completing ANY feature, update `FEATURES.md` in the same change** — set status (✅ / 🟡 / ❌), add evidence (source files, plus the relevant `schema.sql` section for DB-backed features), and bump the "Last updated" date. Do this before marking the task complete.
 
 **Layout:** `FEATURES.md` has two halves. **§1 — To do** (top) is the forward-looking backlog: features to add, partials to finish, remaining engineering/security work, open review follow-ups. **§2 — Done** (bottom) records what's shipped. When work completes, move its row from §1 to §2 (a 🟡 partial lives in both: shipped part in §2, remaining part in §1, linked by follow-up number).
+
+---
+
+## Knowledge Graph (graphify)
+
+`graphify-out/graph.json` indexes every file in this repo, including the docs. **Before reading `FEATURES.md` or `DATABASE.md` in full, run `graphify query "<question>"`** and open only the `file:line` locations it returns — those two files are ~95k tokens together; a query is a few hundred.
+
+The graph is a snapshot. A post-commit hook refreshes it for **code** changes only; after editing `.md` docs, run `graphify --update`.
 
 ---
 

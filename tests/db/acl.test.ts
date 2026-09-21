@@ -77,6 +77,9 @@ describe('EXECUTE grants on SECURITY DEFINER functions', () => {
     // Trigger functions and system-internal helpers legitimately reach nobody:
     // Postgres checks EXECUTE at CREATE TRIGGER time, not at fire time.
     expect(rows.map((r) => r.proname)).toEqual([
+      // 0024's seat trigger: it counts every user's confirmed rows past the
+      // own-row SELECT policy, so it runs as owner and reaches nobody.
+      'assign_participant_status',
       'award_user_achievements',
       // The four rate-limit triggers joined this list in 0016: their revokes
       // named only public and anon, so authenticated kept a grant on a
@@ -86,11 +89,19 @@ describe('EXECUTE grants on SECURITY DEFINER functions', () => {
       'enforce_storage_rate_limit',
       'enforce_trek_email_rate_limit',
       'handle_new_user',
+      // 0019's leave trigger: it deletes the chat seat as owner precisely
+      // because the leaver may not touch conversation_participants directly.
+      'leave_chat_on_trek_leave',
       'notify_trek_participation',
       'promote_waitlist_on_leave',
       'protect_company_admin_fields',
       'protect_profile_account_type',
       'recompute_user_stats',
+      // 0027's auth.sessions trigger: runs as owner because GoTrue's role has
+      // no rights on public.*, and no client may call it.
+      'record_login_event',
+      // 0028's auth.mfa_amr_claims trigger, for the same reason.
+      'record_login_method',
       'trg_recompute_user_stats',
       'update_participants_count',
     ])

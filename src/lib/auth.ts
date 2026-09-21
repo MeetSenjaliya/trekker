@@ -1,5 +1,6 @@
 import { createClient } from '@/utils/supabase/client'
 import { createClient as createSupabaseClient, AuthError, User, Session } from '@supabase/supabase-js'
+import { logError } from '@/lib/log'
 
 export interface SignUpData {
   email: string
@@ -144,11 +145,11 @@ export async function signInAs({ email, password, accountType }: SignInAsData): 
         .select('account_type')
         .eq('id', data.user.id)
         .maybeSingle()
-      if (profileError) console.error('Error checking account type:', profileError)
+      if (profileError) logError('Error checking account type:', profileError)
       allowed = profile?.account_type === 'company'
     } else {
       const { data: trekker, error: trekkerError } = await probe.rpc('is_trekker')
-      if (trekkerError) console.error('Error checking account type:', trekkerError)
+      if (trekkerError) logError('Error checking account type:', trekkerError)
       allowed = trekker === true
     }
 
@@ -224,7 +225,7 @@ export async function getCurrentUser(): Promise<{ user: User | null; session: Se
 
     return { user, session }
   } catch (error) {
-    console.error('Error getting current user:', error)
+    logError('Error getting current user:', error)
     return { user: null, session: null }
   }
 }

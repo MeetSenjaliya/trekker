@@ -350,22 +350,40 @@ from jsdelivr, which `script-src 'self'` blocks, so `compressImage()` now compre
 main thread (`useWebWorker: false`) and `worker-src` is `'none'`. See
 [FEATURES.md](FEATURES.md) §1.5.
 
-### 4.2 🟡 No rate limiting
+### 4.2 ✅ ~~No rate limiting~~ — DONE, in Postgres rather than Redis
 
-- [ ] Once §2.1 exists, add Upstash Redis limits on auth, `apply_for_company`, and chat send
+- [x] ~~Once §2.1 exists, add Upstash Redis limits on auth, `apply_for_company`, and chat send~~
 
-### 4.3 🟡 Raw Supabase errors reach logs
+Superseded. The limits live in the database as `enforce_*` triggers over `rate_events`
+(join, message, storage upload, trek email), plus the 10/hour/recipient cap inside both edge
+functions (EDGE-003) and GoTrue's own auth limits. A Route Handler could not enforce any of
+this — the publishable key lets a client skip the server layer entirely — so §2.1 was never
+the prerequisite. See `FEATURES.md` §2.
 
-- [ ] Audit `console.error(error)` sites — with Sentry wired, DB detail may land in your
+### 4.3 ✅ ~~Raw Supabase errors reach logs~~ — DONE 2026-09-15
+
+- [x] Audit `console.error(error)` sites — with Sentry wired, DB detail may land in your
       error dashboard. `src/lib/company.ts` already models the right pattern (allowlisted
       user-facing messages, generic fallback); apply it consistently.
 
-### 4.4 🟡 Optional advisor cleanup
+Closed two ways. `logError(context, error)` in `src/lib/log.ts` logs only `message` and
+`code` — a `PostgrestError`'s `details` is where Postgres puts the failing row — and all
+79 raw `console.error(…, error)` sites in `src/` now go through it. `scrubConsoleBreadcrumb`
+is wired as `beforeBreadcrumb` on both Sentry inits as the safety net for anything that
+still logs a raw error object. `src/lib/log.test.ts` pins the invariant. See
+`FEATURES.md` §2 (2026-09-15).
 
-- [ ] Revoke `anon` EXECUTE on the company action RPCs (incl. `get_company_members`,
+### 4.4 ✅ ~~Optional advisor cleanup~~ — DONE
+
+- [x] Revoke `anon` EXECUTE on the company action RPCs (incl. `get_company_members`,
       `invite_company_member`) to silence `anon_security_definer_function_executable` WARNs.
       They already fail safely via internal `auth.uid()` / `is_company_*` /
       `is_platform_admin()` checks — this is noise reduction, not a live hole.
+
+Already in `0001_baseline.sql` (§17 revokes). Security advisor re-read live 2026-09-15: the
+only `anon`-executable definer functions left are `is_company_member`, `is_platform_admin`
+and `is_trek_visible` — the load-bearing trio `/explore` needs anonymously, pinned by
+`tests/db/acl.test.ts`. Nothing further to revoke.
 
 ---
 
@@ -384,7 +402,7 @@ the migrations rebuild a database from nothing. Plus 17 on the pure logic in `sr
 [tests/db/README.md](tests/db/README.md) before adding to these.
 
 All five assertions below are covered, and writing them **found two live policy bugs** that
-every prior structural check had missed — see §1.7 and §1.8 in [FEATURES.md](FEATURES.md).
+every prior structural check had missed — see the two `0002` entries (`createTrek()` RETURNING bug / chat policies `to public` → `to authenticated`) in §2 of [FEATURES.md](FEATURES.md).
 `createTrek()` could not publish a trek *for anyone*, platform admins included, because
 `insert … returning` evaluates the SELECT policy against a pre-insert snapshot.
 

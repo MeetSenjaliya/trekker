@@ -10,6 +10,7 @@ import {
   fieldErrors,
 } from '@/lib/schemas';
 import { spectral, hanken } from '@/app/auth/fonts';
+import { logError } from '@/lib/log';
 
 type Mode = 'login' | 'signup' | 'forgot';
 
@@ -241,7 +242,7 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
         return;
       }
     } catch (err) {
-      console.error('Login error:', err);
+      logError('Login error:', err);
       toast.error('An unexpected error occurred. Please try again.');
     }
     setSubmitting(false);
@@ -288,7 +289,7 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
         setTimeout(() => go('login'), 1200);
       }
     } catch (err) {
-      console.error('Signup error:', err);
+      logError('Signup error:', err);
       toast.error('An unexpected error occurred. Please try again.');
     }
     setSubmitting(false);
@@ -307,14 +308,14 @@ export default function AuthPanel({ initialMode = 'login' }: { initialMode?: Mod
       const { resetPassword } = await import('@/lib/auth');
       const { error } = await resetPassword(forgotEmail);
       if (error) {
-        console.error('Password reset error:', error);
+        logError('Password reset error:', error);
         toast.error('Could not send the reset email. Please try again in a moment.');
       } else {
         setForgotSent(true);
         toast.success('Reset link sent — check your email.');
       }
     } catch (err) {
-      console.error('Password reset error:', err);
+      logError('Password reset error:', err);
       toast.error('An unexpected error occurred. Please try again.');
     }
     setSubmitting(false);

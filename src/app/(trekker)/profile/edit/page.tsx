@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { profileUpdateSchema, fieldErrors } from '@/lib/schemas';
 import { compressImage, sanitizeFileName } from '@/utils/imageCompression';
 import { UploadError, uploadErrorMessage } from '@/lib/uploadErrors';
+import { logError } from '@/lib/log';
 
 export default function EditProfilePage() {
   const [supabase] = useState(() => createClient());
@@ -70,7 +71,7 @@ export default function EditProfilePage() {
             favoriteTypes: favorites,
             emergencyContact: {
               name: data.emergency_contact || '',
-              relationship: '', // Assuming relationship is stored or defaults to empty
+              relationship: data.emergency_contact_relationship || '',
               phone: data.emergency_no || ''
             },
             privacy: data.privacy_setting || 'Public'
@@ -78,7 +79,7 @@ export default function EditProfilePage() {
           setAvatarUrl(data.avatar_url);
         }
       } catch (error) {
-        console.error('Error fetching profile:', error);
+        logError('Error fetching profile:', error);
       } finally {
         setLoading(false);
       }
@@ -174,6 +175,7 @@ export default function EditProfilePage() {
         experience_level: formData.experience,
         bio: formData.bio,
         emergency_contact: formData.emergencyContact.name,
+        emergency_contact_relationship: formData.emergencyContact.relationship,
         emergency_no: formData.emergencyContact.phone,
         // privacy_setting: formData.privacy, // Uncomment if schema supports it
         // favorite_trek_types: favoriteTrekTypes, // Uncomment if schema supports it
@@ -193,7 +195,7 @@ export default function EditProfilePage() {
         toast.error(error.message);
         return;
       }
-      console.error('Profile save error:', error);
+      logError('Profile save error:', error);
       // Supabase errors are plain objects, not Error instances — String() on one
       // yields "[object Object]" and hides the actual reason.
       const message =

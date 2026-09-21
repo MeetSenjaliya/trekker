@@ -19,17 +19,15 @@ const REPORT_GROUP = 'csp-endpoint';
 const nextConfig = {
     images: {
         remotePatterns: [
+            // Only public storage: every <Image> src in the app is a DB-stored
+            // storage URL or a storage-hosted default. The unsplash fallbacks
+            // are plain <img> tags, which never touch /_next/image — they are
+            // covered by CSP img-src, a different control.
             {
                 protocol: 'https',
                 hostname: 'dtjmyqogeozrzzbdjokr.supabase.co',
                 port: '',
                 pathname: '/storage/v1/object/public/**',
-            },
-            {
-                protocol: 'https',
-                hostname: 'images.unsplash.com',
-                port: '',
-                pathname: '/**',
             },
         ],
     },

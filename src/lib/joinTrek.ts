@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/client';
+import { logError } from '@/lib/log';
 
 export interface JoinTrekParams {
     userId: string;
@@ -37,7 +38,7 @@ export async function joinTrekBatchAndChat(
         });
 
         if (error) {
-            console.error('Error joining trek:', error);
+            logError('Error joining trek:', error);
             return {
                 success: false,
                 message: `Failed to join ${trekTitle}. ${error.message || 'Please try again.'}`
@@ -68,7 +69,7 @@ export async function joinTrekBatchAndChat(
             waitlistPosition
         };
     } catch (error: unknown) {
-        console.error('Unexpected error joining trek:', error);
+        logError('Unexpected error joining trek:', error);
         return {
             success: false,
             message: `Unexpected error joining ${trekTitle}. Please try again.`
@@ -77,76 +78,36 @@ export async function joinTrekBatchAndChat(
 }
 
 /**
- * Shared function to leave a trek batch and automatically remove user from chat
+ * Shared function to leave a trek batch. Removal from the batch chat rides along
+ * in the same transaction: the trek_participants_chat_leave trigger (migration
+ * 0019) deletes the matching conversation_participants row, so the booking and
+ * the chat seat cannot come apart.
  * @param userId - User ID
  * @param batchId - Trek Batch ID
- * @param conversationId - Optional Conversation ID (if known, saves a query)
  * @returns Result object with success status
  */
 export async function leaveTrek(
     userId: string,
-    batchId?: string,
-    conversationId?: string
+    batchId?: string
 ): Promise<{ success: boolean; message: string }> {
     const supabase = createClient();
 
     try {
         if (!userId) throw new Error("User ID is required");
+        if (!batchId) throw new Error("Batch ID is required to leave a trek");
 
-        // 1. If conversationId is missing but batchId is present, try to find it
-        // This is important because removing from chat is a separate table operation
-        let targetConversationId = conversationId;
+        const { error } = await supabase
+            .from('trek_participants')
+            .delete()
+            .eq('batch_id', batchId)
+            .eq('user_id', userId);
 
-        if (!targetConversationId && batchId) {
-            const { data: convData } = await supabase
-                .from('conversations')
-                .select('id')
-                .eq('batch_id', batchId)
-                .single();
-            if (convData) {
-                targetConversationId = convData.id;
-            }
-        }
-
-        // 2. Remove from conversation_participants if we have a conversation ID
-        if (targetConversationId) {
-            const { error: convError } = await supabase
-                .from('conversation_participants')
-                .delete()
-                .eq('conversation_id', targetConversationId)
-                .eq('user_id', userId);
-
-            if (convError) {
-                console.error('Error leaving conversation:', convError);
-                // We continue to try removing from trek participants even if chat fails
-                // But ideally this should be a transaction if possible, or we warn.
-            }
-        }
-
-        // 3. Remove from trek_participants (if batch_id exists)
-        // Note: Sometimes we might just have conversationId (from messages page) and need to find batchId?
-        // But for safe deletion, usually we want batchId.
-        // If batchId is provided, delete from trek_participants
-        if (batchId) {
-            const { error: trekError } = await supabase
-                .from('trek_participants')
-                .delete()
-                .eq('batch_id', batchId)
-                .eq('user_id', userId);
-
-            if (trekError) {
-                console.error('Error leaving trek participant:', trekError);
-                throw trekError;
-            }
-        } else if (!targetConversationId) {
-            // If we have neither batchId nor conversationId resolved, we can't do anything
-            throw new Error("Insufficient information to leave trek (missing batchId and conversationId)");
-        }
+        if (error) throw error;
 
         return { success: true, message: "Successfully left the trek." };
 
     } catch (error: unknown) {
-        console.error('Unexpected error leaving trek:', error);
+        logError('Unexpected error leaving trek:', error);
         const message = error instanceof Error ? error.message : String(error);
         return { success: false, message: "Failed to leave trek. " + message };
     }

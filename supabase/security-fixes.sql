@@ -383,14 +383,23 @@ revoke all on function public.recompute_user_stats(uuid) from public, anon, auth
 -- LEAKED-PASSWORD (2026-06-17): leaked-password protection + Postgres
 -- upgrade are both Pro-plan only on this project, so neither is applied
 -- on the DB/Auth side.
+--   CORRECTION 2026-09-14: only the HIBP toggle (#2) is Pro-only. The
+--   Postgres upgrade (#3) never was -- the Upgrading guide offers in-place
+--   pg_upgrade to every plan -- so it is an open dashboard action, tracked
+--   in FEATURES.md §1.0 #2, not something acknowledged.
 --   #2 auth_leaked_password_protection: replaced in app code by
 --      isPasswordPwned() in src/lib/auth.ts (HaveIBeenPwned range API,
 --      k-anonymity; wired into signUp + updatePassword; fails open on
 --      HIBP outage). The Auth advisor will still flag this since it only
 --      checks the Pro toggle, not app-level enforcement.
---   #3 vulnerable_postgres_version (17.4.1.069): manual upgrade is Pro
---      only; acknowledged on free plan (Supabase patches free-tier infra
---      on their own schedule).
+--      DECIDED 2026-09-15: accepted as the control, no plan upgrade. The
+--      bypass (direct POST /auth/v1/signup) only weakens the caller's own
+--      account. The free-plan "Minimum password length" setting is the
+--      one that binds -- set to 8, verified live 2026-09-15.
+--   #3 vulnerable_postgres_version (17.4.1.069): UPGRADED 2026-09-15 from
+--      the dashboard (Project Settings -> Infrastructure -> Upgrade project).
+--      Was never Pro-only; the line that said so here was wrong. Confirm the
+--      WARN is gone at the next advisor read.
 --   #1 security_definer_view (public_profiles): intentional, see
 --      DATABASE.md / schema.sql. No change. No SQL to run for any of these.
 -- =====================================================================
@@ -1889,4 +1898,423 @@ using (
 -- reachable by no client role gains the four names.
 -- STATUS: NOT YET APPLIED. Ledger reads 0001-0015. After applying, confirm
 -- pg_proc.proacl on all four no longer carries authenticated=X.
+-- ============================================================================
+
+-- ============================================================================
+-- 0019 -- leaving a trek must take the chat seat with it   (2026-09-09)
+-- ============================================================================
+-- FOUND BY: reading leaveTrek() in src/lib/joinTrek.ts against the join path.
+--
+-- Joining is one atomic RPC: join_trek_and_chat() writes the trek_participants
+-- row and, for a 'confirmed' joiner, the conversation_participants row in one
+-- transaction. Leaving was two independent deletes issued by the BROWSER --
+-- chat first, then booking -- with nothing in the database tying them to each
+-- other. The invariant the rest of the schema maintains (confirmed <=> in the
+-- chat; promote_waitlist_on_leave() holds up the other half of it) survived
+-- only as long as the client chose to honour it. Two ways it did not:
+--
+--   1. Send only the second delete. "Users can leave treks" permits a direct
+--      DELETE on trek_participants over PostgREST, so this takes nothing but
+--      the publishable key and a session. The leaver is off the roster and
+--      still in the group chat -- and being off the roster is exactly why
+--      nobody would think to look for them there.
+--   2. Let the first delete fail. The old code logged the error and removed the
+--      booking anyway, arriving at the same state without anyone trying.
+--
+-- The mirror direction was live too, and worse in practice: "Users can leave
+-- conversation" let a user drop their own seat while their booking stayed
+-- 'confirmed', and join_trek_and_chat() returns an existing membership
+-- UNTOUCHED without re-inserting the seat -- so a self-removal locked a paying
+-- participant out of their own trek's chat permanently, with no route back
+-- through the UI.
+--
+-- IMPACT: unauthorised continued read access to conversation_messages for a
+-- batch the reader has publicly quit; and, the other way, a permanent
+-- self-inflicted lockout from a chat the user is still booked on.
+--
+-- FIX: leave_chat_on_trek_leave(), an AFTER DELETE FOR EACH ROW trigger on
+-- trek_participants, deletes the leaver's conversation_participants row in the
+-- same transaction. Plus a narrowed DELETE policy on conversation_participants:
+-- own row AND no 'confirmed' booking on that conversation's batch.
+--
+-- A TRIGGER, NOT A leave_trek_and_chat() RPC: the direct table DELETE in (1)
+-- skips any RPC by construction, so an RPC would only fix the honest path --
+-- the same argument that put the join rate limit in a row trigger rather than
+-- inside join_trek_and_chat() (see 0012/13.3 above). The client was simplified
+-- to a single delete on trek_participants and now has no branch that can
+-- half-succeed.
+--
+-- SECURITY DEFINER on the trigger function is required, not incidental: after
+-- the policy change the leaver is DENIED the conversation_participants delete,
+-- so the seat is released only as a consequence of giving up the booking.
+-- Same shape as promote_waitlist_on_leave(), which inserts into that table past
+-- an INSERT policy admitting service_role only.
+--
+-- SAFE BECAUSE: the delete is scoped to (old.user_id, old.batch_id's
+-- conversation), so it cannot reach another member's seat or another batch.
+-- It is unconditional on old.status only because a 'waitlisted' row holds no
+-- seat -- a no-op there, and it cleans up any row that has drifted. Trigger
+-- name puts it before trek_participants_waitlist_promote ('c' < 'w'); the two
+-- touch different users (the leaver vs their replacement), so the order is
+-- stated rather than relied on, and the promotion test asserts both ran.
+-- The narrowed policy still admits every seat with no confirmed booking behind
+-- it, which is the only kind the app ever asked to delete on its own.
+-- Test: tests/db/leave-binds-chat.test.ts -- 8 cases; 5 fail with the migration
+-- removed. tests/db/chat.test.ts's "lets a member remove themself" encoded the
+-- OLD rule and was rewritten into the two that now hold. 257 tests green.
+-- STATUS: APPLIED AND VERIFIED LIVE 2026-09-09 07:30:49+00. Ledger now reads
+-- 0001-0015, 0017, 0018, 0019 (the 0016 gap is unrelated and still open).
+-- Read back over the read-only MCP server rather than trusted from the file:
+--   * pg_trigger has trek_participants_chat_leave, tgenabled = 'O' (enabled);
+--   * pg_proc has leave_chat_on_trek_leave with prosecdef = true, proconfig
+--     search_path=public,pg_temp, a body byte-identical to the above, and
+--     has_function_privilege false for BOTH anon and authenticated;
+--   * pg_policy's "Users can leave conversation" (polcmd 'd') carries the
+--     `NOT EXISTS` clause, polroles null = PUBLIC as written.
+-- No residue: 9 conversation_participants rows against 9 confirmed
+-- trek_participants, zero seats without a confirmed booking and zero confirmed
+-- bookings without a seat -- the hole was never exploited in production data.
+-- Advisors unchanged; the new function is absent from the 34 entries in
+-- authenticated_security_definer_function_executable, which is the revoke
+-- taking effect. (Those 34 still include the four enforce_* functions, which is
+-- 0016 still being unapplied, not a regression from this change.)
+-- ============================================================================
+
+-- ============================================================================
+-- 0020 -- badges must cost a trek you actually held (2026-09-09)
+-- SQL: supabase/migrations/0020_earn-badges-only-from-treks-actually-held.sql
+-- ============================================================================
+-- WHY: badges were free. Reproduced end to end against the migrations before
+-- writing a line of fix -- joining ONE yesterday-dated 500 km Expert trek
+-- granted trailblazer, first_steps, warming_up, centurion, ultra_explorer and
+-- peak_conqueror in a single statement, and leaving reset user_stats to 0/0
+-- with all six badges still standing. Repeat at will.
+--
+-- Three defects, all three needed closing; fixing any one alone leaves it open:
+--
+--   1. join_trek_and_chat accepts current_date - 1 day (UTC/IST slack) and
+--      every completion metric read `batch_date < current_date`, so a trek was
+--      completed at the instant it was joined. That same predicate banked a
+--      multi-day trek mid-trip -- the defect 0018 fixed for reviews, which
+--      never reached recompute_user_stats/award_user_achievements. The end-date
+--      expression is reused verbatim from 0018 rather than reinvented, so the
+--      two definitions of "the trek is over" cannot drift apart.
+--
+--   2. joined_at was client input, which is why gating on it needed a trigger
+--      first. "Users can join treks" checks only `auth.uid() = user_id and
+--      is_trekker()` and pins no other column; a direct PostgREST insert with
+--      joined_at 400 days back was ACCEPTED (verified in PGlite, not assumed).
+--      Without the pin, part 1's gate is one insert away from worthless.
+--      UPDATE needed no equivalent guard -- the table has no UPDATE policy.
+--
+--   3. award_user_achievements only ever inserted. That made a badge a
+--      high-water mark over metrics the user resets at will by leaving, so the
+--      price of a permanent badge was one join plus one leave. It is also why
+--      a profile could show ultra_explorer next to 0 km: badges and the stats
+--      printed beside them were allowed to disagree.
+--
+-- WHAT CHANGED: a badge is now a pure function of the bookings held right now.
+-- A participation counts once the trek has ENDED and the booking predates its
+-- departure; joined_at is pinned by a BEFORE INSERT trigger; badges that stop
+-- qualifying are deleted. The delete is scoped to the 15 keys the function
+-- owns, so a key written by anything else is never touched.
+--
+-- USER-VISIBLE ON APPLY: this REVOKES badges from anyone currently holding one
+-- they no longer qualify for -- including badges earned honestly and then left.
+-- That is the intended reconciliation and the point of the fix, but it is not a
+-- silent change. MEASURED LIVE over the read-only MCP server before handing the
+-- file over (2026-09-09): exactly ONE row changes across the whole database --
+-- user 655b4188 loses 'explorer', and nothing is newly granted. That badge wants
+-- 5 distinct locations and the user holds 2 confirmed bookings, so it is already
+-- a badge outliving its evidence, which is the bug itself. The DATE half of this
+-- migration revokes nothing in production; only the append-only half bites.
+-- Re-measure if bookings changed since. Expect the first nightly recompute to
+-- reconcile anyone the apply-time state missed.
+--
+-- Swept for the related capacity hole at the same time: ZERO batches carry more
+-- confirmed bookings than max_participants, so the status gap below is real but
+-- unexploited.
+--
+-- NOT ADDRESSED (pre-existing, wider than gamification, FEATURES.md 1.5):
+-- the same INSERT policy also lets a client write status = 'confirmed'
+-- directly, bypassing the capacity/waitlist logic in join_trek_and_chat. And
+-- the unused user_completed_treks view still carries the old bare
+-- `batch_date < current_date` definition; nothing reads it today.
+--
+-- Test: tests/db/badge-farming.test.ts -- 9 cases; 6 fail with the migration
+-- removed, and the 3 that still pass are the positive controls (a booking made
+-- before departure must keep earning). 266 tests green, npm run build clean.
+-- STATUS: APPLIED AND VERIFIED LIVE 2026-09-09 07:48:50.371058+00. Ledger now
+-- reads 0001-0015, 0017, 0018, 0019, 0020 (the 0016 gap is unrelated, still open).
+-- Read back over the read-only MCP server rather than trusted from the file:
+--   * pg_trigger has trek_participants_pin_joined_at, BEFORE INSERT on
+--     trek_participants, tgenabled = 'O' (enabled);
+--   * all three functions carry proconfig search_path=public, pg_temp and
+--     has_function_privilege false for BOTH anon and authenticated;
+--   * award_user_achievements has prosecdef = true and the reconciling DELETE
+--     present in prosrc; recompute_user_stats has prosecdef = true and both new
+--     gates (end-date + joined_at) present; pin_participant_joined_at is
+--     deliberately prosecdef = FALSE -- INVOKER, since it only touches NEW.
+--   * Advisors unchanged. None of the three appear among the 34 entries in
+--     authenticated_security_definer_function_executable, which is the revoke
+--     taking effect. (Those 34 still include the four enforce_* functions --
+--     that is 0016 still unapplied, not a regression from this change.)
+--
+-- CAVEAT, and the thing to check tomorrow: THIS MIGRATION RECONCILED NOBODY.
+-- It replaces two functions and recomputes no rows, so the new rules bound
+-- immediately for all NEW activity (any join/leave/review fires
+-- trg_participant_stats) while existing user_achievements rows were untouched.
+-- The stale 'explorer' badge was confirmed STILL PRESENT at 07:49 UTC with its
+-- original earned_at of 2026-06-20. It reconciles on the nightly cron
+-- (cron.job jobid 1, '5 0 * * *' -> select recompute_user_stats(p.id) from
+-- profiles p), next run 2026-09-10 00:05 UTC. General shape worth remembering:
+-- replacing a function does not restate the data it already produced.
+-- ============================================================================
+
+-- ============================================================================
+-- 0021 -- a frozen company's treks could still be booked (2026-09-09)
+-- SQL: supabase/migrations/0021_refuse-bookings-for-treks-that-left-the-catalogue.sql
+-- ============================================================================
+-- WHY: suspending a company hid its catalogue and stopped there. Phase H
+-- (2026-08-08) froze rejected/suspended tenants out of every write path they
+-- own and recorded one deliberate exception: "every participant-facing flow
+-- (join_trek_and_chat + the waitlist/count triggers are all SECURITY DEFINER,
+-- so no existing booking or chat on a suspended company's trek is touched)".
+-- The intent was to protect bookings people already held. What shipped was NO
+-- company check at all on the join path -- which also left NEW bookings open.
+--
+-- is_trek_visible() drops the treks from every listing and search_treks()
+-- filters on `is_active and status = 'approved'`, so the rows stop being
+-- DISCOVERABLE. join_trek_and_chat() is handed a trek id and re-derives nothing
+-- from it, and a trek id is not a secret: it is the /trek/[id] URL of every page
+-- the company published while approved -- browser history, shared links, saved
+-- favourites. Paste one back after the suspension and the RPC creates the batch,
+-- creates the conversation, writes a CONFIRMED booking and seats the buyer in
+-- the group chat, for a tenant the platform has pulled.
+--
+-- is_company_writable() was never going to catch this. It answers "may this
+-- member edit their own company's rows"; a buyer is not a member and booking is
+-- not a write to the tenant. Nothing had ever asked "may the public still buy
+-- this", so no predicate for it existed.
+--
+-- TWO PATHS, BOTH CLOSED. Fixing only the RPC leaves the hole open one HTTP call
+-- to the side -- the mistake 0019 and 0020 were both written to undo:
+--   1. join_trek_and_chat() -- raises before its first insert, so a refused join
+--      conjures no batch and no conversation for a tenant that cannot sell.
+--   2. the "Users can join treks" INSERT policy -- a direct
+--      POST /rest/v1/trek_participants needs only a batch id and the publishable
+--      key, which ships in the client bundle.
+-- Both call the new is_trek_bookable(), deliberately the same two columns the
+-- public catalogue filters on, so "bookable" cannot drift from "listed". That
+-- also folds in archived treks: is_active = false is the schema's only delete
+-- path for a trek, and a soft-deleted trek that still takes money is the same
+-- bug through the same door.
+--
+-- ALSO CLOSES A SILENT DRIFT. 0001 recorded phase F's "company accounts cannot
+-- join treks" guard at 14.5 as a COMMENT describing an in-place edit rather than
+-- as SQL, so production has carried the guard since 2026-08-06 and a database
+-- rebuilt from supabase/migrations/ has not. 0021 restates the function in full,
+-- gate included, so the live and replayed definitions agree again.
+--
+-- BEHAVIOUR CHANGE FOR EXISTING BOOKERS, stated because it is the only one: the
+-- bookability check sits ahead of the already-a-participant branch, so re-joining
+-- the exact batch you already hold now raises instead of returning the membership
+-- unchanged. The booking, its chat seat and the leave path are untouched, and
+-- every other route into the chat (Messages, the trek page's Chat button) reads
+-- trek_participants directly and never calls this function. Deliberately NOT
+-- gated, same as phase H: promote_waitlist_on_leave() still promotes after a
+-- freeze -- that seat was bought while the company was approved.
+--
+-- NOT ADDRESSED (pre-existing, FEATURES.md 1.5): the same INSERT policy still
+-- lets a client choose status = 'confirmed' directly, bypassing the
+-- capacity/waitlist logic. 0021 adds a bookability arm to that policy and
+-- deliberately does not touch status.
+--
+-- SWEEP: ZERO bookings on treks that are archived or whose company is not
+-- approved -- because there are none of either (4 approved companies, 1 pending,
+-- 0 suspended, 0 rejected, 0 archived treks; read over the read-only MCP server
+-- 2026-09-09). Never exploited, because the moderation action that triggers it
+-- has never been used. Nothing to backfill on apply.
+--
+-- Test: tests/db/booking-gate.test.ts -- 9 cases; 7 fail with the migration
+-- removed, and the 2 that pass either way are the control (an approved company
+-- must still be able to sell). 275 tests green, npm run build clean, npm run
+-- lint 0 errors.
+-- STATUS: WRITTEN AND TESTED, NOT YET APPLIED. This line is not evidence either
+-- way -- check supabase_migrations.schema_migrations for version '0021'.
+-- ============================================================================
+
+-- ============================================================================
+-- 0023 -- search_treks() did as much work per call as the caller asked for (2026-09-14)
+-- SQL: supabase/migrations/0023_bound-the-work-search-treks-will-do-per-call.sql
+-- ============================================================================
+-- WHY: search_treks() is the one RPC anon may call, and 0001 took p_limit and
+-- p_offset at face value -- `limit greatest(p_limit, 0)` stopped negatives and
+-- nothing else. One request with the publishable key and p_limit = 2147483647
+-- returned the whole catalogue, every row carrying the window count, the
+-- per-trek rating average and the next-batch lookup. The cost of that request
+-- was decided by the caller, not the server -- the read-side twin of the
+-- unbounded text columns 0009 capped on the write side.
+--
+-- THE BOUND: `limit least(greatest(p_limit, 0), 100)` and
+-- `offset least(greatest(p_offset, 0), 10000)`. Otherwise 0001's body, verbatim.
+-- 100 is the app's own ceiling already (getStorefrontTreks asks for exactly
+-- that; Explore asks for 6, the home page for 3), so no caller changes and no
+-- legitimate request is refused. 10 000 is over 1 600 Explore pages.
+--
+-- NOT A RATE LIMIT, and does not pretend to be. Each call now costs at most a
+-- known amount; a caller may still make as many as they like. A per-caller
+-- limit on an anon read cannot be built in Postgres -- there is no actor to key
+-- it on -- and belongs at the edge (Supabase platform limits or a WAF in front
+-- of the project host). That is an infrastructure decision, recorded as such in
+-- TEST.md 7.4.6.
+--
+-- Fourteen treks today, so no single call hurts yet. The bound matters because
+-- it fixes the SHAPE of the worst case: the catalogue can grow without the
+-- endpoint's largest legal request growing with it.
+--
+-- Test: tests/db/search-limits.test.ts -- 7 cases on a 131-trek catalogue
+-- seeded and rolled back inside the test, called as anon. 1 of 7 fails with the
+-- migration removed (the p_limit cap). The offset clamp changes the work, not
+-- the answer -- past the catalogue the page is empty either way -- so it is not
+-- observable from a result on a catalogue under 10 000, and the test says so.
+-- STATUS: APPLIED AND VERIFIED LIVE 2026-09-14 06:35:41+00 -- pg_proc body carries
+-- both clamps and not the 0001 limit line; INVOKER, search_path pinned; anon +
+-- authenticated EXECUTE; one overload. p_limit => 2147483647 returns the 14-trek
+-- catalogue with total_count 14; negatives -> 0; huge offset -> 0. No new advisors.
+-- ============================================================================
+
+-- ============================================================================
+-- 0024 -- a client could write status = 'confirmed' on a full departure (2026-09-14)
+-- SQL: supabase/migrations/0024_decide-the-seat-when-the-booking-is-written.sql
+-- ============================================================================
+-- WHY: join_trek_and_chat() decides confirmed-or-waitlisted under a FOR UPDATE
+-- lock on the batch and writes the row. The "Users can join treks" INSERT
+-- policy -- all that stands between POST /rest/v1/trek_participants and the
+-- table -- pins user_id, is_trekker() and (0021) bookability, and says nothing
+-- about status. So the capacity check bound only the clients that chose to
+-- call the RPC: a direct insert with status = 'confirmed' on a full departure
+-- took a seat the RPC would have waitlisted, and one with no status at all took
+-- the same seat by default. Found by 0020 while pinning joined_at, left open
+-- because a guard on status has to agree with the waitlist. Swept 2026-09-09:
+-- no batch over capacity -- open, not exploited.
+--
+-- THE FIX: 0020's shape for joined_at, applied to status. A SECURITY DEFINER
+-- BEFORE INSERT trigger, trek_participants_assign_status ->
+-- assign_participant_status(), locks the batch row, counts confirmed seats and
+-- OVERWRITES new.status: 'waitlisted' if full, 'confirmed' otherwise (NULL
+-- max_participants = uncapped). Every insert path lands the row with the status
+-- the seat count allows.
+--
+-- REWRITE, NOT REFUSE. The honest answer to "the batch is full" is a waitlisted
+-- row -- what the RPC has always returned -- so a bare POST now gets the same.
+-- A WITH CHECK arm could not do this job anyway: Postgres evaluates it on the
+-- row AFTER BEFORE triggers ran, so it would only ever see the trigger's value,
+-- and a seat count under the caller's RLS sees only the caller's own rows
+-- (SELECT is own-row-only), so the count needs definer rights a policy has not.
+--
+-- WRITES WITH NO SESSION ARE LEFT ALONE. auth.uid() is null -> return new. That
+-- is the SQL Editor / seeding / pg_cron branch, the one
+-- protect_profile_account_type() takes for the same writers; it keeps the
+-- Editor usable for a manual repair. A client cannot reach it: the INSERT
+-- policy is `to authenticated` and requires auth.uid() = user_id.
+--
+-- THE RPC READS BACK INSTEAD OF DECIDING. With the trigger authoritative, the
+-- RPC's own count was a second implementation of one rule -- the drift 0022
+-- had to repair between the RPC's queue numbering and the trigger's queue
+-- order. join_trek_and_chat() is restated as 0021's body minus the capacity
+-- block: the insert passes no status, `returning id, status` feeds the
+-- chat-seat decision and the returned status. The batch lock stays; it also
+-- serializes the already-a-participant check. Live body confirmed identical to
+-- 0021 before restating, so nothing is reverted.
+--
+-- NOT DONE: seating a directly-inserted confirmed booker in the batch chat. A
+-- bare POST that lands 'confirmed' with seats free holds a legitimate seat and
+-- no chat seat. The client hurts only itself; leaving still promotes correctly.
+--
+-- Test: tests/db/seat-capacity.test.ts -- 7 cases, every one re-reading the
+-- column (a rewrite makes "the insert failed" the wrong assertion). The
+-- attacker's POST lands 'waitlisted' on a full departure, with or without a
+-- status; 'confirmed' with room, whatever it asked for; the RPC returns what
+-- the trigger wrote and seats the chat on 'confirmed' only; an operator write
+-- keeps its status; a leave still promotes the queued waitlister.
+-- acl.test.ts gains assign_participant_status in its reaches-nobody list.
+-- STATUS: APPLIED AND VERIFIED LIVE 2026-09-14 09:15:46+00 -- pg_trigger carries
+-- trek_participants_assign_status (tgenabled 'O', first BEFORE INSERT in fire
+-- order); assign_participant_status() DEFINER, search_path pinned, no anon or
+-- authenticated EXECUTE; join_trek_and_chat body without v_batch_max, with the
+-- RETURNING read-back and the batch lock, grants unchanged. No new advisors.
+-- The first paste deadlocked (40P01) against a transient session holding
+-- trek_participants while waiting on storage.buckets; the batch rolled back
+-- whole (verified: no ledger row, trigger or function) and the retry landed.
+-- ============================================================================
+
+
+-- ============================================================================
+-- 0027 -- log every sign-in (email, time, IP, device) for platform admins
+-- ============================================================================
+-- SQL: supabase/migrations/0027_log-every-sign-in-for-platform-admins.sql
+--
+-- WHAT IT ADDS. public.login_events, filled by a trigger on auth.sessions.
+-- Supabase records the client IP and user-agent of every sign-in on
+-- auth.sessions and deletes the row on sign-out; auth.audit_log_entries keeps
+-- history but its ip_address is '' on every row and carries no user-agent
+-- (both read live 2026-09-17). So the log has to be ours, and the only moment
+-- to take the copy is the INSERT.
+--
+-- WHY IT IS SAFE TO READ. One SELECT policy, is_platform_admin(), to
+-- authenticated. anon holds no grant at all (refused outright, like
+-- platform_admins). No INSERT/UPDATE/DELETE grant or policy for any client
+-- role: the trigger runs as postgres and is the only writer. email is a
+-- snapshot, because an admin's browser session cannot join to profiles.
+--
+-- WHY IT IS SAFE TO WRITE. record_login_event() is SECURITY DEFINER because
+-- GoTrue writes as supabase_auth_admin, which has no rights on public.*.
+-- EXECUTE is revoked from public, anon and authenticated (acl.test.ts lists
+-- it among the functions that reach nobody). The body is wrapped in
+-- `exception when others then return new`: an escaping error rolls back
+-- GoTrue's INSERT and fails the sign-in for every user until the trigger is
+-- dropped. A lost log row is the cheaper failure by a very wide margin.
+--
+-- RETENTION. IP + user-agent is personal data. pg_cron prune-login-events
+-- deletes rows older than 180 days, hourly. ON DELETE CASCADE from auth.users
+-- covers deleted accounts.
+--
+-- NOT DONE: failed sign-ins (no session row exists to copy; GoTrue's audit
+-- log has no such action) and geolocation (would need an app-side path).
+--
+-- Test: tests/db/login-events.test.ts -- 6 cases including the fail-open one
+-- (table renamed away, session still lands). auth.sessions added to the shim.
+-- STATUS: APPLIED AND VERIFIED LIVE 2026-09-17 10:23:19+00 -- ledger row
+-- present; both triggers on auth.sessions, tgenabled 'O'; function DEFINER,
+-- search_path pinned, no anon/authenticated EXECUTE; authenticated SELECT
+-- only, anon nothing; RLS on, 1 policy; prune-login-events scheduled; 59 of
+-- 59 live sessions backfilled with bare IPs and resolved emails.
+-- ============================================================================
+
+
+-- ============================================================================
+-- 0029 -- apply_for_company() refuses trekker accounts, in the migrations too
+-- ============================================================================
+-- SQL: supabase/migrations/0029_gate-apply-for-company-on-a-company-account.sql
+--
+-- NOT A BEHAVIOUR CHANGE IN PRODUCTION. The live function has raised 'Only
+-- company accounts can apply. Sign up as a trek company instead.' since
+-- phase F (2026-08-06). What drifted was the repo: when phase F was folded
+-- into 0001_baseline.sql the gate survived only as a commented-out block
+-- (§14.7, "see §12.4"), and the §12.4 body it points at never gained it. A
+-- database rebuilt from the migrations -- which is exactly what the PGlite
+-- suite proves against -- therefore let a trekker create a company while
+-- production refused. Found by the 2026-09-18 FEATURES.md audit (E26);
+-- confirmed 2026-09-19 by reading pg_get_functiondef() of the live function
+-- over the read-only MCP server.
+--
+-- The migration restates the whole body so committed = live. Grants are
+-- untouched (create or replace keeps them; live = authenticated yes, anon no,
+-- matching 0001 §17.3).
+--
+-- Test: tests/db/company-application-gate.test.ts -- a trekker is refused
+-- with that message, a company account gets a pending row. Fails against
+-- 0001-0028 alone (checked by removing 0029 and re-running).
+-- STATUS: NOT YET APPLIED -- the ledger row is the only evidence that counts.
 -- ============================================================================

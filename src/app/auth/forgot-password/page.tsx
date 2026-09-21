@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft, Mail } from 'lucide-react';
 import { forgotPasswordSchema, fieldErrors } from '@/lib/schemas';
+import { logError } from '@/lib/log';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -31,13 +32,13 @@ export default function ForgotPasswordPage() {
       const { error } = await resetPassword(email);
 
       if (error) {
-        console.error('Password reset error:', error);
+        logError('Password reset error:', error);
         setError('Could not send the reset email. Please try again in a moment.');
       } else {
         setIsSubmitted(true);
       }
     } catch (error) {
-      console.error('Password reset error:', error);
+      logError('Password reset error:', error);
       setError('An unexpected error occurred. Please try again.');
     }
   };

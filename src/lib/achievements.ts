@@ -1,7 +1,11 @@
 // Achievement catalog — display metadata for the badges awarded server-side by
-// award_user_achievements() (see supabase/migrations/20260619030000_user_achievements.sql).
+// award_user_achievements() (current definition:
+// supabase/migrations/0020_earn-badges-only-from-treks-actually-held.sql).
 // `key` MUST match the keys inserted by that function. Criteria text here is
-// purely descriptive; the real thresholds live in the SQL.
+// purely descriptive; the real thresholds live in the SQL — but the profile page
+// prints it under LOCKED badges, so it is the only unlock rule a user ever sees.
+// Rules table: DATABASE.md → `user_achievements`. Keys + thresholds verified
+// against the live function 2026-09-09; nothing enforces it, so re-check on change.
 
 export interface Achievement {
   key: string;

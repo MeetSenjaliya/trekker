@@ -49,6 +49,34 @@ create table auth.users (
   created_at        timestamptz not null default now()
 );
 
+-- Only the columns 0027's record_login_event() reads. Types copied from the
+-- live table (information_schema, 2026-09-17): refreshed_at really is
+-- `timestamp` WITHOUT time zone, unlike the other two. GoTrue is the only
+-- writer, so no client role gets a grant.
+create table auth.sessions (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  refreshed_at timestamp,
+  user_agent   text,
+  ip           inet
+);
+
+-- Where GoTrue records HOW a session was authenticated ('password', 'otp',
+-- 'magiclink', …), written after the session row in the same transaction.
+-- 0028's on_auth_amr_claim_created reads it. Columns, NOT NULLs, the
+-- (session_id, authentication_method) key and the cascade copied from the live
+-- table (information_schema + pg_constraint, 2026-09-17).
+create table auth.mfa_amr_claims (
+  id                    uuid primary key default gen_random_uuid(),
+  session_id            uuid not null references auth.sessions(id) on delete cascade,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  authentication_method text not null,
+  unique (session_id, authentication_method)
+);
+
 -- Verbatim from Supabase. auth.uid() reads the request-scoped GUC that
 -- PostgREST sets from the verified JWT; tests set the same GUC (see actor.ts),
 -- so policies cannot tell the difference between a test and a real request.

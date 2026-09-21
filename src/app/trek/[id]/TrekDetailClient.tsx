@@ -21,6 +21,7 @@ import { useIsTrekker } from '@/lib/queries';
 import ReviewCard from '@/components/ui/ReviewCard';
 import ItineraryView from '@/components/ui/ItineraryView';
 import type { TrekBatch, TrekDetail, TrekReview } from '@/lib/server-queries';
+import { logError } from '@/lib/log';
 
 // Animation Variants
 const fadeInUp: Variants = {
@@ -191,7 +192,7 @@ export default function TrekDetailClient({
       const conversationId = batch?.conversations?.[0]?.id;
       if (conversationId) router.push(`/messages?conversationId=${conversationId}`);
       else toast.error('Chat not initialized yet.');
-    } catch (e) { console.error(e); }
+    } catch (e) { logError('Error opening chat:', e); }
   };
 
   // Real ratings rollup: average the trek's reviews (already fetched above).

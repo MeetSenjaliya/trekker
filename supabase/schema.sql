@@ -32,6 +32,19 @@
 --   0014_pin-company-website-to-an-http-scheme.sql
 --   0015_cap-the-companies-table.sql
 --   0016_revoke-authenticated-execute-on-trigger-functions.sql
+--   0017_trek-range-checks-and-emergency-relationship-column.sql
+--   0018_gate-reviews-on-a-finished-confirmed-booking.sql
+--   0019_bind-the-chat-seat-to-the-trek-booking.sql
+--   0020_earn-badges-only-from-treks-actually-held.sql
+--   0021_refuse-bookings-for-treks-that-left-the-catalogue.sql
+--   0022_promote-the-waitlist-in-the-order-it-was-shown.sql
+--   0023_bound-the-work-search-treks-will-do-per-call.sql
+--   0024_decide-the-seat-when-the-booking-is-written.sql
+--   0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys.sql
+--   0026_define-completed-in-user-completed-treks-as-0020-does.sql
+--   0027_log-every-sign-in-for-platform-admins.sql
+--   0028_session-end-method-account-type-and-new-device-on-login-events.sql
+--   0029_gate-apply-for-company-on-a-company-account.sql
 -- ============================================================================
 
 -- ##########################################################################
@@ -4710,4 +4723,1985 @@ revoke execute on function public.enforce_trek_email_rate_limit() from authentic
 -- ============================================================================
 insert into supabase_migrations.schema_migrations (version, name)
 values ('0016', 'revoke-authenticated-execute-on-trigger-functions')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0017_trek-range-checks-and-emergency-relationship-column.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0017 — the two range rules 0009 missed, and the field with nowhere to land
+-- ============================================================================
+-- Two unrelated tails of the same audit, both on columns the Zod↔DB table in
+-- `CODE_REVIEW.md` §2 never listed, so nothing has been chasing them.
+--
+-- ---- treks.distance_km / duration_hours -------------------------------------
+-- `0009` wrote the range half of that pass and named three columns:
+-- `estimated_cost >= 0` and `max_participants > 0` on both tables. But
+-- `trekFormSchema` builds Distance, Duration and Cost from one helper —
+--
+--   const optionalNumber = (label: string) => … Number(v) >= 0 …
+--
+-- — so all three carry the same `>= 0` rule, and only Cost got it in the
+-- database. There is no reasoning behind the split to preserve: unlike
+-- `treks.plan` and `treks.rating`, which `0011` lists as deliberately skipped,
+-- these two appear in no migration, no finding list and no doc. They were
+-- missed, and `0011` was text-only so it did not sweep them up.
+--
+-- Same shape as the `estimated_cost` case it mirrors: a caller who skips the
+-- form writes a trek that is -5 km long and takes -12 hours, and every consumer
+-- that formats or sums those numbers renders it.
+--
+-- `>= 0` and not `> 0`, matching Zod and matching `estimated_cost`: zero is a
+-- real answer for both (a viewpoint 0 km from the trailhead, a walk rounded to
+-- under an hour), and NULL is the unset value the form writes for a blank
+-- field — a CHECK passes NULL, so blank stays blank.
+--
+-- ---- profiles.emergency_contact_relationship --------------------------------
+-- `0011` recorded this while mapping the same columns and left it, because it
+-- was a client bug with no column to constrain:
+--
+--   `emergencyContactRelationship` is collected and validated at 60 chars and
+--   then written to no column … There is no column to constrain.
+--
+-- The form asks who the contact is, `profileUpdateSchema` checks the answer,
+-- and `src/app/(trekker)/profile/edit/page.tsx` builds an `updates` object with
+-- `emergency_contact` and `emergency_no` and no third key. The value is parsed
+-- and dropped on every save, and the loader compensates with a hardcoded
+-- `relationship: ''` — so the field also reads back empty, and a user who fills
+-- it in twice sees it vanish twice. An emergency contact whose relationship is
+-- unknown is worth less than one that stores it, which is why this closes by
+-- adding the column rather than by deleting the input.
+--
+-- 60 is `profileUpdateSchema.emergencyContactRelationship`'s existing
+-- `optionalText(60)`, not a new judgement — the same rule the other two
+-- emergency columns follow (`emergency_contact` 100, `emergency_no` 20 + the
+-- `0013` format). No format rule: "Mother", "Brother-in-law" and "Team lead"
+-- are all it collects, and there is no class of value to exclude the way a
+-- phone column has one.
+--
+-- No grant needed. `profiles` carries table-wide `arwdDxtm` for `anon`,
+-- `authenticated` and `service_role` with no column ACLs, so a new column
+-- inherits the table's privileges and RLS stays the only gate — unlike
+-- `companies`, where `0001`'s 12-column allowlist means a new column would need
+-- an explicit grant. Checked over the read-only MCP before writing.
+--
+-- Existing data: 14 treks, 0 with a negative `distance_km` or `duration_hours`
+-- (widest values 55 km and 35 h); the new column starts NULL on every profile.
+-- No backfill, no NOT VALID staging.
+--
+-- `add column if not exists` / `drop constraint if exists` before each `add
+-- constraint`, as in `0009`/`0011`/`0013` — the file has to survive a second
+-- run in the SQL Editor.
+
+-- ---- treks ------------------------------------------------------------------
+alter table public.treks drop constraint if exists treks_distance_km_nonneg;
+alter table public.treks
+  add constraint treks_distance_km_nonneg check (distance_km >= 0);
+
+alter table public.treks drop constraint if exists treks_duration_hours_nonneg;
+alter table public.treks
+  add constraint treks_duration_hours_nonneg check (duration_hours >= 0);
+
+-- ---- profiles ---------------------------------------------------------------
+alter table public.profiles
+  add column if not exists emergency_contact_relationship text;
+
+alter table public.profiles
+  drop constraint if exists profiles_emergency_contact_relationship_len;
+alter table public.profiles
+  add constraint profiles_emergency_contact_relationship_len
+  check (length(emergency_contact_relationship) <= 60);
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0017', 'trek-range-checks-and-emergency-relationship-column')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0018_gate-reviews-on-a-finished-confirmed-booking.sql
+-- ##########################################################################
+
+-- 0018 — a review needs a booking that was confirmed AND a trek that has ended
+--
+-- The join gate from NEW-3 only asked "does this user hold a row on any batch of
+-- this trek?". It never asked whether the booking was honoured or whether the
+-- trip had happened, so two people could review a trek they had not been on:
+--
+--   * a 'waitlisted' participant, who never got a seat; and
+--   * anyone at all, the same afternoon they booked a departure months away —
+--     book March, post one star in September.
+--
+-- Double-reviews were never the policy's doing: the unique constraint
+-- (trek_id, user_id) stops those, and still does. "Cancelled batch" is not
+-- modelled — trek_batches has no status column and a batch with bookings cannot
+-- be deleted — so a finished date is the only end-of-trip signal available.
+--
+-- The trek is over on `batch_date + (whole days spanned - 1)`, and reviews open
+-- the day after that. duration_hours is the only length the schema carries, and
+-- it is hours-not-days: 5 of 14 live treks exceed 24h (max 35h), so a plain
+-- `batch_date < current_date` would open reviews mid-trip for those. A missing,
+-- zero or sub-24h duration spans one day, which collapses to exactly
+-- `batch_date < current_date`.
+--
+-- current_date is UTC here (the cluster runs UTC), so an IST user sees reviews
+-- unlock at 05:30 local on the following day rather than midnight. That errs
+-- late, never early, so it is left alone rather than pinning a timezone the
+-- schema does not otherwise carry.
+--
+-- Joining public.treks costs no visibility: trek_batches' own SELECT policy is
+-- already `is_trek_visible(trek_id)`, the same gate treks' SELECT applies, and
+-- RLS runs inside these subqueries. A trek hidden from the reviewer already
+-- failed the pre-existing trek_batches join.
+
+-- ---- INSERT -----------------------------------------------------------------
+drop policy if exists "Users can review treks they joined" on public.trek_reviews;
+create policy "Users can review treks they joined" on public.trek_reviews for insert to authenticated
+with check (
+  auth.uid() = user_id
+  and exists (
+    select 1
+      from public.trek_participants tp
+      join public.trek_batches tb on tb.id = tp.batch_id
+      join public.treks t on t.id = tb.trek_id
+     where tp.user_id = auth.uid()
+       and tp.status = 'confirmed'
+       and tb.trek_id = trek_reviews.trek_id
+       and tb.batch_date
+           + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+           < current_date
+  )
+);
+
+-- ---- UPDATE -----------------------------------------------------------------
+-- The old WITH CHECK pinned only user_id, so trek_id was rewritable: insert a
+-- legitimate review on a finished trek, then UPDATE it onto a trek departing
+-- next year. That is the same shape as the trek_participants batch_id hole
+-- closed by the M-update fix — a WITH CHECK cannot see the OLD row, so the gate
+-- has to be restated in full rather than pinning the column. The unique
+-- (trek_id, user_id) blocks only a move onto a trek the user already reviewed.
+drop policy if exists "Users can update their own reviews" on public.trek_reviews;
+create policy "Users can update their own reviews" on public.trek_reviews for update to authenticated
+using (auth.uid() = user_id)
+with check (
+  auth.uid() = user_id
+  and exists (
+    select 1
+      from public.trek_participants tp
+      join public.trek_batches tb on tb.id = tp.batch_id
+      join public.treks t on t.id = tb.trek_id
+     where tp.user_id = auth.uid()
+       and tp.status = 'confirmed'
+       and tb.trek_id = trek_reviews.trek_id
+       and tb.batch_date
+           + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+           < current_date
+  )
+);
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0018', 'gate-reviews-on-a-finished-confirmed-booking')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0019_bind-the-chat-seat-to-the-trek-booking.sql
+-- ##########################################################################
+
+-- 0019 — leaving a trek drops the chat seat, in the same transaction
+--
+-- Joining is one atomic RPC (join_trek_and_chat): it writes the trek_participants
+-- row and, for a 'confirmed' joiner, the conversation_participants row together.
+-- Leaving was two independent client deletes in leaveTrek() — chat first, then
+-- booking — with nothing in the database tying them to each other:
+--
+--   * delete only the trek_participants row (a plain PostgREST call, which the
+--     "Users can leave treks" policy allows) and the chat seat survives. The
+--     leaver keeps reading the group indefinitely — they are gone from the
+--     roster, so nobody has a reason to look for them; and
+--   * when the chat delete failed, the client logged the error and removed the
+--     booking anyway, reaching the same state by accident.
+--
+-- promote_waitlist_on_leave() already holds the other half of the invariant:
+-- confirmed ⇔ in the chat. It promotes FIFO on a leave and adds the promoted
+-- user to the conversation. So the rule exists in the schema; only the leave
+-- side of it was left to the browser to honour.
+--
+-- Fixed with a trigger rather than a leave RPC. A trigger covers the direct
+-- table DELETE the RLS policy still permits, so the guarantee does not depend on
+-- the client picking the right write path — the same reasoning that put the
+-- join rate limit in a row trigger instead of inside join_trek_and_chat (§13.3).
+
+-- ---- The bind: booking row goes → chat seat goes -----------------------------
+-- Unconditional, not gated on old.status = 'confirmed'. A waitlisted row has no
+-- chat seat, so the delete is a harmless no-op there, and staying unconditional
+-- means any seat that has drifted out of sync gets cleaned up on the way out.
+-- SECURITY DEFINER: the leaver cannot be required to hold a delete grant on
+-- conversation_participants, and after 0019 the RLS policy below denies it to
+-- them anyway. Same pattern as promote_waitlist_on_leave(), which inserts into
+-- this table past an insert policy that only admits service_role.
+create or replace function public.leave_chat_on_trek_leave()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  delete from public.conversation_participants cp
+  using public.conversations c
+  where c.batch_id = old.batch_id
+    and cp.conversation_id = c.id
+    and cp.user_id = old.user_id;
+
+  return old;
+end;
+$$;
+
+-- Trigger-only, like the other four AFTER-DELETE functions on this table.
+revoke execute on function public.leave_chat_on_trek_leave() from public, anon, authenticated;
+
+-- Fires before trek_participants_waitlist_promote (triggers run in name order,
+-- 'c' < 'w'). The two touch different users — this one the leaver, that one the
+-- promoted joiner — so the order is not load-bearing, only stated.
+drop trigger if exists trek_participants_chat_leave on public.trek_participants;
+create trigger trek_participants_chat_leave
+  after delete on public.trek_participants
+  for each row execute function public.leave_chat_on_trek_leave();
+
+-- ---- The mirror: a confirmed booking pins the chat seat ----------------------
+-- The same split ran the other way. "Users can leave conversation" let a user
+-- delete their own conversation_participants row while their booking stayed
+-- 'confirmed', and re-joining does not repair it: join_trek_and_chat() returns
+-- the existing membership untouched when a trek_participants row is already
+-- there, so it never re-inserts the seat. That locked a paying participant out
+-- of their own trek's chat permanently, with no route back through the UI.
+--
+-- After this, the only exit from a batch chat is leaving the batch, which the
+-- trigger above turns into both deletes at once. The policy still admits the
+-- rows with no confirmed booking behind them — a waitlisted user's stray seat,
+-- or one left over from a batch the user has already left.
+--
+-- Left `to public` to keep the role scope of the original policy; anon cannot
+-- satisfy user_id = auth.uid() with a NULL auth.uid() regardless.
+--
+-- RLS applies inside this qual, and both referenced rows are visible to the
+-- caller: trek_participants by `user_id = auth.uid()` (the row is theirs), and
+-- conversations by is_chat_participant(id), which is true precisely because the
+-- conversation_participants row being deleted still exists during the check.
+drop policy if exists "Users can leave conversation" on public.conversation_participants;
+create policy "Users can leave conversation" on public.conversation_participants for delete to public
+using (
+  user_id = auth.uid()
+  and not exists (
+    select 1
+      from public.conversations c
+      join public.trek_participants tp on tp.batch_id = c.batch_id
+     where c.id = conversation_participants.conversation_id
+       and tp.user_id = auth.uid()
+       and tp.status = 'confirmed'
+  )
+);
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0019', 'bind-the-chat-seat-to-the-trek-booking')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0020_earn-badges-only-from-treks-actually-held.sql
+-- ##########################################################################
+
+-- 0020 — badges must reflect treks the user actually held, not treks they touched
+--
+-- Three defects compounded into free badges. Reproduced end to end: joining one
+-- yesterday-dated 500 km Expert trek granted trailblazer, first_steps,
+-- warming_up, centurion, ultra_explorer and peak_conqueror in a single
+-- statement; leaving reset user_stats to 0/0 and left all six in place.
+--
+--   1. "Completed" was `batch_date < current_date`, and join_trek_and_chat
+--      accepts `current_date - 1 day` (UTC/IST slack). So a batch could be
+--      completed at the instant it was joined. That same predicate also counted
+--      a multi-day trek mid-trip — the bug 0018 fixed for reviews and did not
+--      reach these two functions.
+--
+--   2. joined_at was client input. The "Users can join treks" policy checks only
+--      `auth.uid() = user_id and is_trekker()`, so a direct PostgREST insert
+--      could set joined_at to any timestamp (verified: 400 days back accepted).
+--      Any gate reading joined_at is worthless until the column is pinned.
+--      UPDATE was already impossible — no UPDATE policy on the table — so
+--      pinning INSERT is enough to make it a system timestamp.
+--
+--   3. award_user_achievements only ever inserted. Badges were a high-water mark
+--      over metrics the user can reset at will by leaving, so the cost of a
+--      badge was one join + one leave, and the badge outlived the evidence.
+--      That also let the profile page show ultra_explorer beside 0 km.
+--
+-- The fix makes a badge a pure function of the bookings held right now: a
+-- participation counts once the trek has ENDED and the booking predates its
+-- departure, and badges that no longer qualify are taken back. Farming now
+-- requires holding the qualifying bookings — which is the honest state.
+--
+-- Not addressed here (pre-existing, wider than gamification): that same INSERT
+-- policy also lets a client write status = 'confirmed' directly, bypassing the
+-- capacity/waitlist logic in join_trek_and_chat. Tracked in FEATURES.md §1.5.
+
+-- ---- 1. joined_at is a system timestamp, not client input --------------------
+create or replace function public.pin_participant_joined_at()
+returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  new.joined_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trek_participants_pin_joined_at on public.trek_participants;
+create trigger trek_participants_pin_joined_at
+  before insert on public.trek_participants
+  for each row execute function public.pin_participant_joined_at();
+
+revoke all on function public.pin_participant_joined_at() from public, anon, authenticated;
+
+-- ---- 2. recompute_user_stats — count only treks that ended ------------------
+-- The completed set is derived once in a CTE rather than repeating the end-date
+-- expression per aggregate. `joined_at is null` is legacy data (the column has
+-- always defaulted to now() and is now pinned); those rows keep counting so a
+-- real user's history is not silently zeroed.
+create or replace function public.recompute_user_stats(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  with completed as (
+    select tb.batch_date, t.distance_km
+    from public.trek_participants tp
+    join public.trek_batches tb on tb.id = tp.batch_id
+    join public.treks t        on t.id  = tb.trek_id
+    where tp.user_id = p_user_id
+      and tp.status = 'confirmed'
+      and tb.batch_date
+          + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+          < current_date
+      and coalesce(tp.joined_at::date, tb.batch_date) <= tb.batch_date
+  )
+  insert into public.user_stats as us (user_id, treks_completed, total_distance_km)
+  select p_user_id,
+         coalesce(count(*), 0),
+         coalesce(sum(distance_km), 0)
+  from completed
+  on conflict (user_id) do update set
+    treks_completed   = excluded.treks_completed,
+    total_distance_km = excluded.total_distance_km;
+
+  delete from public.user_monthly_activity where user_id = p_user_id;
+
+  insert into public.user_monthly_activity
+    (user_id, month, treks_joined, photos_shared, reviews_written, distance_km)
+  select p_user_id, m.month,
+         sum(m.treks_joined), sum(m.photos_shared),
+         sum(m.reviews_written), sum(m.distance_km)
+  from (
+    select date_trunc('month', tp.joined_at)::date as month,
+           1 treks_joined, 0 photos_shared, 0 reviews_written, 0::numeric distance_km
+    from public.trek_participants tp
+    where tp.user_id = p_user_id and tp.joined_at is not null
+      and tp.status = 'confirmed'
+    union all
+    select date_trunc('month', r.created_at)::date,
+           0, coalesce(array_length(r.photo_urls, 1), 0), 1, 0
+    from public.trek_reviews r
+    where r.user_id = p_user_id
+    union all
+    select date_trunc('month', tb.batch_date)::date,
+           0, 0, 0, coalesce(t.distance_km, 0)
+    from public.trek_participants tp
+    join public.trek_batches tb on tb.id = tp.batch_id
+    join public.treks t        on t.id  = tb.trek_id
+    where tp.user_id = p_user_id
+      and tp.status = 'confirmed'
+      and tb.batch_date
+          + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+          < current_date
+      and coalesce(tp.joined_at::date, tb.batch_date) <= tb.batch_date
+  ) m
+  group by m.month
+  having sum(m.treks_joined) <> 0 or sum(m.photos_shared) <> 0
+      or sum(m.reviews_written) <> 0 or sum(m.distance_km) <> 0;
+
+  -- Evaluate badges off the freshly-computed source metrics.
+  perform public.award_user_achievements(p_user_id);
+end;
+$$;
+revoke all on function public.recompute_user_stats(uuid) from public, anon, authenticated;
+
+-- ---- 3. award_user_achievements — reconcile, do not accumulate ---------------
+-- Same completed set as above. The catalog is evaluated once into two arrays so
+-- one list of thresholds drives both the insert and the delete, and a key this
+-- function does not own can never be removed by it.
+create or replace function public.award_user_achievements(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_joined    integer := 0;
+  v_completed integer := 0;
+  v_distance  numeric := 0;
+  v_locations integer := 0;
+  v_hard      integer := 0;
+  v_months    integer := 0;
+  v_reviews   integer := 0;
+  v_photos    integer := 0;
+  v_earned    text[];
+  v_all       text[];
+begin
+  select coalesce(count(*), 0)
+  into v_joined
+  from public.trek_participants tp
+  where tp.user_id = p_user_id
+    and tp.status = 'confirmed';
+
+  with completed as (
+    select tb.batch_date, t.distance_km, t.location, t.difficulty
+    from public.trek_participants tp
+    join public.trek_batches tb on tb.id = tp.batch_id
+    join public.treks t        on t.id  = tb.trek_id
+    where tp.user_id = p_user_id
+      and tp.status = 'confirmed'
+      and tb.batch_date
+          + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+          < current_date
+      and coalesce(tp.joined_at::date, tb.batch_date) <= tb.batch_date
+  )
+  select
+    coalesce(count(*), 0),
+    coalesce(sum(distance_km), 0),
+    coalesce(count(distinct location), 0),
+    coalesce(count(*) filter (where difficulty in ('Hard', 'Expert')), 0),
+    coalesce(count(distinct date_trunc('month', batch_date)), 0)
+  into v_completed, v_distance, v_locations, v_hard, v_months
+  from completed;
+
+  select
+    coalesce(count(*), 0),
+    coalesce(sum(coalesce(array_length(r.photo_urls, 1), 0)), 0)
+  into v_reviews, v_photos
+  from public.trek_reviews r
+  where r.user_id = p_user_id;
+
+  -- One catalog, two uses: v_all is every key this function owns, v_earned the
+  -- subset currently qualifying. The delete is scoped to v_all so a key written
+  -- by anything else is never touched.
+  select array_agg(c.key) filter (where c.earned), array_agg(c.key)
+  into v_earned, v_all
+  from (values
+    ('trailblazer',      v_joined    >= 1),
+    ('first_steps',      v_completed >= 1),
+    ('trail_regular',    v_completed >= 5),
+    ('seasoned_trekker', v_completed >= 10),
+    ('mountain_master',  v_completed >= 25),
+    ('trail_legend',     v_completed >= 50),
+    ('warming_up',       v_distance  >= 10),
+    ('centurion',        v_distance  >= 100),
+    ('ultra_explorer',   v_distance  >= 500),
+    ('explorer',         v_locations >= 5),
+    ('globetrotter',     v_locations >= 10),
+    ('peak_conqueror',   v_hard      >= 1),
+    ('dedicated',        v_months    >= 6),
+    ('storyteller',      v_reviews   >= 5),
+    ('shutterbug',       v_photos    >= 25)
+  ) as c(key, earned);
+
+  v_earned := coalesce(v_earned, '{}');
+
+  insert into public.user_achievements (user_id, achievement_key)
+  select p_user_id, k from unnest(v_earned) k
+  on conflict (user_id, achievement_key) do nothing;
+
+  -- Badges are a function of the metrics, not a high-water mark: what leaving
+  -- un-earns, leaving takes back.
+  delete from public.user_achievements a
+  where a.user_id = p_user_id
+    and a.achievement_key = any(v_all)
+    and not (a.achievement_key = any(v_earned));
+end;
+$$;
+revoke all on function public.award_user_achievements(uuid) from public, anon, authenticated;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0020', 'earn-badges-only-from-treks-actually-held')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0021_refuse-bookings-for-treks-that-left-the-catalogue.sql
+-- ##########################################################################
+
+-- 0021 — a frozen company's treks cannot be booked, link or no link
+--
+-- Phase H froze rejected/suspended tenants out of every write path they own and
+-- recorded one deliberate exception: "every participant-facing flow
+-- (join_trek_and_chat + the waitlist/count triggers are all SECURITY DEFINER, so
+-- no existing booking or chat on a suspended company's trek is touched)". The
+-- intent was to protect bookings people already held. What shipped was no
+-- company check at all on the join path — which also leaves NEW bookings open.
+--
+-- Suspending a company only hides the catalogue. is_trek_visible() drops the
+-- treks from every listing and search_treks() filters on `is_active and
+-- status = 'approved'`, so the rows stop being discoverable. But
+-- join_trek_and_chat() is handed a trek id and re-derives nothing from it, and a
+-- trek id is not a secret: it is the /trek/[id] URL of every page the company
+-- published while it was approved — in browser history, in shared links, in the
+-- favourites of anyone who saved it. Paste one back after the suspension and the
+-- RPC creates the batch, creates the conversation, writes a *confirmed* booking
+-- and seats the buyer in the group chat, for a tenant the platform has pulled.
+--
+-- is_company_writable() never covered this. It answers "may this member edit
+-- their own company's rows" — a buyer is not a member, and booking is not a
+-- write to the tenant. There was no predicate for "may the public still buy
+-- this", because until now nothing asked.
+--
+-- Two write paths reach a booking, so both are closed. Fixing only the RPC would
+-- leave the hole open one HTTP call to the side — the same mistake 0019 and 0020
+-- were written to undo.
+
+-- ---- 1. The missing predicate ------------------------------------------------
+-- Deliberately the same pair of columns is_trek_visible() and search_treks()
+-- already treat as one fact — `t.is_active and c.status = 'approved'` — so
+-- "bookable" cannot drift away from "publicly listed". That folds in archived
+-- treks as well as frozen companies: is_active = false is the schema's only
+-- delete path for a trek, and a soft-deleted trek that still takes money is the
+-- same bug through the same door.
+--
+-- SECURITY DEFINER so it answers about companies the caller cannot read. It is a
+-- yes/no on a trek id the caller already holds, so it discloses nothing a
+-- suspended company's own storefront did not.
+create or replace function public.is_trek_bookable(p_trek_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp
+as $$
+  select exists (
+    select 1
+    from public.treks t
+    join public.companies c on c.id = t.company_id
+    where t.id = p_trek_id
+      and t.is_active
+      and c.status = 'approved'
+  );
+$$;
+
+revoke execute on function public.is_trek_bookable(uuid) from public, anon;
+grant  execute on function public.is_trek_bookable(uuid) to authenticated;
+
+-- ---- 2. join_trek_and_chat — refuse before anything is written ---------------
+-- Two changes to the function, both in the guard block; everything below the
+-- guards is the body as it stands.
+--
+--   (a) the bookability check, placed with the other caller/date guards and
+--       before the first insert, so a refused join leaves behind no batch and no
+--       conversation. The transaction would roll them back anyway; §14.5 made
+--       the same ordering explicit for the is_trekker() guard and this follows
+--       it rather than relying on that.
+--
+--   (b) the is_trekker() guard itself, which production has had since phase F
+--       but the migrations do not: 0001 recorded it at §14.5 as a *comment*
+--       describing an in-place edit, so a database rebuilt from this folder has
+--       had a join RPC that accepts company accounts. Live and replayed
+--       definitions agree again from here.
+--
+-- 'Trek not found' and 'not open for booking' stay distinct messages. Collapsing
+-- them would hide a frozen trek behind "does not exist", which is worse for the
+-- one person who legitimately hits this — someone holding a booking on a trek
+-- whose company was frozen underneath them, re-opening the page they can still
+-- see (the participant arm of is_trek_visible keeps it readable) and clicking
+-- Join. They are told the trek is closed, which is true. The separation leaks
+-- only "this uuid exists", to someone already holding the uuid.
+--
+-- The check sits ahead of the already-a-participant branch, so re-joining the
+-- exact batch you already hold now raises instead of returning your membership
+-- unchanged. That is the whole behaviour change for existing bookers: the
+-- booking, its chat seat, and the leave path are untouched, and every other
+-- entry point to the chat (Messages, the trek page's Chat button) reads
+-- trek_participants directly and never calls this function.
+create or replace function public.join_trek_and_chat(
+  p_user_id uuid,
+  p_trek_id uuid,
+  p_batch_date date
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_batch_id uuid;
+  v_convo_id uuid;
+  v_participant_id uuid;
+  v_trek_title text;
+  v_trek_max integer;
+  v_batch_max integer;
+  v_confirmed integer;
+  v_status text;
+  v_position integer := null;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  -- Require the caller to act as themselves (closes the NULL p_user_id bypass).
+  if p_user_id is null or p_user_id <> v_uid then
+    raise exception 'p_user_id must equal the authenticated user';
+  end if;
+
+  -- Company accounts sell treks, they don't book them.
+  if not public.is_trekker() then
+    raise exception 'Company accounts cannot join treks';
+  end if;
+
+  -- Bound batch/conversation creation (DoS guard).
+  if p_batch_date is null then
+    raise exception 'Batch date is required';
+  end if;
+  if p_batch_date < current_date - interval '1 day' then
+    raise exception 'Cannot join a trek batch in the past';
+  end if;
+  if p_batch_date > current_date + interval '1 year' then
+    raise exception 'Batch date is too far in the future';
+  end if;
+
+  select title, max_participants into v_trek_title, v_trek_max
+  from public.treks where id = p_trek_id;
+  if v_trek_title is null then
+    raise exception 'Trek not found';
+  end if;
+
+  -- Archived, or the owning company is no longer approved. Holding the link is
+  -- not permission to buy.
+  if not public.is_trek_bookable(p_trek_id) then
+    raise exception 'This trek is not open for booking';
+  end if;
+
+  insert into public.trek_batches (trek_id, batch_date, max_participants)
+  values (p_trek_id, p_batch_date, v_trek_max)
+  on conflict (trek_id, batch_date) do nothing
+  returning id into v_batch_id;
+  if v_batch_id is null then
+    select id into v_batch_id from public.trek_batches
+    where trek_id = p_trek_id and batch_date = p_batch_date limit 1;
+  end if;
+
+  -- Lock the batch row so concurrent joins serialize on the capacity check.
+  select max_participants into v_batch_max
+  from public.trek_batches where id = v_batch_id for update;
+
+  insert into public.conversations (batch_id, name)
+  values (v_batch_id, (v_trek_title || ' — ' || p_batch_date::text))
+  on conflict (batch_id) do nothing
+  returning id into v_convo_id;
+  if v_convo_id is null then
+    select id into v_convo_id from public.conversations
+    where batch_id = v_batch_id limit 1;
+  end if;
+
+  -- Already a participant? Return the existing membership unchanged.
+  select id, status into v_participant_id, v_status
+  from public.trek_participants
+  where user_id = v_uid and batch_id = v_batch_id;
+
+  if v_participant_id is null then
+    select count(*) into v_confirmed
+    from public.trek_participants
+    where batch_id = v_batch_id and status = 'confirmed';
+
+    if v_batch_max is not null and v_confirmed >= v_batch_max then
+      v_status := 'waitlisted';
+    else
+      v_status := 'confirmed';
+    end if;
+
+    insert into public.trek_participants (user_id, batch_id, status)
+    values (v_uid, v_batch_id, v_status)
+    returning id into v_participant_id;
+
+    -- Only confirmed participants get a seat in the batch chat.
+    if v_status = 'confirmed' then
+      insert into public.conversation_participants (conversation_id, user_id)
+      values (v_convo_id, v_uid)
+      on conflict (conversation_id, user_id) do nothing;
+    end if;
+  end if;
+
+  if v_status = 'waitlisted' then
+    select count(*) into v_position
+    from public.trek_participants
+    where batch_id = v_batch_id
+      and status = 'waitlisted'
+      and (joined_at, id) <= (
+        select joined_at, id from public.trek_participants where id = v_participant_id
+      );
+  end if;
+
+  return jsonb_build_object(
+    'batch_id', v_batch_id,
+    'participant_id', v_participant_id,
+    'conversation_id', v_convo_id,
+    'status', v_status,
+    'waitlist_position', v_position
+  );
+end;
+$$;
+
+-- ---- 3. RLS — the same rule on the direct insert ------------------------------
+-- The backstop for `POST /rest/v1/trek_participants`, which needs only a
+-- batch_id and the publishable key. §14.6 already made this policy carry
+-- is_trekker() as defence in depth behind the RPC; bookability belongs beside it
+-- for the same reason.
+--
+-- The batch hop runs under the caller's RLS, but is_trek_bookable() does not —
+-- so the answer does not quietly become "whatever this user can see". A batch of
+-- a bookable trek is visible to everyone by definition (is_trek_visible's public
+-- arm is the same predicate), and for a frozen trek the two disagree in the safe
+-- direction: an existing participant can still SELECT the batch, and is refused
+-- on bookability instead.
+--
+-- The RPC is unaffected: SECURITY DEFINER, so it bypasses RLS and carries its
+-- own check above. So do promote_waitlist_on_leave() and the count triggers —
+-- a waitlisted user is still promoted after a freeze, because that seat was
+-- bought while the company was approved.
+drop policy if exists "Users can join treks" on public.trek_participants;
+create policy "Users can join treks" on public.trek_participants for insert to authenticated
+  with check (
+    auth.uid() = user_id
+    and public.is_trekker()
+    and exists (
+      select 1 from public.trek_batches tb
+      where tb.id = trek_participants.batch_id
+        and public.is_trek_bookable(tb.trek_id)
+    )
+  );
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0021', 'refuse-bookings-for-treks-that-left-the-catalogue')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0022_promote-the-waitlist-in-the-order-it-was-shown.sql
+-- ##########################################################################
+
+-- 0022 — promote the waitlist in the order the waitlist was shown
+--
+-- Two orderings of the same queue disagreed on ties. join_trek_and_chat()
+-- computes the number it hands the joiner ("you are #2") with a row comparison,
+-- `(joined_at, id) <= (…)` — follow-up #5 gave it that tie-break precisely
+-- because joined_at is not unique. promote_waitlist_on_leave() never got the
+-- same treatment: it ordered by joined_at alone, so among rows sharing a
+-- timestamp it promoted whatever the plan happened to return first.
+--
+-- joined_at ties are not exotic. 0020 pins the column to now(), which is the
+-- transaction timestamp, so two joins in one transaction are exactly equal, and
+-- two joins a microsecond apart are equal often enough on a busy departure.
+-- When they tie, #2 can be promoted ahead of #1 — the position the app showed
+-- them was never a promise the trigger was keeping.
+--
+-- The fix is the tie-break, nothing else: the body below is 0001's, with
+-- `, id asc` added to the ORDER BY. The two functions now read the queue the
+-- same way, and (joined_at, id) is unique because id is.
+create or replace function public.promote_waitlist_on_leave()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_max integer;
+  v_confirmed integer;
+  v_promote_id uuid;
+  v_promote_user uuid;
+  v_convo_id uuid;
+begin
+  if old.status is distinct from 'confirmed' then
+    return old;
+  end if;
+
+  select max_participants into v_max
+  from public.trek_batches where id = old.batch_id;
+  if v_max is null then
+    return old;
+  end if;
+
+  select count(*) into v_confirmed
+  from public.trek_participants
+  where batch_id = old.batch_id and status = 'confirmed';
+  if v_confirmed >= v_max then
+    return old;
+  end if;
+
+  select id, user_id into v_promote_id, v_promote_user
+  from public.trek_participants
+  where batch_id = old.batch_id and status = 'waitlisted'
+  order by joined_at asc, id asc
+  limit 1
+  for update skip locked;
+  if v_promote_id is null then
+    return old;
+  end if;
+
+  update public.trek_participants
+  set status = 'confirmed'
+  where id = v_promote_id;
+
+  select id into v_convo_id
+  from public.conversations where batch_id = old.batch_id limit 1;
+  if v_convo_id is not null then
+    insert into public.conversation_participants (conversation_id, user_id)
+    values (v_convo_id, v_promote_user)
+    on conflict (conversation_id, user_id) do nothing;
+  end if;
+
+  return old;
+end;
+$$;
+
+-- create or replace preserves the ACL; restated so the grant state is visible
+-- here rather than only in 0001.
+revoke execute on function public.promote_waitlist_on_leave() from public, anon, authenticated;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0022', 'promote-the-waitlist-in-the-order-it-was-shown')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0023_bound-the-work-search-treks-will-do-per-call.sql
+-- ##########################################################################
+
+-- 0023 — bound the work search_treks() will do per call
+--
+-- search_treks() is the one RPC anyone with the publishable key may call
+-- without signing in, and until now it took p_limit and p_offset at face value:
+-- `limit greatest(p_limit, 0)` clamps a negative to zero and nothing else. A
+-- caller asking for p_limit = 2147483647 got the whole catalogue in one
+-- response, every row carrying the window count, the per-trek rating average
+-- and the next-batch lookup — the full cost of the page, multiplied by a number
+-- the caller chose. That is a request whose cost is unbounded by anything the
+-- server decided, which is exactly what a public endpoint must not offer, and
+-- it is the same class of hole 0009 closed on the write side by capping text
+-- columns the client was free to size.
+--
+-- The catalogue is fourteen treks today, so no single call hurts yet. The bound
+-- matters because it is the *shape* of the request that decides how the cost
+-- grows: with a ceiling, the largest legal call is a known quantity and the
+-- catalogue can grow without the endpoint's worst case growing with it.
+--
+-- 100 is the app's own ceiling already — getStorefrontTreks() asks for exactly
+-- that, the Explore page asks for 6 and the home page for 3 — so no caller
+-- changes and no legitimate request is refused. p_offset gets a ceiling too, so
+-- a deep offset cannot ask the sort to produce and discard an arbitrary prefix;
+-- 10 000 is over 1 600 Explore pages, far past any page the UI can render.
+--
+-- This is a bound on per-call work, NOT a rate limit. A caller can still make
+-- the call as often as they like; each one now costs at most a known amount.
+-- Per-caller rate limiting on an anon read cannot be built inside Postgres —
+-- there is no actor to key it on — it lives at the edge (Supabase platform
+-- limits or a WAF in front of the project host), which is an infrastructure
+-- decision, not a migration.
+--
+-- The body below is 0001's; only the LIMIT and OFFSET lines changed.
+create or replace function public.search_treks(
+  p_search       text    default null,
+  p_location     text    default null,
+  p_difficulty   text    default null,
+  p_min_distance numeric default null,
+  p_max_distance numeric default null,
+  p_min_price    numeric default null,
+  p_max_price    numeric default null,
+  p_date_from    date    default null,
+  p_sort         text    default 'date',
+  p_limit        int     default 6,
+  p_offset       int     default 0,
+  p_company_id   uuid    default null
+)
+returns table (
+  id                  uuid,
+  title               text,
+  description         text,
+  location            text,
+  cover_image_url     text,
+  difficulty          public.difficulty,
+  distance_km         numeric,
+  duration_hours      numeric,
+  max_participants    integer,
+  estimated_cost      numeric,
+  rating              numeric,
+  participants_joined smallint,
+  next_batch_date     date,
+  company_id          uuid,
+  company_name        text,
+  company_slug        text,
+  total_count         bigint
+)
+language plpgsql
+stable
+set search_path = public, pg_temp
+as $$
+declare
+  v_str        text;
+  v_tsquery    tsquery := null;
+  v_has_search boolean := false;
+begin
+  if p_search is not null and length(trim(p_search)) > 0 then
+    v_has_search := true;
+    v_str := (
+      select string_agg(tok || ':*', ' & ')
+      from unnest(
+        string_to_array(
+          regexp_replace(lower(trim(p_search)), '[^a-z0-9 ]', ' ', 'g'),
+          ' ')
+      ) as tok
+      where tok <> ''
+    );
+    if v_str is not null and length(v_str) > 0 then
+      v_tsquery := to_tsquery('english', v_str);
+    end if;
+  end if;
+
+  return query
+  with filtered as (
+    select
+      t.id, t.title, t.description, t.location, t.cover_image_url, t.difficulty,
+      t.distance_km, t.duration_hours, t.max_participants, t.estimated_cost,
+      rr.avg_rating as rating, t.participants_joined,
+      nb.next_batch_date,
+      c.id as company_id, c.name as company_name, c.slug as company_slug,
+      case when v_tsquery is not null then ts_rank(t.fts, v_tsquery) else 0 end as rank
+    from public.treks t
+    join public.companies c on c.id = t.company_id
+    left join lateral (
+      select min(b.batch_date) as next_batch_date
+      from public.trek_batches b
+      where b.trek_id = t.id
+        and b.batch_date >= coalesce(p_date_from, current_date)
+    ) nb on true
+    left join lateral (
+      select round(avg(r.rating), 1) as avg_rating
+      from public.trek_reviews r
+      where r.trek_id = t.id
+    ) rr on true
+    where
+      t.is_active and c.status = 'approved'
+      and (not v_has_search or (v_tsquery is not null and t.fts @@ v_tsquery))
+      and (p_location     is null or t.location ilike '%' || p_location || '%')
+      and (p_difficulty   is null or t.difficulty::text = p_difficulty)
+      and (p_min_distance is null or t.distance_km    >= p_min_distance)
+      and (p_max_distance is null or t.distance_km    <= p_max_distance)
+      and (p_min_price    is null or t.estimated_cost >= p_min_price)
+      and (p_max_price    is null or t.estimated_cost <= p_max_price)
+      and (p_date_from    is null or nb.next_batch_date is not null)
+      and (p_company_id   is null or t.company_id = p_company_id)
+  )
+  select
+    f.id, f.title, f.description, f.location, f.cover_image_url, f.difficulty,
+    f.distance_km, f.duration_hours, f.max_participants, f.estimated_cost,
+    f.rating, f.participants_joined, f.next_batch_date,
+    f.company_id, f.company_name, f.company_slug,
+    count(*) over () as total_count
+  from filtered f
+  order by
+    case when p_sort = 'relevance'     then f.rank           end desc nulls last,
+    case when p_sort = 'price_asc'     then f.estimated_cost end asc  nulls last,
+    case when p_sort = 'price_desc'    then f.estimated_cost end desc nulls last,
+    case when p_sort = 'distance_asc'  then f.distance_km    end asc  nulls last,
+    case when p_sort = 'distance_desc' then f.distance_km    end desc nulls last,
+    case when p_sort = 'rating'        then f.rating         end desc nulls last,
+    case when p_sort = 'date'          then f.next_batch_date end asc nulls last,
+    f.title asc
+  limit  least(greatest(p_limit,  0), 100)
+  offset least(greatest(p_offset, 0), 10000);
+end;
+$$;
+
+-- create or replace preserves the ACL; restated so the grant state is visible
+-- here rather than only in 0001. Still the one anon-callable read RPC.
+grant execute on function public.search_treks(
+  text, text, text, numeric, numeric, numeric, numeric, date, text, int, int, uuid
+) to anon, authenticated;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0023', 'bound-the-work-search-treks-will-do-per-call')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0024_decide-the-seat-when-the-booking-is-written.sql
+-- ##########################################################################
+
+-- 0024 — a booking's status comes from the seat count, not from the client
+--
+-- join_trek_and_chat() decides confirmed-or-waitlisted under a lock on the
+-- batch row, then writes the row. The "Users can join treks" policy, which is
+-- all that stands between `POST /rest/v1/trek_participants` and the table,
+-- pins user_id (auth.uid()), the account kind (is_trekker(), §14.6) and the
+-- trek's bookability (0021) — and says nothing about status. So the capacity
+-- check bound only the clients that chose to call the RPC: a direct insert
+-- with `status = 'confirmed'` on a full departure took a seat the RPC would
+-- have waitlisted, and one with no status at all took the same seat by
+-- default. 0020 found this while pinning joined_at and left it, because a
+-- guard on status has to agree with the waitlist rather than sit beside it.
+--
+-- Swept 2026-09-09: no batch carries more confirmed bookings than
+-- max_participants, so this was open, not exploited.
+--
+-- The fix is the same shape as 0020's joined_at: a BEFORE INSERT trigger that
+-- overwrites the column with the value the database computes, so every insert
+-- path — RPC or bare POST — lands the row with the status the seat count
+-- allows. A rewrite, not a refusal, for two reasons:
+--
+--   * refusing would make a plain POST fail where the RPC waitlists, i.e. the
+--     honest answer to "the batch is full" is a waitlisted row, and that is
+--     what the RPC has always returned; and
+--   * a WITH CHECK arm on the policy cannot do this job: Postgres evaluates it
+--     on the row AFTER BEFORE triggers ran, so it would only ever see the
+--     trigger's value; and counting seats under the caller's RLS would see the
+--     caller's own rows alone (SELECT is own-row-only, NEW-4), so the count
+--     needs definer rights the policy does not have.
+--
+-- With the trigger authoritative, the RPC's own copy of the decision is a
+-- second implementation of one rule — the drift 0022 had to repair between the
+-- RPC's queue numbering and the trigger's queue order. It is removed: the RPC
+-- inserts without a status and reads back the one the trigger assigned, so the
+-- chat seat and the returned status follow the row that was actually written.
+
+-- ---- 1. status is decided when the row is written -----------------------------
+-- SECURITY DEFINER because the count spans other users' rows, which the
+-- caller's RLS hides. Same reason enforce_join_rate_limit() and
+-- promote_waitlist_on_leave() are definer triggers on this table.
+--
+-- Writes with no session keep the status they wrote — the SQL Editor, seeding,
+-- pg_cron. That is the branch protect_profile_account_type() takes for the same
+-- writers, and it keeps the Editor usable for a manual repair. A client cannot
+-- reach it: the INSERT policy is `to authenticated` and requires
+-- auth.uid() = user_id, so a NULL auth.uid() never gets as far as this trigger.
+create or replace function public.assign_participant_status()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_max       integer;
+  v_confirmed integer;
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+
+  -- The lock join_trek_and_chat() takes, taken here so two inserts on one
+  -- batch serialize on the count whichever path they arrive by. Inside the RPC
+  -- this re-locks a row the transaction already holds, which is a no-op.
+  select max_participants into v_max
+  from public.trek_batches
+  where id = new.batch_id
+  for update;
+
+  select count(*) into v_confirmed
+  from public.trek_participants
+  where batch_id = new.batch_id and status = 'confirmed';
+
+  -- NULL max_participants is "uncapped" (0017).
+  if v_max is not null and v_confirmed >= v_max then
+    new.status := 'waitlisted';
+  else
+    new.status := 'confirmed';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke all on function public.assign_participant_status() from public, anon, authenticated;
+
+-- Fires before trek_participants_pin_joined_at (name order, 'a' < 'p'). The
+-- two set different columns, so the order is stated, not load-bearing.
+drop trigger if exists trek_participants_assign_status on public.trek_participants;
+create trigger trek_participants_assign_status
+  before insert on public.trek_participants
+  for each row execute function public.assign_participant_status();
+
+-- ---- 2. join_trek_and_chat — read the decision back instead of making it ---
+-- The body is 0021's with the capacity block taken out: v_batch_max and
+-- v_confirmed are gone, the batch lock stays (it also serializes the
+-- already-a-participant check, so a double submit from one user finds its
+-- first row instead of tripping the unique constraint), and the insert no
+-- longer passes a status. Everything else — the guards, the batch and
+-- conversation upserts, the position count, the return shape — is unchanged.
+create or replace function public.join_trek_and_chat(
+  p_user_id uuid,
+  p_trek_id uuid,
+  p_batch_date date
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_batch_id uuid;
+  v_convo_id uuid;
+  v_participant_id uuid;
+  v_trek_title text;
+  v_trek_max integer;
+  v_status text;
+  v_position integer := null;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  -- Require the caller to act as themselves (closes the NULL p_user_id bypass).
+  if p_user_id is null or p_user_id <> v_uid then
+    raise exception 'p_user_id must equal the authenticated user';
+  end if;
+
+  -- Company accounts sell treks, they don't book them.
+  if not public.is_trekker() then
+    raise exception 'Company accounts cannot join treks';
+  end if;
+
+  -- Bound batch/conversation creation (DoS guard).
+  if p_batch_date is null then
+    raise exception 'Batch date is required';
+  end if;
+  if p_batch_date < current_date - interval '1 day' then
+    raise exception 'Cannot join a trek batch in the past';
+  end if;
+  if p_batch_date > current_date + interval '1 year' then
+    raise exception 'Batch date is too far in the future';
+  end if;
+
+  select title, max_participants into v_trek_title, v_trek_max
+  from public.treks where id = p_trek_id;
+  if v_trek_title is null then
+    raise exception 'Trek not found';
+  end if;
+
+  -- Archived, or the owning company is no longer approved. Holding the link is
+  -- not permission to buy.
+  if not public.is_trek_bookable(p_trek_id) then
+    raise exception 'This trek is not open for booking';
+  end if;
+
+  insert into public.trek_batches (trek_id, batch_date, max_participants)
+  values (p_trek_id, p_batch_date, v_trek_max)
+  on conflict (trek_id, batch_date) do nothing
+  returning id into v_batch_id;
+  if v_batch_id is null then
+    select id into v_batch_id from public.trek_batches
+    where trek_id = p_trek_id and batch_date = p_batch_date limit 1;
+  end if;
+
+  -- Lock the batch row so concurrent joins serialize from here down. The seat
+  -- itself is decided by assign_participant_status() when the row is written.
+  perform 1 from public.trek_batches where id = v_batch_id for update;
+
+  insert into public.conversations (batch_id, name)
+  values (v_batch_id, (v_trek_title || ' — ' || p_batch_date::text))
+  on conflict (batch_id) do nothing
+  returning id into v_convo_id;
+  if v_convo_id is null then
+    select id into v_convo_id from public.conversations
+    where batch_id = v_batch_id limit 1;
+  end if;
+
+  -- Already a participant? Return the existing membership unchanged.
+  select id, status into v_participant_id, v_status
+  from public.trek_participants
+  where user_id = v_uid and batch_id = v_batch_id;
+
+  if v_participant_id is null then
+    insert into public.trek_participants (user_id, batch_id)
+    values (v_uid, v_batch_id)
+    returning id, status into v_participant_id, v_status;
+
+    -- Only confirmed participants get a seat in the batch chat.
+    if v_status = 'confirmed' then
+      insert into public.conversation_participants (conversation_id, user_id)
+      values (v_convo_id, v_uid)
+      on conflict (conversation_id, user_id) do nothing;
+    end if;
+  end if;
+
+  if v_status = 'waitlisted' then
+    select count(*) into v_position
+    from public.trek_participants
+    where batch_id = v_batch_id
+      and status = 'waitlisted'
+      and (joined_at, id) <= (
+        select joined_at, id from public.trek_participants where id = v_participant_id
+      );
+  end if;
+
+  return jsonb_build_object(
+    'batch_id', v_batch_id,
+    'participant_id', v_participant_id,
+    'conversation_id', v_convo_id,
+    'status', v_status,
+    'waitlist_position', v_position
+  );
+end;
+$$;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0024', 'decide-the-seat-when-the-booking-is-written')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys.sql
+-- ##########################################################################
+
+-- 0025 — evaluate auth.uid() once per query, and finish the keys
+--
+-- Three performance-advisor findings, all behaviour-identical to close. Every
+-- policy below is restated with exactly the roles, commands and predicates it
+-- has today; the only textual change is the one the advisor asks for.
+--
+--   1. auth_rls_initplan (22 WARN). A bare `auth.uid()` in a policy is a
+--      function call the planner makes per candidate row; `(select auth.uid())`
+--      is a scalar subquery it hoists into an InitPlan and evaluates once per
+--      statement. Same answer, since auth.uid() is STABLE and reads only the
+--      request's JWT claims. It is cheapest to do while the tables are near
+--      empty, and the tests/db suite re-proves every policy afterwards.
+--
+--      Five of the 22 are `to public` and stay that way — 0002 §B explains
+--      why: "System adds participants" tests auth.role() and would be excluded
+--      by re-scoping, and the `user_id = auth.uid()` ones call no function
+--      anon lacks EXECUTE on. Wrapping the call does not touch the role.
+--
+--   2. no_primary_key (2 INFO). conversation_participants and favorites were
+--      created with a UNIQUE on the pair that identifies a row but no PRIMARY
+--      KEY. The unique is promoted rather than duplicated: the constraint is
+--      dropped and a PK on the same columns takes its place, so the table
+--      never holds two identical indexes. `on conflict (conversation_id,
+--      user_id)` in join_trek_and_chat keeps working — inference accepts any
+--      unique index on those columns. One side effect, deliberate:
+--      favorites.trek_id was nullable and a PK makes it NOT NULL. A favorite
+--      with no trek is meaningless and no live row has one.
+--
+--   3. unindexed_foreign_keys (2 INFO). companies.approved_by and
+--      company_invites.invited_by reference auth.users / profiles with no
+--      covering index, so a delete or update on the parent scans the child.
+--
+-- Not done, by decision (2026-09-15): the multiple_permissive_policies WARN on
+-- treks and the two unused_index INFOs. "company members view own treks" is
+-- load-bearing (0002 §A — INSERT … RETURNING cannot pass without it) and
+-- Postgres already ORs permissive policies, so merging saves no work; the two
+-- indexes read as unused because the tables hold single-digit rows and the
+-- planner seq-scans regardless. PERFORMANCE.md §4.4 carries both.
+
+-- ---- 1. policies — auth.uid() / auth.role() as an InitPlan -------------------
+
+-- company_members (0001)
+drop policy if exists "company admins manage member roles" on public.company_members;
+create policy "company admins manage member roles" on public.company_members for update to authenticated
+using (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role <> 'owner'
+  and user_id <> (select auth.uid())
+)
+with check (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role in ('admin', 'staff')
+);
+
+drop policy if exists "company admins remove members" on public.company_members;
+create policy "company admins remove members" on public.company_members for delete to authenticated
+using (
+  public.is_company_admin(company_id)
+  and public.is_company_writable(company_id)
+  and role <> 'owner'
+  and user_id <> (select auth.uid())
+);
+
+-- conversation_messages (0001, 0010)
+drop policy if exists "Delete own messages" on public.conversation_messages;
+create policy "Delete own messages" on public.conversation_messages for delete to public
+using (user_id = (select auth.uid()));
+
+drop policy if exists "Edit own messages" on public.conversation_messages;
+create policy "Edit own messages" on public.conversation_messages for update to public
+using (user_id = (select auth.uid()))
+with check (user_id = (select auth.uid()) and is_announcement = false);
+
+drop policy if exists "Send messages" on public.conversation_messages;
+create policy "Send messages" on public.conversation_messages
+  for insert to authenticated
+  with check (
+    user_id = (select auth.uid())
+    and is_chat_participant(conversation_id)
+    and is_announcement = false
+    and coalesce(is_deleted, false) = false
+  );
+
+-- conversation_participants (0001, 0019)
+drop policy if exists "System adds participants" on public.conversation_participants;
+create policy "System adds participants" on public.conversation_participants for insert to public
+with check ((select auth.role()) = 'service_role');
+
+drop policy if exists "Users can leave conversation" on public.conversation_participants;
+create policy "Users can leave conversation" on public.conversation_participants for delete to public
+using (
+  user_id = (select auth.uid())
+  and not exists (
+    select 1
+      from public.conversations c
+      join public.trek_participants tp on tp.batch_id = c.batch_id
+     where c.id = conversation_participants.conversation_id
+       and tp.user_id = (select auth.uid())
+       and tp.status = 'confirmed'
+  )
+);
+
+-- favorites (0001)
+drop policy if exists "Users can favorite treks" on public.favorites;
+create policy "Users can favorite treks" on public.favorites for insert to authenticated
+  with check ((select auth.uid()) = user_id and public.is_trekker());
+
+drop policy if exists "Users can remove favorites" on public.favorites;
+create policy "Users can remove favorites" on public.favorites for delete to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Users can see their favorites" on public.favorites;
+create policy "Users can see their favorites" on public.favorites for select to authenticated
+using ((select auth.uid()) = user_id);
+
+-- profiles (0001)
+drop policy if exists "Users can insert own profile" on public.profiles;
+create policy "Users can insert own profile" on public.profiles for insert to authenticated
+with check ((select auth.uid()) = id);
+
+drop policy if exists "Users can update own profile" on public.profiles;
+create policy "Users can update own profile" on public.profiles for update to authenticated
+using ((select auth.uid()) = id);
+
+drop policy if exists "Users can view own profile" on public.profiles;
+create policy "Users can view own profile" on public.profiles for select to authenticated
+using ((select auth.uid()) = id);
+
+-- trek_participants (0001, 0021)
+drop policy if exists "Users can join treks" on public.trek_participants;
+create policy "Users can join treks" on public.trek_participants for insert to authenticated
+  with check (
+    (select auth.uid()) = user_id
+    and public.is_trekker()
+    and exists (
+      select 1 from public.trek_batches tb
+      where tb.id = trek_participants.batch_id
+        and public.is_trek_bookable(tb.trek_id)
+    )
+  );
+
+drop policy if exists "Users can leave treks" on public.trek_participants;
+create policy "Users can leave treks" on public.trek_participants for delete to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Users can view own trek participation" on public.trek_participants;
+create policy "Users can view own trek participation" on public.trek_participants for select to authenticated
+using (user_id = (select auth.uid()));
+
+-- trek_reviews (0001, 0018)
+drop policy if exists "Users can delete their own reviews" on public.trek_reviews;
+create policy "Users can delete their own reviews" on public.trek_reviews for delete to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Users can review treks they joined" on public.trek_reviews;
+create policy "Users can review treks they joined" on public.trek_reviews for insert to authenticated
+with check (
+  (select auth.uid()) = user_id
+  and exists (
+    select 1
+      from public.trek_participants tp
+      join public.trek_batches tb on tb.id = tp.batch_id
+      join public.treks t on t.id = tb.trek_id
+     where tp.user_id = (select auth.uid())
+       and tp.status = 'confirmed'
+       and tb.trek_id = trek_reviews.trek_id
+       and tb.batch_date
+           + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+           < current_date
+  )
+);
+
+drop policy if exists "Users can update their own reviews" on public.trek_reviews;
+create policy "Users can update their own reviews" on public.trek_reviews for update to authenticated
+using ((select auth.uid()) = user_id)
+with check (
+  (select auth.uid()) = user_id
+  and exists (
+    select 1
+      from public.trek_participants tp
+      join public.trek_batches tb on tb.id = tp.batch_id
+      join public.treks t on t.id = tb.trek_id
+     where tp.user_id = (select auth.uid())
+       and tp.status = 'confirmed'
+       and tb.trek_id = trek_reviews.trek_id
+       and tb.batch_date
+           + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+           < current_date
+  )
+);
+
+-- user_achievements, user_monthly_activity, user_stats (0001)
+drop policy if exists "Users can view own achievements" on public.user_achievements;
+create policy "Users can view own achievements" on public.user_achievements for select to authenticated
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Users can view their own activity" on public.user_monthly_activity;
+create policy "Users can view their own activity" on public.user_monthly_activity for select to public
+using ((select auth.uid()) = user_id);
+
+drop policy if exists "Users can view own stats" on public.user_stats;
+create policy "Users can view own stats" on public.user_stats for select to authenticated
+using ((select auth.uid()) = user_id);
+
+-- ---- 2. primary keys — promote the existing unique, don't add a twin --------
+-- Guarded on the PK so a second paste is a no-op; the drop and the add are one
+-- ALTER so the table is never without a unique index on the pair.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.conversation_participants'::regclass and contype = 'p'
+  ) then
+    alter table public.conversation_participants
+      drop constraint conversation_participants_conv_user_key,
+      add primary key (conversation_id, user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.favorites'::regclass and contype = 'p'
+  ) then
+    alter table public.favorites
+      drop constraint favorites_user_id_trek_id_key,
+      add primary key (user_id, trek_id);
+  end if;
+end $$;
+
+-- ---- 3. the two foreign keys with no covering index -------------------------
+create index if not exists companies_approved_by_idx
+  on public.companies (approved_by);
+create index if not exists company_invites_invited_by_idx
+  on public.company_invites (invited_by);
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0025', 'evaluate-auth-uid-once-per-query-and-add-the-missing-keys')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0026_define-completed-in-user-completed-treks-as-0020-does.sql
+-- ##########################################################################
+
+-- 0026 — user_completed_treks says "completed" the way 0020 does
+--
+-- 0020 changed what a completed trek is for recompute_user_stats() and
+-- award_user_achievements(): the booking is confirmed, the trek has ended
+-- (batch_date plus the whole days it spans, minus one, is before today) and
+-- the booking predates departure. This view kept 0001's bare
+-- `batch_date < current_date`, which both banks a multi-day trek mid-trip and
+-- counts a waitlisted row. Nothing in src/ reads it and no client role holds
+-- SELECT on it, so the disagreement was invisible — and it would have become
+-- a bug the day something started reading it. The predicate below is the CTE
+-- from 0020, verbatim.
+--
+-- ⚠️ That expression now lives in three places: the 0018 review policies, the
+-- 0020 functions, and here. Change all three together.
+--
+-- Also records a drift: the live view carries security_invoker = on, which no
+-- migration ever set (0001 creates it bare). Stated here so the file matches
+-- production and a rebuild gets the same view. No grant is added — the view
+-- stays unreadable from a client session, exactly as it is today.
+create or replace view public.user_completed_treks
+with (security_invoker = on) as
+  select tp.user_id,
+         t.id           as trek_id,
+         t.title,
+         t.cover_image_url,
+         tb.batch_date,
+         tb.id          as batch_id
+  from public.trek_participants tp
+  join public.trek_batches tb on tp.batch_id = tb.id
+  join public.treks t        on tb.trek_id  = t.id
+  where tp.status = 'confirmed'
+    and tb.batch_date
+        + (greatest(1, ceil(coalesce(t.duration_hours, 0) / 24.0))::int - 1)
+        < current_date
+    and coalesce(tp.joined_at::date, tb.batch_date) <= tb.batch_date
+  order by tb.batch_date desc;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0026', 'define-completed-in-user-completed-treks-as-0020-does')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0027_log-every-sign-in-for-platform-admins.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0027 — log every sign-in (email, time, IP, device) for platform admins
+-- ============================================================================
+-- Supabase already knows all four: auth.sessions carries the client IP and the
+-- user-agent of every sign-in. It just does not keep them — GoTrue deletes the
+-- row on sign-out or expiry, so the table is a list of who is signed in NOW,
+-- not who ever was. auth.audit_log_entries keeps history (email + timestamp,
+-- 13 months of it on this project) but its ip_address column is '' on every
+-- row and it has no user-agent at all. Neither is a log; together they still
+-- aren't. So: copy each auth.sessions row into a table of our own the moment
+-- it appears, before GoTrue can remove it.
+--
+-- ---- the trigger is on a table we do not own --------------------------------
+-- auth.sessions belongs to supabase_auth_admin. `postgres` holds TRIGGER on it
+-- (has_table_privilege, checked 2026-09-17), the same standing that lets 0001
+-- put on_auth_user_created on auth.users. Two consequences:
+--
+--  * GoTrue writes as supabase_auth_admin, which has no rights on public.*,
+--    so record_login_event() is SECURITY DEFINER — it runs as postgres, like
+--    handle_new_user(). EXECUTE is revoked from every client role: no client
+--    can call a trigger function anyway (0016), and the acl suite asserts it.
+--
+--  * ⚠️ An exception in this function rolls back the auth.sessions INSERT,
+--    i.e. it turns every sign-in into a 500. The body is wrapped in
+--    `exception when others then return new` so nothing can escape. Logging
+--    is not worth an outage; a missed row is. Keep it that way.
+--
+-- ---- who can read it --------------------------------------------------------
+-- Platform admins, over the table, under RLS. Nobody can write it from a
+-- client: no INSERT/UPDATE/DELETE grant, no policy. Same append-only posture
+-- as rate_events (§13.1), minus the SELECT revoke.
+--
+-- email is a snapshot taken at sign-in. profiles is own-row-only under RLS,
+-- so an admin reading login_events from the browser could not join to it;
+-- and auth.users is out of PostgREST's reach entirely.
+--
+-- ip is text, via host(): auth.sessions.ip is inet, and inet's text form
+-- carries the netmask ("106.192.51.28/32"), which is noise on a page and a
+-- trap for an email/IP search.
+--
+-- ---- retention --------------------------------------------------------------
+-- An IP plus a user-agent is personal data. 180 days, pruned hourly by pg_cron
+-- next to prune-rate-events (§13.5). ON DELETE CASCADE from auth.users takes
+-- care of deleted accounts.
+--
+-- ---- what it does not capture -----------------------------------------------
+-- Failed sign-ins (no session is created — and Supabase's audit log has no
+-- such action either) and geolocation. Both would need an app-side path.
+
+-- ---- table -------------------------------------------------------------------
+create table if not exists public.login_events (
+  id           bigint generated always as identity primary key,
+  user_id      uuid        not null references auth.users(id) on delete cascade,
+  session_id   uuid        unique,
+  email        text,
+  ip           text,
+  user_agent   text,
+  created_at   timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+create index if not exists login_events_created_idx on public.login_events (created_at desc);
+create index if not exists login_events_email_idx   on public.login_events (email);
+
+-- ---- access ------------------------------------------------------------------
+alter table public.login_events enable row level security;
+revoke all on public.login_events from anon, authenticated;
+grant select on public.login_events to authenticated;
+
+drop policy if exists "Platform admins read login events" on public.login_events;
+create policy "Platform admins read login events" on public.login_events
+  for select to authenticated
+  using ((select public.is_platform_admin()));
+
+-- ---- trigger -----------------------------------------------------------------
+create or replace function public.record_login_event()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if tg_op = 'INSERT' then
+    insert into public.login_events
+      (user_id, session_id, email, ip, user_agent, created_at, last_seen_at)
+    select new.user_id, new.id, u.email, host(new.ip), new.user_agent,
+           new.created_at, new.created_at
+      from auth.users u
+     where u.id = new.user_id
+    on conflict (session_id) do nothing;
+  else
+    update public.login_events
+       set last_seen_at = now()
+     where session_id = new.id;
+  end if;
+  return new;
+exception when others then
+  -- A failure here would fail the sign-in itself. Never let it.
+  return new;
+end;
+$$;
+
+revoke execute on function public.record_login_event() from public, anon, authenticated;
+
+drop trigger if exists on_auth_session_created on auth.sessions;
+create trigger on_auth_session_created
+  after insert on auth.sessions
+  for each row execute function public.record_login_event();
+
+drop trigger if exists on_auth_session_refreshed on auth.sessions;
+create trigger on_auth_session_refreshed
+  after update of refreshed_at on auth.sessions
+  for each row
+  when (new.refreshed_at is distinct from old.refreshed_at)
+  execute function public.record_login_event();
+
+-- ---- retention ---------------------------------------------------------------
+select cron.unschedule('prune-login-events')
+where exists (select 1 from cron.job where jobname = 'prune-login-events');
+
+select cron.schedule(
+  'prune-login-events',
+  '23 * * * *',
+  $$delete from public.login_events where created_at < now() - interval '180 days'$$
+);
+
+-- ---- backfill the sessions alive right now -----------------------------------
+-- So the page is not empty on day one. refreshed_at is timestamp WITHOUT time
+-- zone on auth.sessions; GoTrue writes it in UTC.
+insert into public.login_events
+  (user_id, session_id, email, ip, user_agent, created_at, last_seen_at)
+select s.user_id, s.id, u.email, host(s.ip), s.user_agent, s.created_at,
+       coalesce(s.refreshed_at at time zone 'utc', s.created_at)
+  from auth.sessions s
+  join auth.users u on u.id = s.user_id
+on conflict (session_id) do nothing;
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0027', 'log-every-sign-in-for-platform-admins')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0028_session-end-method-account-type-and-new-device-on-login-events.sql
+-- ##########################################################################
+
+-- ============================================================================
+-- 0028 — session end, sign-in method, account type and new-device flag on
+--        login_events
+-- ============================================================================
+-- 0027 records who signed in, when, from where and on what. Four things the
+-- page still could not say: when the session ended, how they signed in
+-- (password or email link), what kind of account it was, and whether the
+-- device was one this user had used before. All four are derivable from
+-- tables GoTrue already keeps — for as long as it keeps them — so the same
+-- copy-it-before-it-goes approach as 0027 applies.
+--
+-- ---- ended_at: a third trigger on auth.sessions ------------------------------
+-- GoTrue deletes the auth.sessions row on sign-out (and on expiry cleanup).
+-- An AFTER DELETE trigger stamps ended_at on the matching login_events row.
+-- Until that delete happens the row is "Active" — which means the session row
+-- still exists, not necessarily that anyone is using it: sessions GoTrue has
+-- not yet cleaned up show Active too.
+--
+-- ---- method: comes from auth.mfa_amr_claims, not auth.sessions ---------------
+-- The sign-in method is not on auth.sessions at all. GoTrue records it as an
+-- AMR claim (auth.mfa_amr_claims.authentication_method: 'password', 'otp',
+-- 'magiclink', 'recovery', …) — and it inserts that claim AFTER the session
+-- row, in the same transaction. So the on_auth_session_created trigger runs
+-- before the claim exists and cannot read it. Hence a second trigger, on
+-- auth.mfa_amr_claims itself, that writes the method back onto the
+-- login_events row once the claim lands. The session INSERT still tries to
+-- read a claim (`method = (select …)`) so that if GoTrue ever reorders its
+-- writes the value is picked up either way; the claim trigger only fills a
+-- NULL, so the first claim per session wins and nothing is overwritten.
+--
+-- ---- every trigger here is fail-open, on purpose -----------------------------
+-- Both auth.sessions and auth.mfa_amr_claims are written inside the sign-in
+-- request. A trigger on either that raises rolls GoTrue's write back and the
+-- user gets a 500 instead of a session — for everyone, until the trigger is
+-- dropped. That is 0027's rule and it now covers three triggers and two
+-- functions: record_login_event() (INSERT / UPDATE / DELETE on auth.sessions)
+-- and record_login_method() (INSERT on auth.mfa_amr_claims) both wrap their
+-- whole body in `exception when others`. A missed column is a gap in a log; a
+-- raise is an outage. Keep it that way.
+--
+-- Both tables belong to supabase_auth_admin; `postgres` holds TRIGGER on each
+-- (has_table_privilege, checked live 2026-09-17), the same standing 0001 and
+-- 0027 rely on. GoTrue writes as supabase_auth_admin, which has no rights on
+-- public.*, so both functions are SECURITY DEFINER with EXECUTE revoked from
+-- every client role.
+--
+-- ---- account_type: a snapshot, highest wins ---------------------------------
+-- platform_admins → 'platform_admin'; company_members.role = 'owner' →
+-- 'company_owner'; any other company_members row → 'company_staff'; else
+-- 'trekker'. Taken at sign-in, like email, so a later role change does not
+-- rewrite history.
+--
+-- ---- is_new_device: no earlier row with this ip AND none with this browser --
+-- Per user. A first sign-in is a new device; so is a new IP on a browser the
+-- user has never used. A new IP alone is not (people move networks), and a new
+-- browser alone is not (people update browsers) — so the user-agent is
+-- compared with every version number stripped out, and a Chrome 151 → 152
+-- bump on the same IP is not flagged. Equality is `is not distinct from` so a
+-- client that sends no user-agent compares equal to itself rather than
+-- flagging every sign-in.
+--
+-- ---- access: unchanged ------------------------------------------------------
+-- authenticated keeps SELECT only, under 0027's is_platform_admin() policy;
+-- anon holds nothing; no client role can write. New columns inherit the
+-- table-level grant, so nothing to add.
+
+-- ---- columns -----------------------------------------------------------------
+alter table public.login_events
+  add column if not exists ended_at      timestamptz,
+  add column if not exists method        text,
+  add column if not exists account_type  text,
+  add column if not exists is_new_device boolean not null default false;
+
+-- ---- trigger function on auth.sessions ---------------------------------------
+create or replace function public.record_login_event()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if tg_op = 'INSERT' then
+    insert into public.login_events
+      (user_id, session_id, email, ip, user_agent, created_at, last_seen_at,
+       method, account_type, is_new_device)
+    select new.user_id, new.id, u.email, host(new.ip), new.user_agent,
+           new.created_at, new.created_at,
+           (select c.authentication_method
+              from auth.mfa_amr_claims c
+             where c.session_id = new.id
+             order by c.created_at
+             limit 1),
+           case
+             when exists (select 1 from public.platform_admins pa
+                           where pa.user_id = new.user_id)
+               then 'platform_admin'
+             when exists (select 1 from public.company_members cm
+                           where cm.user_id = new.user_id and cm.role = 'owner')
+               then 'company_owner'
+             when exists (select 1 from public.company_members cm
+                           where cm.user_id = new.user_id)
+               then 'company_staff'
+             else 'trekker'
+           end,
+           not exists (select 1 from public.login_events e
+                        where e.user_id = new.user_id
+                          and e.session_id is distinct from new.id
+                          and e.ip is not distinct from host(new.ip))
+           and not exists (select 1 from public.login_events e
+                            where e.user_id = new.user_id
+                              and e.session_id is distinct from new.id
+                              and regexp_replace(e.user_agent, '\d+([._]\d+)*', '', 'g')
+                                  is not distinct from
+                                  regexp_replace(new.user_agent, '\d+([._]\d+)*', '', 'g'))
+      from auth.users u
+     where u.id = new.user_id
+    on conflict (session_id) do nothing;
+    return new;
+  elsif tg_op = 'DELETE' then
+    update public.login_events
+       set ended_at = now()
+     where session_id = old.id
+       and ended_at is null;
+    return old;
+  else
+    update public.login_events
+       set last_seen_at = now()
+     where session_id = new.id;
+    return new;
+  end if;
+exception when others then
+  -- A failure here would fail the sign-in (or sign-out) itself. Never let it.
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
+end;
+$$;
+
+revoke execute on function public.record_login_event() from public, anon, authenticated;
+
+drop trigger if exists on_auth_session_deleted on auth.sessions;
+create trigger on_auth_session_deleted
+  after delete on auth.sessions
+  for each row execute function public.record_login_event();
+
+-- ---- trigger function on auth.mfa_amr_claims ---------------------------------
+create or replace function public.record_login_method()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  update public.login_events
+     set method = new.authentication_method
+   where session_id = new.session_id
+     and method is null;
+  return new;
+exception when others then
+  -- Same rule as record_login_event(): a raise here fails the sign-in.
+  return new;
+end;
+$$;
+
+revoke execute on function public.record_login_method() from public, anon, authenticated;
+
+drop trigger if exists on_auth_amr_claim_created on auth.mfa_amr_claims;
+create trigger on_auth_amr_claim_created
+  after insert on auth.mfa_amr_claims
+  for each row execute function public.record_login_method();
+
+-- ---- backfill the rows 0027 already holds ------------------------------------
+-- Every one of them is a session that is still alive (0027 only ever copied
+-- live sessions and the DELETE trigger did not exist), so ended_at stays null.
+update public.login_events le
+   set method = (select c.authentication_method
+                   from auth.mfa_amr_claims c
+                  where c.session_id = le.session_id
+                  order by c.created_at
+                  limit 1)
+ where le.method is null;
+
+update public.login_events le
+   set account_type = case
+     when exists (select 1 from public.platform_admins pa where pa.user_id = le.user_id)
+       then 'platform_admin'
+     when exists (select 1 from public.company_members cm
+                   where cm.user_id = le.user_id and cm.role = 'owner')
+       then 'company_owner'
+     when exists (select 1 from public.company_members cm where cm.user_id = le.user_id)
+       then 'company_staff'
+     else 'trekker'
+   end
+ where le.account_type is null;
+
+-- "Earlier" is by (created_at, id) so two rows with the same timestamp still
+-- have a definite order and cannot both come out as the first.
+update public.login_events le
+   set is_new_device =
+       not exists (select 1 from public.login_events e
+                    where e.user_id = le.user_id
+                      and (e.created_at, e.id) < (le.created_at, le.id)
+                      and e.ip is not distinct from le.ip)
+       and not exists (select 1 from public.login_events e
+                        where e.user_id = le.user_id
+                          and (e.created_at, e.id) < (le.created_at, le.id)
+                          and regexp_replace(e.user_agent, '\d+([._]\d+)*', '', 'g')
+                              is not distinct from
+                              regexp_replace(le.user_agent, '\d+([._]\d+)*', '', 'g'));
+
+-- ============================================================================
+-- RECORD THIS MIGRATION
+-- ============================================================================
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0028', 'session-end-method-account-type-and-new-device-on-login-events')
+on conflict (version) do nothing;
+
+
+-- ##########################################################################
+-- # 0029_gate-apply-for-company-on-a-company-account.sql
+-- ##########################################################################
+
+-- 0029 — apply_for_company() refuses trekker accounts, in the migration too
+--
+-- Production has enforced this since phase F (2026-08-06): the live function
+-- body raises 'Only company accounts can apply. Sign up as a trek company
+-- instead.' before touching a row, and `phases/phase-f-account-types.sql`
+-- carries the same block. When phase F was folded into `0001_baseline.sql`
+-- the gate survived only as a commented-out fragment (§14.7, "see §12.4"),
+-- and the §12.4 body it points at never gained it. So a database built from
+-- the migrations — which is what `npx vitest run --project db` proves against
+-- — let a trekker create a company, while production did not. Found by the
+-- 2026-09-18 FEATURES.md audit (E26), read back over the MCP server on
+-- 2026-09-19: `pg_get_functiondef` of the live function is the body below.
+--
+-- Restates the whole body so committed = live. Grants are untouched:
+-- `create or replace` keeps them, and the live set (authenticated yes,
+-- anon no) is what 0001 §17.3 already installs.
+create or replace function public.apply_for_company(
+  p_name          text,
+  p_slug          text,
+  p_description   text default null,
+  p_contact_email text default null,
+  p_contact_phone text default null,
+  p_website       text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_company_id uuid;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  if not exists (
+    select 1 from public.profiles p
+    where p.id = v_uid and p.account_type = 'company'
+  ) then
+    raise exception 'Only company accounts can apply. Sign up as a trek company instead.';
+  end if;
+
+  if p_name is null or length(trim(p_name)) = 0 then
+    raise exception 'Company name is required';
+  end if;
+  if p_slug is null or p_slug !~ '^[a-z0-9]+(-[a-z0-9]+)*$' then
+    raise exception 'Slug must be lowercase letters, numbers and hyphens only';
+  end if;
+
+  insert into public.companies
+    (name, slug, description, contact_email, contact_phone, website, created_by, status)
+  values
+    (trim(p_name), p_slug, p_description, p_contact_email, p_contact_phone, p_website, v_uid, 'pending')
+  returning id into v_company_id;
+
+  insert into public.company_members (company_id, user_id, role)
+  values (v_company_id, v_uid, 'owner');
+
+  return jsonb_build_object('company_id', v_company_id, 'status', 'pending');
+exception
+  when unique_violation then
+    raise exception 'You already have a pending application, or that URL slug is taken';
+end;
+$$;
+
+insert into supabase_migrations.schema_migrations (version, name)
+values ('0029', 'gate-apply-for-company-on-a-company-account')
 on conflict (version) do nothing;

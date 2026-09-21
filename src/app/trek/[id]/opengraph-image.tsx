@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { ImageResponse } from 'next/og';
 import { supabase } from '@/lib/supabase';
 import { SITE_NAME, factLine, truncate } from '@/lib/site';
+import { logError } from '@/lib/log';
 
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
@@ -33,7 +34,7 @@ async function getTrekCard(id: string) {
     .maybeSingle();
 
   if (error) {
-    console.error('Error fetching trek for OG image:', error.message);
+    logError('Error fetching trek for OG image:', error);
     return null;
   }
   return data;

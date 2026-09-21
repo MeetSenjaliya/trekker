@@ -25,11 +25,15 @@ auth.users ──1:1──> profiles ──┐
                                 └─< user_achievements
 
 auth.users ──< platform_admins   (super-admin allowlist, SQL-Editor-only)
+auth.sessions ─trigger─> login_events   (every sign-in: email, ip, user-agent, account type, new-device flag; ended_at on sign-out; platform-admin read-only)
+auth.mfa_amr_claims ─trigger─> login_events.method   (how they signed in: password / otp / magiclink …)
 ```
 
 - A **trek** is a catalogue entry. A **batch** is a dated departure of a trek (`UNIQUE(trek_id, batch_date)`).
 - Since 2026-07-02 every trek is **owned by a company** (`treks.company_id` NOT NULL) and soft-deletes via `is_active`. A trek is publicly visible only when `is_active` AND its company is `approved` (`is_trek_visible()`). Companies are created only via `apply_for_company()` (self-serve, lands `pending`) and moderated by **platform admins** (approve/reject/suspend RPCs).
 - Joining a batch creates/uses a **conversation** (one per batch, `conversations.batch_id` is `UNIQUE`) and adds the user to both `trek_participants` and `conversation_participants`. This is done atomically by the `join_trek_and_chat` RPC.
+- **Whether the seat is `confirmed` or `waitlisted` is decided when the row is written, not by the writer** (`0024`, **applied and verified live 2026-09-14 09:15:46+00**): the BEFORE INSERT trigger `trek_participants_assign_status` locks the batch, counts confirmed seats and overwrites `status`. The RPC reads that back (`RETURNING`) rather than computing its own, so a direct `POST /rest/v1/trek_participants` and the RPC land the same answer.
+- **Leaving is atomic the same way** (`0019`): deleting the `trek_participants` row fires `trek_participants_chat_leave`, which removes the matching `conversation_participants` row in the same transaction. Before that the two deletes were issued independently by the browser, so a client that sent only the booking delete stayed in the group chat after leaving the trek.
 - **Reviews** are one-per-(trek, user) and require the user to have actually joined the trek.
 
 ---
@@ -41,7 +45,7 @@ auth.users ──< platform_admins   (super-admin allowlist, SQL-Editor-only)
 | `uuid-ossp` | 1.1 | UUID generation |
 | `pgcrypto` | 1.3 | `gen_random_uuid()` |
 | `pg_net` | 0.14.0 | async HTTP from `notify_trek_*` functions |
-| `pg_cron` | — | scheduled jobs: daily `recompute_user_stats`, hourly `prune-rate-events` |
+| `pg_cron` | — | scheduled jobs: daily `recompute_user_stats`, hourly `prune-rate-events` and `prune-login-events` |
 | `pg_stat_statements` | 1.11 | query stats (Supabase-managed) |
 | `supabase_vault` | 0.3.1 | secrets (Supabase-managed) |
 | `plpgsql` | 1.0 | procedural language |
@@ -70,6 +74,7 @@ Holds **PII**. Public reads are blocked at the table; cross-user display data is
 | `avatar_url` | text | |
 | `bio` | text | ≤ 500 chars (`profiles_bio_len`, 0009) |
 | `emergency_contact` | text | PII. ≤ 100 chars (`profiles_emergency_contact_len`, 0011) |
+| `emergency_contact_relationship` | text | PII. ≤ 60 chars (`profiles_emergency_contact_relationship_len`, 0017). Added by 0017 — the profile editor had validated this value at 60 chars since Zod landed and then written it to no column |
 | `created_at` | timestamptz | `now()` |
 | `email` | text | **NOT NULL, UNIQUE** (PII) |
 | `age` | integer | PII |
@@ -94,8 +99,8 @@ Owned by a company; company members create/edit their own treks via RLS, archive
 | `location` | text | ≤ 200 chars (`treks_location_len`, 0011) |
 | `cover_image_url` | text | |
 | `difficulty` | `difficulty` | **NOT NULL** |
-| `distance_km` | numeric | |
-| `duration_hours` | numeric | |
+| `distance_km` | numeric | `>= 0` (`treks_distance_km_nonneg`, 0017); no upper bound |
+| `duration_hours` | numeric | `>= 0` (`treks_duration_hours_nonneg`, 0017); no upper bound |
 | `meeting_point` / `meeting_point2` | text | ≤ 300 chars each (`treks_meeting_point_len` / `treks_meeting_point2_len`, 0011) |
 | `max_participants` | integer | `> 0` (`treks_max_participants_positive`, 0009). NULL = uncapped |
 | `estimated_cost` | numeric | `>= 0` (`treks_estimated_cost_nonneg`, 0009); no upper bound |
@@ -123,7 +128,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `status` | `company_status` | **NOT NULL** default `'pending'`, indexed. Only platform admins can change it (trigger-pinned) |
 | `rejection_reason` | text | set by `reject_company()` / `suspend_company()`. **Uncapped on purpose** — no Zod counterpart, and `trg_protect_company_admin_fields` pins it to OLD for non-platform-admins, so it has no untrusted writer |
 | `created_by` | uuid | **NOT NULL**, FK → `auth.users(id)`. Partial unique index `companies_one_pending_per_creator`: **one pending application per user** (spam guard; rejected users can reapply) |
-| `approved_by` / `approved_at` | uuid / timestamptz | audit trail, set by `approve_company()` |
+| `approved_by` / `approved_at` | uuid / timestamptz | audit trail, set by `approve_company()`. `approved_by` FK → `auth.users(id)`, indexed by `companies_approved_by_idx` (`0025`) |
 | `created_at` | timestamptz | `now()` |
 
 ### `company_members` — user ↔ company with role (added 2026-07-02)
@@ -144,7 +149,7 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `id` | uuid | **PK** |
 | `company_id` | uuid | **NOT NULL**, FK → `companies(id)` ON DELETE CASCADE |
 | `email` | text | **NOT NULL**, stored lowercased + trimmed by the RPC; every lookup lowercases |
-| `invited_by` | uuid | **NOT NULL**, FK → `profiles(id)` |
+| `invited_by` | uuid | **NOT NULL**, FK → `profiles(id)`, indexed by `company_invites_invited_by_idx` (`0025`) |
 | `role` | `company_role` | **NOT NULL** default `'staff'`, CHECK `role <> 'owner'` |
 | `status` | text | **NOT NULL** default `'pending'`, CHECK ∈ `pending, accepted, declined, revoked` |
 | `created_at` | timestamptz | **NOT NULL** `now()` |
@@ -175,8 +180,8 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `id` | uuid | **PK** |
 | `user_id` | uuid | FK → `profiles(id)` |
 | `batch_id` | uuid | FK → `trek_batches(id)` |
-| `joined_at` | timestamptz | `now()` |
-| `status` | text | `'confirmed'` (default) or `'waitlisted'`; CHECK-constrained. Full batches waitlist new joiners (no chat seat); promoted FIFO by `promote_waitlist_on_leave()`. Indexed `(batch_id, status, joined_at)`. |
+| `joined_at` | timestamptz | `now()`, **pinned by `trek_participants_pin_joined_at` (`0020`)** — the INSERT policy checks only `auth.uid() = user_id and is_trekker()`, so a direct PostgREST insert could set any timestamp (verified: 400 days back was accepted). It is a system timestamp; the completion gate and the monthly rollup both read it. UPDATE was already impossible — the table has no UPDATE policy. |
+| `status` | text | `'confirmed'` (default) or `'waitlisted'`; CHECK-constrained. **Pinned on INSERT by `trek_participants_assign_status` (`0024`, **applied and verified live 2026-09-14 09:15:46+00**)** — the policy never checked it, so a direct PostgREST insert could write `'confirmed'` on a full batch (or send nothing and get the default). The trigger locks the batch, counts confirmed seats and overwrites the value; writes with no session (SQL Editor, seeding) keep what they wrote. Full batches waitlist new joiners (no chat seat); promoted FIFO by `promote_waitlist_on_leave()`. UPDATE is impossible for clients — no UPDATE policy. Indexed `(batch_id, status, joined_at)`. |
 | | | **UNIQUE(`user_id`, `batch_id`)** |
 
 ### `trek_reviews` — one review per (trek, user)
@@ -192,14 +197,15 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 | `trek_date` | date | |
 | | | **UNIQUE(`trek_id`, `user_id`)** |
 | | | **INDEX** `trek_reviews_user_idx (user_id)` — the unique leads with `trek_id`, so the `user_id` FK was unindexed (2026-08-12) |
+| | | The **UNIQUE** is what blocks double-reviews — not the RLS policy. Since `0018` the write gate also needs a `confirmed` booking on a *finished* batch; there is no cancelled-batch signal to consult (`trek_batches` has no status column, and a batch with bookings cannot be deleted). |
 
-### `favorites` — wishlist (no surrogate PK)
+### `favorites` — wishlist (composite PK, no surrogate)
 | Column | Type | Notes |
 |---|---|---|
 | `user_id` | uuid | **NOT NULL**, FK → `profiles(id)` |
-| `trek_id` | uuid | FK → `treks(id)` |
+| `trek_id` | uuid | **NOT NULL** (since `0025` — the PK implies it; it was nullable before), FK → `treks(id)` |
 | `created_at` | timestamptz | `now()` |
-| | | **UNIQUE(`user_id`, `trek_id`)** |
+| | | **PK(`user_id`, `trek_id`)** (`0025`) — promoted from the former `UNIQUE` of the same shape, which was dropped in the same ALTER so the table never carries two identical indexes |
 | | | **INDEX** `favorites_trek_idx (trek_id)` — the unique leads with `user_id`, so the `trek_id` FK was unindexed (2026-08-12) |
 
 ### `conversations` — one chat per batch
@@ -215,9 +221,9 @@ Created **only** via `apply_for_company()` (no INSERT policy). Approval-workflow
 |---|---|---|
 | `conversation_id` | uuid | **NOT NULL**, FK → `conversations(id)` |
 | `user_id` | uuid | **NOT NULL**, FK → `profiles(id)` |
-| `joined_at` | timestamptz | `now()` |
+| `joined_at` | timestamptz | `now()`, **pinned by `trek_participants_pin_joined_at` (`0020`)** — the INSERT policy checks only `auth.uid() = user_id and is_trekker()`, so a direct PostgREST insert could set any timestamp (verified: 400 days back was accepted). It is a system timestamp; the completion gate and the monthly rollup both read it. UPDATE was already impossible — the table has no UPDATE policy. |
 | `last_read_at` | timestamptz | **NOT NULL**, `now()` — unread-count watermark; read by `get_unread_counts()`, advanced by `mark_conversation_read()` |
-| | | **UNIQUE(`conversation_id`, `user_id`)** — was **two** byte-identical uniques until 2026-08-12; the Postgres-default-named duplicate (`…_conversation_id_user_id_key`) was dropped, since every `on conflict (conversation_id, user_id)` infers its arbiter from the column list, not a constraint name |
+| | | **PK(`conversation_id`, `user_id`)** (`0025`) — promoted from `UNIQUE(conversation_id, user_id)`, which was dropped in the same ALTER. That unique was itself **two** byte-identical uniques until 2026-08-12; the Postgres-default-named duplicate (`…_conversation_id_user_id_key`) went first. Safe each time because every `on conflict (conversation_id, user_id)` infers its arbiter from the column list, not a constraint name |
 | | | **INDEX** `conversation_participants_user_conv_idx (user_id, conversation_id)` — the unique leads with `conversation_id`, so "which chats am I in?" (the driving side of `get_unread_counts()`, and the `/messages` sidebar) had no usable index. Covering for both; also indexes the `user_id` FK |
 
 ### `conversation_messages` — chat messages
@@ -245,10 +251,54 @@ Composite **PK (`created_at`, `id`)**.
 **PK (`user_id`, `month`)**; `month` `CHECK extract(day) = 1`. Counters: `treks_joined`, `photos_shared`, `reviews_written`, `distance_km` (all `CHECK ≥ 0`). **System-managed: read-only to clients** (same model as `user_stats`).
 
 ### `user_achievements` — earned badges (gamification)
-**PK (`user_id`, `achievement_key`)**; `earned_at` timestamptz. **Append-only, system-managed: read-only to clients** (SELECT own rows only; INSERT/UPDATE/DELETE revoked — written exclusively by `award_user_achievements()`, chained off `recompute_user_stats()`). Badge catalog (key → name/icon/description) lives in `src/lib/achievements.ts`; criteria thresholds live in `award_user_achievements()`. 15 badges keyed on treks joined (entry-level "Trailblazer"), completed-trek count, total distance, distinct locations, Hard/Expert completions, distinct active months, reviews written, and photos shared.
+**PK (`user_id`, `achievement_key`)**; `earned_at` timestamptz. **Reconciled, system-managed: read-only to clients** (SELECT own rows only; INSERT/UPDATE/DELETE revoked — written exclusively by `award_user_achievements()`, chained off `recompute_user_stats()`). Badge catalog (key → name/icon/description) lives in `src/lib/achievements.ts`; criteria thresholds live in `award_user_achievements()`. 15 badges keyed on treks joined (entry-level "Trailblazer"), completed-trek count, total distance, distinct locations, Hard/Expert completions, distinct active months, reviews written, and photos shared.
+
+**Was append-only until `0020`, and that was the bug.** Badges were a high-water mark over metrics the user can reset at will by leaving a trek, so one join + one leave bought a permanent badge and the profile could show `ultra_explorer` beside 0 km. A badge is now a pure function of the bookings held right now: `award_user_achievements()` inserts what qualifies and **deletes what no longer does** (scoped to the 15 keys it owns, so a key written by anything else is never touched). A badge lost and re-earned gets a fresh `earned_at`.
+
+**The 15 unlock rules, as they run live** (read back from `pg_proc.prosrc` on
+2026-09-09; the `values (...)` catalog inside `award_user_achievements()` is the
+only place a threshold is enforced). Six metrics feed them, all computed for one
+user inside that function:
+
+- `joined` — `trek_participants` rows with `status = 'confirmed'`, **any date** (the one metric that is not about completion).
+- `completed` — those same rows restricted to treks that have **ended** (`batch_date + whole days spanned - 1 < current_date`) **and** booked before departure (`joined_at::date <= batch_date`, NULL = legacy, counts). Every metric below is derived from this set.
+- `distance` — `sum(treks.distance_km)` · `locations` — `count(distinct treks.location)` · `hard` — completions with `treks.difficulty in ('Hard','Expert')` · `months` — `count(distinct date_trunc('month', batch_date))`.
+- `reviews` / `photos` — `count(*)` and `sum(array_length(photo_urls, 1))` over the user's `trek_reviews` (not restricted to the completed set; `0018` already gates writing a review on a finished confirmed booking).
+
+| Badge key | Unlocks at | Metric |
+|---|---|---|
+| `trailblazer` | ≥ 1 | `joined` |
+| `first_steps` | ≥ 1 | `completed` |
+| `trail_regular` | ≥ 5 | `completed` |
+| `seasoned_trekker` | ≥ 10 | `completed` |
+| `mountain_master` | ≥ 25 | `completed` |
+| `trail_legend` | ≥ 50 | `completed` |
+| `warming_up` | ≥ 10 | `distance` (km) |
+| `centurion` | ≥ 100 | `distance` (km) |
+| `ultra_explorer` | ≥ 500 | `distance` (km) |
+| `explorer` | ≥ 5 | `locations` |
+| `globetrotter` | ≥ 10 | `locations` |
+| `peak_conqueror` | ≥ 1 | `hard` |
+| `dedicated` | ≥ 6 | `months` |
+| `storyteller` | ≥ 5 | `reviews` |
+| `shutterbug` | ≥ 25 | `photos` |
+
+Every rule is evaluated on every recompute, so a badge is **won and lost** by the
+same comparison — there is no separate revoke path and no `earned_at` grace period.
+
+**Sync check (2026-09-09):** live `award_user_achievements` / `recompute_user_stats` /
+`pin_participant_joined_at` bodies are md5-identical to
+[`0020`](supabase/migrations/0020_earn-badges-only-from-treks-actually-held.sql) and to the
+final definition in `supabase/schema.sql`, and the 15 keys in `src/lib/achievements.ts`
+match the SQL catalog exactly, in the same order. Nothing enforces that last part —
+the TS descriptions are display text only, so re-run this comparison when either side
+changes ([FEATURES.md §1.2](FEATURES.md#12-features-to-add)).
 
 ### `rate_events` — append-only rate-limit counter (added 2026-08-05)
 `id` bigint identity **PK**, `actor` uuid **NOT NULL** FK → `auth.users(id)` ON DELETE CASCADE, `action` text **NOT NULL** (`'join'` | `'invite'` | `'trek_email'` | the storage actions from `storage_rate_rule()`), `at` timestamptz default `now()`. Indexed `(actor, action, at desc)`. **Invisible to clients: RLS on with ZERO policies *and* all grants revoked from `anon`/`authenticated`**, so it is not reachable through PostgREST at all — a user can neither read their own counter nor delete it to reset a limit. Written only by the SECURITY DEFINER functions in §6 (which bypass RLS). Logged **only** where the evidence of an action does not survive (leaving a trek deletes the `trek_participants` row; a failed invite lookup writes nothing) — chat flood counts real `conversation_messages` rows instead, since they are soft-deleted and never removed. Pruned hourly by the `prune-rate-events` pg_cron job (keeps 1 day; only the last hour is ever read).
+
+### `login_events` — every sign-in, for platform admins (added 2026-09-17, `0027`; extended the same day by `0028`)
+`id` bigint identity **PK**, `user_id` uuid **NOT NULL** FK → `auth.users(id)` ON DELETE CASCADE, `session_id` uuid **UNIQUE** (= `auth.sessions.id`), `email` text (snapshot at sign-in — `profiles` is own-row-only, so an admin could not join to it from the client), `ip` text (`host()` of `auth.sessions.ip`, so no `/32` suffix), `user_agent` text, `created_at` timestamptz, `last_seen_at` timestamptz (bumped on every token refresh), and since `0028`: `ended_at` timestamptz (stamped when GoTrue deletes the `auth.sessions` row — sign-out or expiry cleanup; **null means the session row still exists**, not that anyone is using it, so sessions GoTrue has not yet cleaned up show as "Active", and `signInAs()`'s wrong-tab probe leaves seconds-long rows because it signs its throwaway client out), `method` text (GoTrue's `auth.mfa_amr_claims.authentication_method` — `password`, `otp`, `magiclink`, `recovery`, … — written by the `on_auth_amr_claim_created` trigger, since GoTrue inserts the claim *after* the session row), `account_type` text (snapshot at sign-in, highest wins: `platform_admin` / `company_owner` / `company_staff` / `trekker`), `is_new_device` boolean **NOT NULL** default false (true when the user has no earlier row with the same `ip` **and** none with the same version-stripped `user_agent` — `regexp_replace(ua, '\d+([._]\d+)*', '', 'g')` — so the first sign-in is new, a new IP alone is not, a browser version bump alone is not). Indexed `(created_at desc)` and `(email)`. **Filled only by the `on_auth_session_*` and `on_auth_amr_claim_created` triggers in §7** — Supabase records IP + user-agent on `auth.sessions` but deletes that row on sign-out, and `auth.audit_log_entries` has neither (its `ip_address` is `''` on every row), so this is the only place the history exists. **Readable by platform admins only** (one SELECT policy; `anon` holds no grant at all); no client role can INSERT/UPDATE/DELETE. Pruned hourly by `prune-login-events` (keeps 180 days). Read by `/admin/logins` via `adminListLoginEvents()` in `src/lib/loginEvents.ts`; display helpers in `src/lib/loginEventFormat.ts`. Does **not** record failed sign-ins (no session is created) or geolocation.
 
 ---
 
@@ -257,7 +307,7 @@ Composite **PK (`created_at`, `id`)**.
 | View | Definition | Notes |
 |---|---|---|
 | `public_profiles` | `select id, full_name, avatar_url from profiles` | **Owner-privileged** (security_invoker = false) so it returns all rows while `profiles` stays own-row-only. Readable by `anon` + `authenticated`. ⚠️ Supabase linter flags this as `security_definer_view` (ERROR) — intentional trade-off. |
-| `user_completed_treks` | `trek_participants ⋈ trek_batches ⋈ treks WHERE batch_date < current_date` | Past treks per user. |
+| `user_completed_treks` | `trek_participants ⋈ trek_batches ⋈ treks WHERE status = 'confirmed' AND batch_date + (days spanned − 1) < current_date AND coalesce(joined_at::date, batch_date) <= batch_date` | Completed treks per user, by the `0020` definition (aligned in `0026` — it carried 0001's bare `batch_date < current_date` until then). `security_invoker = on`, **no client grant** — nothing in `src/` reads it. The predicate is shared verbatim with the `0018` review policies and the `0020` stats/badge functions; change all three together. |
 
 ---
 
@@ -271,15 +321,19 @@ Composite **PK (`created_at`, `id`)**.
 | `is_approved_company_member(uuid)` | boolean | **DEFINER** | pinned | `is_company_member()` AND the company is `approved`. **The publishing tier** (2026-08-08): backs the `treks` + `trek_batches` write policies and the `trek-images` bucket. Orphaned from the multi-tenant migration until then. |
 | `is_company_writable(uuid)` | boolean | **DEFINER** | pinned | The frozen/not-frozen test (2026-08-08): company `status ∈ (pending, approved)`. About the **company only** — composed with `is_company_member`/`is_company_admin` at each call site rather than forking those into status-aware twins. Backs `companies` UPDATE, `company_members` UPDATE/DELETE, the `company-logos` bucket, `invite_company_member` and `accept_company_invite`. DEFINER because two callers can't see the `companies` row under RLS: the invitee in `accept_company_invite()`, and the `companies` UPDATE policy itself (which must not recurse into `view companies`). Mirrored in the app as `isCompanyFrozen()` in `src/lib/company.ts`. |
 | `handle_new_user()` | trigger | **DEFINER** | pinned | Creates `profiles` row on signup. ⚠️ exposed via RPC (revoke EXECUTE). |
-| `join_trek_and_chat(uuid,uuid,date)` | jsonb | **DEFINER** | pinned | The one write path for joining; derives caller from `auth.uid()`, refuses acting for others. Enforces per-batch capacity under a `FOR UPDATE` row lock — full batches return `status:'waitlisted'` (no chat seat) with a `waitlist_position` (FIFO, tie-broken by `(joined_at, id)` — follow-up #5); otherwise `'confirmed'`. |
+| `record_login_event()` | trigger | **DEFINER** | pinned | `0027`, extended `0028` — INSERT: copies a new `auth.sessions` row into `login_events` with the `account_type` snapshot, the `is_new_device` verdict and (fallback) any AMR claim that already exists; UPDATE: bumps `last_seen_at` on refresh; **DELETE** (`0028`): stamps `ended_at = now()` on the matching row. **Swallows every exception** (`when others` → `return old` on DELETE, `return new` otherwise): a raise would abort GoTrue's write and fail the sign-in or sign-out. EXECUTE revoked from `public`/`anon`/`authenticated`; on the no-role list in `tests/db/acl.test.ts`. |
+| `record_login_method()` | trigger | **DEFINER** | pinned | `0028` — AFTER INSERT on `auth.mfa_amr_claims`: sets `login_events.method` for that session **only where it is still null**, so the first claim wins. Exists because GoTrue inserts the claim after the session row in the same transaction, where the session trigger cannot see it. Same fail-open wrapper and the same EXECUTE revokes as `record_login_event()`; on the no-role list in `acl.test.ts`. |
+| `join_trek_and_chat(uuid,uuid,date)` | jsonb | **DEFINER** | pinned | The one write path for joining; derives caller from `auth.uid()`, refuses acting for others. Rejects company accounts (`is_trekker()`) — and, since **`0021`** (applied and verified live 2026-09-09 12:55:52+00), treks that are archived or whose company is not approved (`is_trek_bookable()`); both sit **before** the first insert, so a refused join conjures no batch and no conversation. Takes a `FOR UPDATE` lock on the batch row so concurrent joins serialize; since **`0024`** (**applied and verified live 2026-09-14 09:15:46+00**) it no longer decides capacity itself — the insert passes no status and `returning id, status` reads back what `assign_participant_status()` assigned, which then drives the chat seat (confirmed only) and the returned `status`. Full batches return `status:'waitlisted'` (no chat seat) with a `waitlist_position` (FIFO, tie-broken by `(joined_at, id)` — follow-up #5); otherwise `'confirmed'`. ⚠️ The bookability check sits ahead of the already-a-participant branch, so re-joining a batch you already hold now raises instead of returning the membership unchanged. |
 | `get_trek_participant_count(uuid)` | integer | INVOKER | pinned | **Confirmed** participant count across a trek's batches (excludes waitlisted). |
-| `promote_waitlist_on_leave()` | trigger | **DEFINER** | pinned | After a confirmed participant leaves, promotes the oldest waitlisted joiner (FIFO) to confirmed and adds them to the batch chat. EXECUTE revoked from anon/authenticated. |
+| `promote_waitlist_on_leave()` | trigger | **DEFINER** | pinned | After a confirmed participant leaves, promotes the oldest waitlisted joiner (FIFO) to confirmed and adds them to the batch chat. Ordered by `(joined_at, id)` since **`0022`** — the same tie-break `join_trek_and_chat()` numbers the queue with, so equal timestamps promote in the order the joiners were shown. EXECUTE revoked from anon/authenticated. |
+| `leave_chat_on_trek_leave()` | trigger | **DEFINER** | pinned | Deletes the leaver's `conversation_participants` row for the batch's conversation. DEFINER because the leaver is *denied* that delete by the policy below — the seat is released only as a consequence of giving up the booking. Unconditional on `old.status`: a waitlisted row holds no seat, so it is a no-op there and cleans up any drift. EXECUTE revoked from anon/authenticated. Added `0019`. |
 | `get_trek_avg_rating(uuid)` | numeric | INVOKER | pinned | Live average of a trek's `trek_reviews.rating`, rounded to 1 dp; `null` when unrated. Single-trek card views (home page). Granted to anon + authenticated. |
-| `search_treks(…, p_company_id uuid)` — 12 args | setof rows | INVOKER | pinned | Explore page read path: FTS + filters (location/difficulty/distance/price/date) + sort + pagination in one call. `rating` is the live average of `trek_reviews` (numeric, 1 dp, `null` when unrated); the `rating` sort orders by it. Returns `total_count` per row (window count). A search that sanitizes to empty (e.g. punctuation-only `!!!`) returns **no matches** rather than the whole catalog (follow-up #3). **Rewritten 2026-07-02 (multi-tenant):** only returns treks that are `is_active` with an `approved` company; returns `company_id`/`company_name`/`company_slug`; optional `p_company_id` filter for the `/company/[slug]` storefront. The old 11-arg overload was dropped. Granted to anon + authenticated. |
+| `search_treks(…, p_company_id uuid)` — 12 args | setof rows | INVOKER | pinned | Explore page read path: FTS + filters (location/difficulty/distance/price/date) + sort + pagination in one call. `rating` is the live average of `trek_reviews` (numeric, 1 dp, `null` when unrated); the `rating` sort orders by it. Returns `total_count` per row (window count). A search that sanitizes to empty (e.g. punctuation-only `!!!`) returns **no matches** rather than the whole catalog (follow-up #3). **Rewritten 2026-07-02 (multi-tenant):** only returns treks that are `is_active` with an `approved` company; returns `company_id`/`company_name`/`company_slug`; optional `p_company_id` filter for the `/company/[slug]` storefront. The old 11-arg overload was dropped. Granted to anon + authenticated. **`0023`** (**applied and verified live 2026-09-14 06:35:41+00**) bounds the work one call may do: `p_limit` is clamped to `[0, 100]` and `p_offset` to `[0, 10 000]`, so the largest legal request is a known quantity whatever the caller asks for. 100 is the app's own ceiling (`getStorefrontTreks()`), so no caller changes. This is a per-call work bound, **not** a rate limit — an anon read has no actor to key one on; that is a WAF/platform decision. |
 | `is_platform_admin()` | boolean | **DEFINER** | pinned | Caller ∈ `platform_admins`? Gates moderation RPCs + `/admin` layout. Granted to authenticated. |
 | `is_company_member(uuid)` / `is_company_admin(uuid)` | boolean | **DEFINER** | pinned | Membership / owner-or-admin checks; back every company-scoped RLS policy (same no-recursion pattern as `is_chat_participant`). |
 | `is_trek_visible(uuid)` | boolean | **DEFINER** | pinned | Single source of truth for trek visibility: `(is_active AND company approved) OR company member OR platform admin OR caller has a booking on one of the trek's batches`. The participant arm keeps a user's own booking readable after archive/suspension; it doesn't re-list the trek publicly (`search_treks` filters active+approved directly). Used by `treks` + `trek_batches` SELECT policies. Granted to anon + authenticated (policies run as the caller). |
-| `apply_for_company(text,text,text,text,text,text)` | jsonb | **DEFINER** | pinned | The ONLY way to create a company: forces `status='pending'`, makes the caller the `owner` member atomically. Raises user-facing errors (blank name, bad slug, duplicate pending/slug). |
+| `is_trek_bookable(uuid)` | boolean | **DEFINER** | pinned | Added by `0021` — **applied and verified live 2026-09-09 12:55:52+00**. `is_active AND company approved` — the *public* arm of `is_trek_visible()` on its own, with none of its member/admin/participant arms, because those govern who may **read** a trek and this governs who may **buy** one. Deliberately the same two columns `search_treks()` filters on, so "bookable" cannot drift from "listed". Used by `join_trek_and_chat()` and the `trek_participants` INSERT policy. `authenticated` only — there is no anonymous booking path. |
+| `apply_for_company(text,text,text,text,text,text)` | jsonb | **DEFINER** | pinned | The ONLY way to create a company: refuses any caller whose `profiles.account_type` is not `'company'` (live since phase F; restated in the migrations by `0029`), forces `status='pending'`, makes the caller the `owner` member atomically. Raises user-facing errors (trekker account, blank name, bad slug, duplicate pending/slug). |
 | `approve_company(uuid)` / `reject_company(uuid,text)` / `suspend_company(uuid,text)` | void | **DEFINER** | pinned | Platform-admin-only moderation (checked **inside** each function, not just via grants). Approve sets `approved_by/at`; reject/suspend record a reason. |
 | `get_company_batch_participants(uuid)` | setof rows | **DEFINER** | pinned | The ONLY path for company staff to see participant PII (name/phone/emergency). Re-checks the caller's membership against the batch's owning company; returns an **empty set** (not an error) for foreign batches. |
 | `get_trek_batch_confirmed_counts(uuid)` | setof rows | **DEFINER** | pinned | Confirmed-participant count per batch for one trek — **no PII** (batch id + integer). Powers the departure list without fanning out the roster RPC per batch. Same membership re-check; **empty set** for non-members/foreign treks. |
@@ -300,8 +354,10 @@ Composite **PK (`created_at`, `id`)**.
 | `admin_list_companies(text)` / `admin_get_company(uuid)` | setof `companies` | **DEFINER** | pinned | Platform-admin-only reads that return the audit columns (`created_by`/`approved_by`/`approved_at`) the base-table client SELECT grant excludes. Raise for non-admins. EXECUTE revoked from PUBLIC + `anon`, granted to `authenticated`. |
 | `protect_company_admin_fields()` | trigger | **DEFINER** | pinned | BEFORE UPDATE on `companies`: pins `slug`/`status`/`approved_by`/`approved_at`/`rejection_reason`/`created_by` to OLD unless caller is a platform admin (blocks self-approval + slug hijack). EXECUTE revoked from clients. |
 | `update_user_stats_timestamp()` | trigger | INVOKER | pinned | Touch `user_stats.last_updated`. |
-| `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent), then calls `award_user_achievements()`. Aggregates **confirmed participations only** (follow-up #2). EXECUTE revoked from clients; called by triggers + daily pg_cron. |
-| `award_user_achievements(uuid)` | void | **DEFINER** | pinned | Evaluates the 15-badge catalog from source metrics (**confirmed participations only** — follow-up #2) and appends newly-qualifying badges to `user_achievements` (idempotent, on conflict do nothing — never removes). EXECUTE revoked from clients; called by `recompute_user_stats()`. |
+| `pin_participant_joined_at()` | trigger | INVOKER | pinned | BEFORE INSERT on `trek_participants` (`0020`): forces `joined_at := now()` so the column cannot be backdated by a client insert. INVOKER — it touches only NEW, needing no privilege. EXECUTE revoked from clients (Postgres checks it at CREATE TRIGGER time, not at fire time). |
+| `assign_participant_status()` | trigger | **DEFINER** | pinned | BEFORE INSERT on `trek_participants` (`0024`, **applied and verified live 2026-09-14 09:15:46+00**): `FOR UPDATE` on the batch row, counts `status = 'confirmed'` rows, sets `NEW.status` to `'waitlisted'` when `max_participants` is reached and `'confirmed'` otherwise (NULL max = uncapped). DEFINER because the count spans other users' rows, which the own-row SELECT policy hides. Returns `NEW` untouched when `auth.uid()` is null (SQL Editor / seeding / cron — the branch `protect_profile_account_type()` takes), which no client can reach because the INSERT policy requires `auth.uid() = user_id`. A rewrite, not a refusal: a `WITH CHECK` arm runs after BEFORE triggers and would only see this value. EXECUTE revoked from clients. |
+| `recompute_user_stats(uuid)` | void | **DEFINER** | pinned | Rebuilds a user's `user_stats` + `user_monthly_activity` from source (idempotent), then calls `award_user_achievements()`. Aggregates **confirmed participations only** (follow-up #2) that are **completed** in the `0020` sense: the trek has ENDED (`batch_date + whole days spanned - 1 < current_date`, the same expression `0018` gates reviews on, so a 35-hour trek is not banked mid-trip) **and** the booking predates its departure (`joined_at::date <= batch_date`, NULL = legacy, counts). EXECUTE revoked from clients; called by triggers + daily pg_cron. |
+| `award_user_achievements(uuid)` | void | **DEFINER** | pinned | Evaluates the 15-badge catalog from the same completed set as `recompute_user_stats()` (see above) and **reconciles** `user_achievements`: inserts what qualifies, deletes what no longer does (`0020` — it used to only insert). Idempotent. EXECUTE revoked from clients; called by `recompute_user_stats()`. |
 | `get_user_profile(uuid)` | jsonb | INVOKER | pinned | One read path for the profile page: `{ stats, current_month, achievements[] }` in a single round trip. INVOKER so own-row RLS still applies; `p_user_id` defaults to `auth.uid()`. Granted to `authenticated`. |
 | `trg_recompute_user_stats()` | trigger | **DEFINER** | pinned | Trigger glue → `recompute_user_stats()` for the affected user. |
 | `on_user_join_trek()` | trigger | INVOKER | pinned | No-op (legacy). |
@@ -317,7 +373,13 @@ Composite **PK (`created_at`, `id`)**.
 | Table | Trigger | Timing/Event | Calls | Status |
 |---|---|---|---|---|
 | `auth.users` | `on_auth_user_created` | AFTER INSERT | `handle_new_user()` | ✅ active |
+| `auth.sessions` | `on_auth_session_created` | AFTER INSERT | `record_login_event()` | ✅ active (`0027`, applied + verified live 2026-09-17 10:23:19+00, `tgenabled='O'`) — copies the new session (user, ip, user-agent, email) into `login_events`. SECURITY DEFINER because GoTrue writes as `supabase_auth_admin`, which has no rights on `public.*`. **Fail-open by design**: the body is wrapped in `exception when others then return new` — an error here would roll back the `auth.sessions` INSERT and turn every sign-in into a 500. `tests/db/login-events.test.ts` proves a broken table still lets the session land |
+| `auth.sessions` | `on_auth_session_refreshed` | AFTER UPDATE OF `refreshed_at`, `WHEN (new.refreshed_at is distinct from old.refreshed_at)` | `record_login_event()` | ✅ active (`0027`, verified live, `tgenabled='O'`) — bumps `login_events.last_seen_at` for that session |
+| `auth.sessions` | `on_auth_session_deleted` | AFTER DELETE | `record_login_event()` | ✅ active (`0028`, applied + verified live 2026-09-17 11:05:36+00, `tgenabled='O'`) — stamps `login_events.ended_at` when GoTrue removes the session (sign-out, expiry cleanup). Same fail-open wrapper: a raise here would fail the sign-out |
+| `auth.mfa_amr_claims` | `on_auth_amr_claim_created` | AFTER INSERT | `record_login_method()` | ✅ active (`0028`, verified live, `tgenabled='O'`) — writes `authentication_method` onto `login_events.method` for that session if still null. On this table rather than `auth.sessions` because GoTrue inserts the claim *after* the session row, in the same transaction. `postgres` holds TRIGGER on it (checked live 2026-09-17). Fail-open — see the Known Gotcha in `FEATURES.md` |
 | `user_stats` | `trg_update_user_stats_timestamp` | BEFORE UPDATE | `update_user_stats_timestamp()` | ✅ active |
+| `trek_participants` | `trek_participants_assign_status` | BEFORE INSERT | `assign_participant_status()` | ✅ active (`0024`, applied + verified live 2026-09-14 09:15:46+00, `tgenabled='O'`) — decides `status` from the seat count under the batch lock, so a direct client insert cannot take a `'confirmed'` seat on a full departure. Fires before `…_pin_joined_at` (name order); different columns, order not load-bearing |
+| `trek_participants` | `trek_participants_pin_joined_at` | BEFORE INSERT | `pin_participant_joined_at()` | ✅ active (`0020`) — pins `joined_at` to `now()` against a backdated client insert |
 | `trek_participants` | `trg_participant_stats` | AFTER INSERT/DELETE | `trg_recompute_user_stats()` | ✅ active |
 | `trek_participants` | `trek_participants_count_trigger` | AFTER INSERT/DELETE | `update_participants_count()` | ✅ active — maintains `treks.participants_joined` (confirmed only) |
 | `trek_reviews` | `trg_review_stats` | AFTER INSERT/UPDATE/DELETE | `trg_recompute_user_stats()` | ✅ active |
@@ -328,7 +390,8 @@ Composite **PK (`created_at`, `id`)**.
 | `trek_participants` | `trek-leave-notification` | AFTER DELETE | webhook → `send-trek-leave-notification` | ✅ active |
 | `trek_participants` | ~~`trek_join_email_trigger`~~ | ~~AFTER INSERT~~ | `notify_trek_join()` | ❌ **dropped 2026-08-26 in `0007`** — posted to an edge fn that was never deployed |
 | `trek_participants` | ~~`trek_remove_email_trigger`~~ | ~~AFTER DELETE~~ | `notify_trek_remove()` | ❌ **dropped 2026-08-26 in `0007`** — same |
-| `trek_participants` | `trek_participants_waitlist_promote` | AFTER DELETE | `promote_waitlist_on_leave()` | ✅ active — FIFO waitlist promotion |
+| `trek_participants` | `trek_participants_waitlist_promote` | AFTER DELETE | `promote_waitlist_on_leave()` | ✅ active — FIFO waitlist promotion, ordered by `(joined_at, id)` since `0022` (applied + verified live 2026-09-09, `tgenabled='O'`, function body md5-identical to the migration) |
+| `trek_participants` | `trek_participants_chat_leave` | AFTER DELETE — FOR EACH ROW | `leave_chat_on_trek_leave()` | ✅ active (2026-09-09, `0019`; verified in `pg_trigger`, `tgenabled='O'`) — drops the leaver's `conversation_participants` row in the same transaction. A trigger, not a leave RPC, because the "Users can leave treks" policy permits a direct DELETE that skips any RPC. Runs before `…_waitlist_promote` (triggers fire in name order); the two touch different users, so the order is not load-bearing |
 | `conversation_messages` | `conversation_messages_rate_limit` | AFTER INSERT — **FOR EACH STATEMENT** | `enforce_message_rate_limit()` | ✅ active (2026-08-05) — 30 msg/min. Statement-level on purpose: a per-row check can't see its own statement's siblings, so a PostgREST array insert would pass every row through a count of 0 |
 | `trek_participants` | `trek_participants_rate_limit` | AFTER INSERT — FOR EACH ROW | `enforce_join_rate_limit()` | ✅ active (2026-08-05) — 10 joins/hr. A trigger, not a check inside `join_trek_and_chat()`, because the "Users can join treks" policy permits a direct INSERT that skips the RPC |
 | `rate_events` | `rate_events_trek_email_rate_limit` | BEFORE INSERT — FOR EACH ROW, `WHEN (new.action = 'trek_email')` | `enforce_trek_email_rate_limit()` | ✅ active (2026-09-02, `0012`) — 10 notification emails/hr/recipient. On the log table rather than a table the app writes: the sender is an edge function holding the SECRET key, so the only write it cannot skip is the one that records the send |
@@ -339,7 +402,7 @@ Composite **PK (`created_at`, `id`)**.
 
 ## 8. RLS policy matrix
 
-RLS is enabled on all 16 public tables. `auth.uid() = …` checks appear under both the `public` and `authenticated` roles in the live DB; effect is the same (anon has no `uid`).
+RLS is enabled on all 17 public tables. `auth.uid() = …` checks appear under both the `public` and `authenticated` roles in the live DB; effect is the same (anon has no `uid`). Since `0025` every policy spells the call `(select auth.uid())` — a scalar subquery Postgres evaluates once per statement rather than once per row (`auth_rls_initplan`); the matrix below writes `uid` for brevity. **Write it that way in new policies** — `tests/db/performance-advisors.test.ts` fails on a bare `auth.uid()`.
 
 | Table | SELECT | INSERT | UPDATE | DELETE |
 |---|---|---|---|---|
@@ -350,23 +413,25 @@ RLS is enabled on all 16 public tables. `auth.uid() = …` checks appear under b
 | `company_members` | own-company members + platform admins | **— (no policy, INSERT revoked; RPC-only since 2026-08-06)** | company owner/admin **of a writable company**, non-owner rows, target role ∈ admin/staff | company owner/admin **of a writable company**, non-owner rows |
 | `company_invites` | own-company members + platform admins | — (RPC only) | — (RPC only) | — (RPC only) |
 | `platform_admins` | — | — | — | — (**grants revoked + zero policies — SQL Editor only; `0003`**) |
-| `trek_participants` | **own** (`user_id = uid`) | own | own | own |
-| `trek_reviews` | **public `true`** | own **AND joined the trek** | own | own |
+| `trek_participants` | **own** (`user_id = uid`) | own **AND `is_trekker()`** **AND the batch's trek is bookable** (the third arm added by `0021`, live since 2026-09-09 12:55:52+00) | — (no policy) | own |
+| `trek_reviews` | **public `true`** | own **AND** a `confirmed` booking on a batch of this trek **AND** that batch is over — `batch_date + (whole days spanned − 1) < current_date`, days spanned derived from `treks.duration_hours` (`0018`) | own (`using`), and the **same insert gate re-stated in `with check`** — a `with check` cannot see the OLD row, so pinning `user_id` alone left `trek_id` rewritable onto an unfinished trek (`0018`) | own |
 | `favorites` | own | own | — | own |
 | `conversations` | `is_chat_participant(id)` *(`to authenticated`)* | — | — | — |
-| `conversation_participants` | `is_chat_participant(cid)` *(`to authenticated`)* | `service_role` only | — | own (`user_id = uid`) |
+| `conversation_participants` | `is_chat_participant(cid)` *(`to authenticated`)* | `service_role` only | — | own (`user_id = uid`) **AND no `confirmed` booking on the conversation's batch** (`0019`) |
 | `conversation_messages` | `is_chat_participant(cid)` *(`to authenticated`)* | own **AND** participant **AND** `is_announcement = false` *(`to authenticated`)* | own **AND** `is_announcement = false` | own |
 | `realtime.messages` | exists a `conversations` row where `'conversation:' || id = realtime.topic()` **AND** `is_chat_participant(id)` *(`to authenticated`; 0004 — owned by `supabase_realtime_admin`, managed via Dashboard → Database → Realtime → Policies, not a migration)* | same qual, `with check` | — | — |
 | `user_stats` | own | — (system) | — (system) | — |
 | `user_monthly_activity` | own | — (system) | — (system) | — |
 | `user_achievements` | own | — (system) | — (system) | — (system) |
 | `rate_events` | — | — | — | — (**zero policies + grants revoked — DEFINER functions only**) |
+| `login_events` | platform admin only (`is_platform_admin()`, `to authenticated`; `anon` holds no grant) | — | — | — (**no write grant for any client role — the `auth.sessions` and `auth.mfa_amr_claims` triggers are the only writers; `0027` / `0028`**) |
 
 Key design points:
 - **No public read of `profiles`** — PII is protected; cross-user names/avatars come from `public_profiles`.
 - **`trek_participants` is own-row only** (NEW-4) — closes the logged-out + cross-user social-graph leak.
 - **Reviews require participation** (NEW-3) — the INSERT `WITH CHECK` verifies a matching `trek_participants → trek_batches` row for the trek.
 - **Chat writes** are membership-gated; `conversation_participants` INSERT is `service_role`-only, so users are added only via the `join_trek_and_chat` RPC (SECURITY DEFINER).
+- **Chat membership tracks the booking, both directions** (`0019`) — a confirmed participant can neither keep their seat after leaving the trek (the trigger takes it) nor drop it while still booked (the DELETE policy refuses). The second half is not cosmetic: `join_trek_and_chat()` returns an existing membership untouched without re-inserting the seat, so a self-removal used to lock a paying participant out of their own trek's chat with no route back through the UI. Seats with no confirmed booking behind them — a waitlister's, or a leftover — are still self-deletable.
 - **Trek/batch writes are company-scoped** (2026-07-02): every policy goes through the company helpers, never a client-supplied flag — the IDOR/cross-tenant boundary. Participants still join batches only via `join_trek_and_chat`.
 - **Company writes carry a status tier** (2026-08-08): `is_company_writable()` = `pending`+`approved` (settings, team, logos); `is_approved_company_member()` = `approved` only (treks, batches, trek images). Rejected and suspended tenants are **read-only** — before this, status gated reads only, so a rejected company kept full write access to its own tenant. Bare `is_company_member`/`is_company_admin` in a **write** policy is now a bug: it silently un-freezes. SELECT is deliberately never status-gated (`is_trek_visible` handles read visibility, and staff plus existing bookers must keep reading a hidden trek), and neither are the `is_platform_admin()` arms — freezing must not lock out the role that un-freezes.
 - **No client path to owner or platform-admin**: `role='owner'` is written only by `apply_for_company()`; the INSERT policy allows `'staff'` only and UPDATE's WITH CHECK excludes `'owner'`. `platform_admins` is default-deny with zero policies.
@@ -423,9 +488,15 @@ Security advisor (live, re-checked **2026-07-02** after the multi-tenant migrati
 - **ERROR** `security_definer_view` — `public_profiles`. Intentional (documented above). [ref](https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view)
 - **INFO** `rls_enabled_no_policy` — `platform_admins`. **Intentional**: zero policies = default-deny; the only write path is the SQL Editor. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy)
 - ~~**WARN** `public_bucket_allows_listing` — `company-logos`, `trek-images` (and historically `avatars`, `trek-reviews`). Deliberate pattern: authenticated-only SELECT blocks anon listing; CDN URLs still work.~~ **Fixed 2026-08-25 in `0006`.** The "deliberate pattern" only ever addressed *anon* listing; any signed-in account could still enumerate every other account's UID/filenames. SELECT is now scoped to the caller's own prefix in all four; `trek-profile` (no SELECT policy at all) is the only bucket the lint can still name. See §9. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0025_public_bucket_allows_listing)
-- **WARN** `anon/authenticated_security_definer_function_executable` — the multi-tenant RPCs (`apply_for_company`, `approve/reject/suspend_company`, `get_company_batch_participants`, `get_company_members`, `invite_company_member`, the `is_*` helpers) plus pre-existing `join_trek_and_chat`, `is_chat_participant`, `get_unread_counts`, `mark_conversation_read` are callable via `/rest/v1/rpc`, including by `anon` (default PUBLIC grant). **All fail safely** — each checks `auth.uid()` / `is_company_member()` / `is_company_admin()` / `is_platform_admin()` internally (`get_company_members` returns an empty set for anon, `invite_company_member` raises — both verified live 2026-07-02) — **and the anon EXECUTE grant was revoked 2026-08-08** (`supabase/phases/fix-anon-execute-definer-rpcs.sql`): 18 of the 21 flagged functions now carry `revoke … from public, anon` paired with `grant execute … to authenticated`, taking the `anon_…` lint 21 → 3. ⚠️ The surviving 3 — `is_trek_visible`, `is_company_member`, `is_platform_admin` — **must keep the anon grant**: they are called from PUBLIC-role SELECT policies on `treks`/`trek_batches`/`companies`, so every anonymous page view executes them. They are load-bearing, not inert; see `FEATURES.md` Known Gotchas. The rest of this entry is the pre-fix history, kept for the reasoning. **The four invite RPCs added 2026-08-06** (`get_my_invites`, `accept_company_invite`, `decline_company_invite`, `revoke_company_invite`) already carried an explicit `revoke … from public, anon`, so they were `authenticated`-only and appeared under the `authenticated_…` lint only — that is the shape the 18 revoked functions now take. `invite_company_member` used to show under the `anon_…` lint (`create or replace` preserves the original ACL, and the original never revoked the default PUBLIC grant); it was inert for `anon` (`auth.uid()` is NULL → `is_company_admin()` false → raises before any read), and the 2026-08-08 pass closed it. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable) **0016 (2026-09-05)** takes four more off the `authenticated_…` list: `enforce_join_rate_limit`, `enforce_message_rate_limit`, `enforce_storage_rate_limit` and `enforce_trek_email_rate_limit` revoked `from public, anon` only, so `authenticated` kept a grant on a `returns trigger` function it could never call (`0A000` before the body runs). Inert, removed so the list holds only functions meant to be called.
-- **WARN** `auth_leaked_password_protection` — disabled. The built-in toggle is **Pro-only**, so it's handled in app code instead: `isPasswordPwned()` in [src/lib/auth.ts](src/lib/auth.ts) checks signups/password-updates against HaveIBeenPwned's range API (k-anonymity). The advisor will still flag this since it only inspects the Auth toggle. [ref](https://supabase.com/docs/guides/auth/password-security)
-- **WARN** `vulnerable_postgres_version` — `supabase-postgres-17.4.1.069` has patches available. Manual upgrade is **Pro-only**; on the free plan this is acknowledged (Supabase patches free-tier infra on their own schedule). [ref](https://supabase.com/docs/guides/platform/upgrading)
+- **WARN** `anon/authenticated_security_definer_function_executable` — the multi-tenant RPCs (`apply_for_company`, `approve/reject/suspend_company`, `get_company_batch_participants`, `get_company_members`, `invite_company_member`, the `is_*` helpers) plus pre-existing `join_trek_and_chat`, `is_chat_participant`, `get_unread_counts`, `mark_conversation_read` are callable via `/rest/v1/rpc`, including by `anon` (default PUBLIC grant). **All fail safely** — each checks `auth.uid()` / `is_company_member()` / `is_company_admin()` / `is_platform_admin()` internally (`get_company_members` returns an empty set for anon, `invite_company_member` raises — both verified live 2026-07-02) — **and the anon EXECUTE grant was revoked 2026-08-08** (`supabase/phases/fix-anon-execute-definer-rpcs.sql`): 18 of the 21 flagged functions now carry `revoke … from public, anon` paired with `grant execute … to authenticated`, taking the `anon_…` lint 21 → 3. ⚠️ The surviving 3 — `is_trek_visible`, `is_company_member`, `is_platform_admin` — **must keep the anon grant**: they are called from PUBLIC-role SELECT policies on `treks`/`trek_batches`/`companies`, so every anonymous page view executes them. They are load-bearing, not inert; see `FEATURES.md` Known Gotchas. The rest of this entry is the pre-fix history, kept for the reasoning. **The four invite RPCs added 2026-08-06** (`get_my_invites`, `accept_company_invite`, `decline_company_invite`, `revoke_company_invite`) already carried an explicit `revoke … from public, anon`, so they were `authenticated`-only and appeared under the `authenticated_…` lint only — that is the shape the 18 revoked functions now take. `invite_company_member` used to show under the `anon_…` lint (`create or replace` preserves the original ACL, and the original never revoked the default PUBLIC grant); it was inert for `anon` (`auth.uid()` is NULL → `is_company_admin()` false → raises before any read), and the 2026-08-08 pass closed it. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable) **`0016` (applied and verified live 2026-09-09 12:56:20+00)** took four more off the `authenticated_…` list: `enforce_join_rate_limit`, `enforce_message_rate_limit`, `enforce_storage_rate_limit` and `enforce_trek_email_rate_limit` had been revoked `from public, anon` only, so `authenticated` kept a grant on a `returns trigger` function it could never call (`0A000` before the body runs). All four now read `has_function_privilege` false for `anon`, `authenticated` and `public`, and all four triggers stay enabled — Postgres checks EXECUTE at CREATE TRIGGER time, not at fire time. Inert either way; removing it leaves the list holding only functions meant to be called.
+- **WARN** `auth_leaked_password_protection` — disabled. The built-in toggle is **Pro-only**, so it's handled in app code instead: `isPasswordPwned()` in [src/lib/auth.ts](src/lib/auth.ts) checks signups/password-updates against HaveIBeenPwned's range API (k-anonymity). The advisor will still flag this since it only inspects the Auth toggle. **Decided 2026-09-15: accepted as the control, no plan upgrade** — the bypass (a direct `POST /auth/v1/signup`) only weakens the caller's own account (`FEATURES.md` §2). The free-plan "Minimum password length" field on the same page is the setting that does bind — set to 8, verified live 2026-09-15. [ref](https://supabase.com/docs/guides/auth/password-security)
+- ~~**WARN** `vulnerable_postgres_version` — `supabase-postgres-17.4.1.069` has patches available~~ **Upgraded 2026-09-15** via Project Settings → Infrastructure → "Upgrade project" (in-place `pg_upgrade`, offered to every plan — the earlier "acknowledged on free plan" note here was wrong). Dashboard shows a newer 17.x with no upgrade offered; recorded from the owner's confirmation while the MCP server was unreachable, so confirm the WARN is gone at the next advisor read. `FEATURES.md` §2.
+
+Performance advisor (live, re-read **2026-09-15**):
+
+- ~~**WARN** `auth_rls_initplan` ×22, **INFO** `no_primary_key` ×2 (`conversation_participants`, `favorites`), **INFO** `unindexed_foreign_keys` ×2 (`companies.approved_by`, `company_invites.invited_by`).~~ **Closed by [`0025`](supabase/migrations/0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys.sql), applied and verified live 2026-09-14 19:04:19+00** — 0 bare calls and 22 wrapped in `pg_policies`, both `_pkey` constraints in `pg_constraint`, both indexes in `pg_indexes`. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0003_auth_rls_initplan)
+- **WARN** `multiple_permissive_policies` — `treks` SELECT for `authenticated` (`company members view own treks` + `view treks`). **Accepted 2026-09-15, will not be merged.** The second policy is load-bearing (`0002` §A: `INSERT … RETURNING` cannot pass without it — `is_trek_visible()` is STABLE and cannot see the row being inserted) and cannot move into `view treks` (`to public`; anon holds no EXECUTE on `is_approved_company_member()`). Postgres already ORs permissive policies into one predicate, so the merge would cost the same. `PERFORMANCE.md` §4.4. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0006_multiple_permissive_policies)
+- **INFO** `unused_index` ×4 — `trek_participants_batch_status_idx`, `trek_reviews_user_idx`, and since `0025` the two new FK indexes `companies_approved_by_idx` / `company_invites_invited_by_idx`. **Kept, 2026-09-15.** `idx_scan = 0` because the tables hold 9 and 2 rows and the planner seq-scans at that size, not because the shape is wrong — the first is exactly what `assign_participant_status()` / `promote_waitlist_on_leave()` / the waitlist-position count need. Re-check once `trek_participants` passes ~1,000 rows. [ref](https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index)
 
 Correctness bugs (in DB):
 

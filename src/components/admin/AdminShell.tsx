@@ -3,13 +3,14 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Building2, ShieldCheck } from 'lucide-react';
+import { LayoutDashboard, Building2, KeyRound, ShieldCheck } from 'lucide-react';
 
 // Layout chrome for the platform-admin panel. Access is already enforced by
 // src/app/admin/layout.tsx (is_platform_admin server check) — this is nav only.
 const navItems = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard, exact: true },
   { href: '/admin/companies', label: 'Companies', icon: Building2, exact: false },
+  { href: '/admin/logins', label: 'Login activity', icon: KeyRound, exact: false },
 ];
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {

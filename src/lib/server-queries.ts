@@ -2,6 +2,7 @@ import { cache } from 'react';
 import { createClient } from '@/utils/supabase/server';
 import type { SearchTrek } from '@/lib/queries';
 import type { FilterState } from '@/components/ui/FilterSection';
+import { logError } from '@/lib/log';
 
 // Server-side reads for the pages that must ship real HTML (SEO) plus the
 // sitemap. These mirror the TanStack hooks in `@/lib/queries`, but run through
@@ -72,7 +73,7 @@ export const getTrekDetail = cache(async (id: string): Promise<TrekDetail | null
     .maybeSingle();
 
   if (error) {
-    console.error('Error fetching trek:', error.message);
+    logError('Error fetching trek:', error);
     return null;
   }
   return (data as TrekDetail | null) ?? null;
@@ -89,7 +90,7 @@ export const getTrekReviews = cache(async (id: string): Promise<TrekReview[]> =>
     .order('created_at', { ascending: false });
 
   if (error) {
-    console.error('Error fetching reviews:', error.message);
+    logError('Error fetching reviews:', error);
     return [];
   }
   return (data as TrekReview[]) ?? [];
@@ -101,7 +102,7 @@ export const getTrekParticipantCount = cache(async (id: string): Promise<number>
 
   const { data, error } = await supabase.rpc('get_trek_participant_count', { trek_uuid: id });
   if (error) {
-    console.error('Error fetching participant count:', error.message);
+    logError('Error fetching participant count:', error);
     return 0;
   }
   return typeof data === 'number' ? data : 0;
@@ -118,7 +119,7 @@ export const getCompanyBySlug = cache(async (slug: string): Promise<CompanyProfi
     .maybeSingle();
 
   if (error) {
-    console.error('Error loading company:', error.message);
+    logError('Error loading company:', error);
     return null;
   }
   return (data as CompanyProfile | null) ?? null;
@@ -144,7 +145,7 @@ export const getStorefrontTreks = cache(async (companyId: string): Promise<Searc
   });
 
   if (error) {
-    console.error('Error loading storefront treks:', error.message);
+    logError('Error loading storefront treks:', error);
     return [];
   }
   return (data ?? []) as SearchTrek[];
@@ -173,7 +174,7 @@ export const getFeaturedTreks = cache(async (limit = 3): Promise<SearchTrek[]> =
   });
 
   if (error) {
-    console.error('Error loading featured treks:', error.message);
+    logError('Error loading featured treks:', error);
     return [];
   }
   return (data ?? []) as SearchTrek[];
@@ -202,7 +203,7 @@ export const getDefaultExploreTreks = cache(
     });
 
     if (error) {
-      console.error('Error loading explore treks:', error.message);
+      logError('Error loading explore treks:', error);
       return { treks: [], totalCount: 0 };
     }
 
@@ -225,7 +226,7 @@ export async function getIndexableTrekIds(): Promise<string[]> {
     .eq('companies.status', 'approved');
 
   if (error) {
-    console.error('Error loading sitemap treks:', error.message);
+    logError('Error loading sitemap treks:', error);
     return [];
   }
   return ((data ?? []) as { id: string }[]).map((t) => t.id);
@@ -240,7 +241,7 @@ export async function getIndexableCompanies(): Promise<{ slug: string; created_a
     .eq('status', 'approved');
 
   if (error) {
-    console.error('Error loading sitemap companies:', error.message);
+    logError('Error loading sitemap companies:', error);
     return [];
   }
   return (data ?? []) as { slug: string; created_at: string }[];

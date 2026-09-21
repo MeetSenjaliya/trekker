@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/client';
+import { logError } from '@/lib/log';
 
 /**
  * Formats the participant count for display.
@@ -25,13 +26,13 @@ export async function getParticipantCount(trekId: string): Promise<number> {
         });
 
         if (error) {
-            console.error(`Error fetching participant count for trek ${trekId}:`, error);
+            logError(`Error fetching participant count for trek ${trekId}:`, error);
             return 0;
         }
 
         return typeof data === 'number' ? data : 0;
     } catch (err) {
-        console.error(`Unexpected error fetching participant count for trek ${trekId}:`, err);
+        logError(`Unexpected error fetching participant count for trek ${trekId}:`, err);
         return 0;
     }
 }
@@ -53,7 +54,7 @@ export async function getTrekRating(trekId: string): Promise<number | null> {
         });
 
         if (error) {
-            console.error(`Error fetching rating for trek ${trekId}:`, error);
+            logError(`Error fetching rating for trek ${trekId}:`, error);
             return null;
         }
 
@@ -63,7 +64,7 @@ export async function getTrekRating(trekId: string): Promise<number | null> {
         const n = Number(data);
         return Number.isFinite(n) ? n : null;
     } catch (err) {
-        console.error(`Unexpected error fetching rating for trek ${trekId}:`, err);
+        logError(`Unexpected error fetching rating for trek ${trekId}:`, err);
         return null;
     }
 }

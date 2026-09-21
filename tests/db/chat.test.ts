@@ -215,14 +215,35 @@ describe('chat isolation', () => {
       expect(removed).toEqual([])
     })
 
-    it('lets a member remove themself', async () => {
+    // Since 0019 the seat is pinned to the booking that earned it: a confirmed
+    // participant cannot drop it on its own, and leaving the trek drops both in
+    // one transaction. Exercised in full in leave-binds-chat.test.ts; restated
+    // here so this file's account of who may write to the table stays true.
+    it('cannot remove itself while a confirmed booking holds the seat', async () => {
       const removed = await asUser(db, ids.user.trekkerA, async (tx) =>
         (await tx.query(
           `delete from public.conversation_participants where user_id = $1 returning user_id`,
           [ids.user.trekkerA],
         )).rows,
       )
-      expect(removed).toHaveLength(1)
+      expect(removed).toEqual([])
+    })
+
+    it('removes the member from the chat when they leave the trek', async () => {
+      // Read back as postgres: the leaver can no longer see the table through
+      // is_chat_participant(), so an empty result as themself proves nothing.
+      const seats = await asUser(db, ids.user.trekkerA, async (tx) => {
+        await tx.query(
+          `delete from public.trek_participants where user_id = $1 and batch_id = $2`,
+          [ids.user.trekkerA, ids.batch.approvedActive],
+        )
+        await tx.exec(`set local role postgres`)
+        return (await tx.query(
+          `select user_id from public.conversation_participants where user_id = $1`,
+          [ids.user.trekkerA],
+        )).rows
+      })
+      expect(seats).toEqual([])
     })
   })
 

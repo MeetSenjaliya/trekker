@@ -1,7 +1,8 @@
 # Trekker — Performance & Supabase Limits
 
-_Last updated: 2026-08-21. Every "current" number below was measured against the live project
-(`dtjmyqogeozrzzbdjokr`) over the read-only MCP server, not estimated._
+_Last updated: 2026-09-17 (§4.4 — the once-a-minute `search_treks` is the uptime monitor).
+Every "current" number below was measured against the live project (`dtjmyqogeozrzzbdjokr`)
+over the read-only MCP server, not estimated._
 
 Companion to `FEATURES.md` (what's built) and `CODE_REVIEW.md` (what's wrong).
 This file answers one question: **what actually runs out first, and what do we do about it.**
@@ -136,18 +137,41 @@ With correctly sized delivery (≈60 kB per card image):
 
 ### 4.4 Database CPU & query time
 
-- **Fix the 20 `auth_rls_initplan` warnings.** Policies on `profiles`, `trek_participants`,
-  `conversation_messages`, `favorites`, `treks`, `company_members`, `trek_reviews`,
-  `user_stats`, `user_achievements`, `user_monthly_activity` and `conversation_participants`
-  call `auth.uid()` **per row**. Wrap as `(select auth.uid())` so Postgres evaluates it once
-  as an InitPlan. Free, and cheapest to do while tables are near-empty.
-- **Add the 2 missing primary keys** — `conversation_participants` (hot path on every chat
-  load) and `favorites`.
-- **Index the 2 unindexed foreign keys** — `companies.approved_by`, `company_invites.invited_by`.
-- **Collapse the duplicate permissive SELECT policies on `treks`**
-  (`company members view own treks` + `view treks`); every permissive policy runs on every query.
-- **Drop the 2 unused indexes** — `trek_participants_batch_status_idx`, `trek_reviews_user_idx` —
-  they cost write throughput and buy nothing. Confirm against production usage first.
+- ✅ **The 22 `auth_rls_initplan` warnings, the 2 missing primary keys and the 2 unindexed
+  foreign keys are one migration —
+  [`0025`](supabase/migrations/0025_evaluate-auth-uid-once-per-query-and-add-the-missing-keys.sql),
+  applied and verified live 2026-09-14 19:04:19+00 (advisor after: 22 → 0, 2 → 0, 2 → 0).** Every
+  policy that called `auth.uid()` / `auth.role()` per row now calls `(select auth.uid())`,
+  which Postgres hoists into an InitPlan and evaluates once per statement — roles, commands
+  and predicates otherwise untouched. `conversation_participants` and `favorites` had a
+  UNIQUE on their identifying pair but no PK; the unique is promoted, not duplicated.
+  `companies.approved_by` and `company_invites.invited_by` get covering indexes.
+  `tests/db/performance-advisors.test.ts` pins all three, so a new policy with a bare
+  `auth.uid()` fails `npm test`. **Write `(select auth.uid())` in every new policy.**
+- **Decided 2026-09-15 — the two permissive SELECT policies on `treks` stay.** The advisor
+  WARN (`multiple_permissive_policies`) is accepted. `company members view own treks` is not a
+  duplicate: `0002` §A added it so `INSERT … RETURNING` (`createTrek()`) can pass —
+  `is_trek_visible()` is STABLE and cannot see the row being inserted. It cannot be folded into
+  `view treks` either: that policy is `to public` and anon holds no EXECUTE on
+  `is_approved_company_member()`, so every logged-out `/explore` read would raise. And the
+  merge would buy nothing — Postgres already ORs permissive policies into one predicate, so one
+  policy with an `or` inside costs exactly what two cost today.
+- **Decided 2026-09-15 — the two "unused" indexes stay.** `trek_participants_batch_status_idx`
+  and `trek_reviews_user_idx` show `idx_scan = 0` since stats began (never reset) — but the
+  tables hold 9 and 2 rows, and at that size the planner reads the whole table rather than any
+  index, so the counter says nothing about usefulness. The first is exactly the shape
+  `assign_participant_status()` (`0024`), `promote_waitlist_on_leave()` (`0022`) and the
+  waitlist-position count need (`batch_id, status, joined_at`); the second backs the own-row
+  policies on `trek_reviews` and its FK to `profiles`. 16 kB each. **Re-check
+  `pg_stat_user_indexes` once `trek_participants` passes ~1,000 rows**; if a scan count is
+  still zero then, drop it then. The two FK indexes `0025` added now sit on the same list
+  (INFO ×4) for the same reason.
+- **~1,440 `search_treks` calls a day are Sentry's uptime monitor, not users.** It fetches the
+  homepage every 60 s from AWS us-east-1 (user-agent `node`); the page renders at request time
+  and calls `search_treks` server-side. On 2026-09-15 that was 1,455 of 1,460 PostgREST
+  requests. Cheap per call (`0023` bounds it; 14 rows) but it *is* the baseline load and the
+  noise floor in the logs — subtract it before reading any traffic number. Keep-or-slow
+  decision in `FEATURES.md` §1.0.
 - **Index columns used inside RLS policies**, not just columns in `WHERE` clauses.
 - **`work_mem` is 2.1 MB.** Any sort or hash exceeding it spills to disk. Keep `ORDER BY` on
   indexed columns and always paginate (message loads already cap at 30).
@@ -193,7 +217,7 @@ With correctly sized delivery (≈60 kB per card image):
 | --- | --- | --- | --- |
 | 1 | Per-bucket compression targets (§4.2) | small | ~10× smaller avatars/logos |
 | 2 | `next/image` for remote images (§4.1) | medium | ~5× egress headroom, clears 12 lint warnings |
-| 3 | `(select auth.uid())` migration + PKs + FK indexes (§4.4) | small | removes the per-row scaling cliff |
+| 3 | ✅ `(select auth.uid())` migration + PKs + FK indexes (§4.4) — `0025`, 2026-09-15 | small | removes the per-row scaling cliff |
 | 4 | Long `cacheControl` + bucket size limits (§4.1) | small | converts egress to cached egress |
 | 5 | Upgrade to Pro | $25/mo | no pausing, 50× egress, 7-day logs |
 | 6 | Cache the anon render path (§4.6) | medium | removes most SSR queries |

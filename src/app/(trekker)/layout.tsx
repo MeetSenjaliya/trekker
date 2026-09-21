@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
+import { logError } from '@/lib/log';
 
 // Server-side counterpart of the /dashboard guard, for the customer side of the
 // platform: /profile, /favorites, /messages, /review. The middleware
@@ -24,7 +25,7 @@ export default async function TrekkerLayout({
   const { data, error } = await supabase.rpc('is_trekker');
 
   if (error) {
-    console.error('Error checking account type:', error);
+    logError('Error checking account type:', error);
     redirect('/');
   }
   if (data !== true) redirect('/dashboard');

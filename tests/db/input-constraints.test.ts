@@ -35,7 +35,10 @@ describe('input validation CHECK constraints', () => {
       ),
     )
 
-  const insertTrek = (col: 'estimated_cost' | 'max_participants', value: number) =>
+  const insertTrek = (
+    col: 'estimated_cost' | 'max_participants' | 'distance_km' | 'duration_hours',
+    value: number | null,
+  ) =>
     asSuperuser(db, (tx) =>
       tx.query(
         `insert into public.treks (title, difficulty, company_id, ${col}) values ('Probe', 'Easy', $1, $2)`,
@@ -53,7 +56,12 @@ describe('input validation CHECK constraints', () => {
     )
 
   const updateProfile = (
-    col: 'full_name' | 'bio' | 'phone_no' | 'emergency_no',
+    col:
+      | 'full_name'
+      | 'bio'
+      | 'phone_no'
+      | 'emergency_no'
+      | 'emergency_contact_relationship',
     value: string | null,
   ) =>
     asSuperuser(db, (tx) =>
@@ -120,6 +128,25 @@ describe('input validation CHECK constraints', () => {
     })
   })
 
+  describe('treks.distance_km / duration_hours (0017)', () => {
+    // trekFormSchema builds Distance, Duration and Cost from one optionalNumber
+    // helper, so all three carry the same `>= 0`. 0009 mirrored it for Cost
+    // only; these are the other two.
+    for (const col of ['distance_km', 'duration_hours'] as const) {
+      it(`rejects a negative ${col}`, async () => {
+        await expect(insertTrek(col, -1)).rejects.toThrow(/violates check constraint/i)
+      })
+
+      it(`accepts zero ${col}, which the form accepts too`, async () => {
+        await expect(insertTrek(col, 0)).resolves.toBeDefined()
+      })
+
+      it(`still accepts a null ${col}, the value a blank field writes`, async () => {
+        await expect(insertTrek(col, null)).resolves.toBeDefined()
+      })
+    }
+  })
+
   describe('max_participants', () => {
     it('rejects zero capacity on a trek', async () => {
       await expect(insertTrek('max_participants', 0)).rejects.toThrow(/violates check constraint/i)
@@ -178,6 +205,24 @@ describe('input validation CHECK constraints', () => {
       await expect(updateProfile('emergency_no', 'x'.repeat(21))).rejects.toThrow(
         /violates check constraint/i,
       )
+    })
+
+    // 0017 added the column the profile editor had been parsing this value
+    // against and then dropping. 60 is optionalText(60) in profileUpdateSchema.
+    it('rejects an emergency_contact_relationship one character over 60', async () => {
+      await expect(
+        updateProfile('emergency_contact_relationship', 'x'.repeat(61)),
+      ).rejects.toThrow(/violates check constraint/i)
+    })
+
+    it('accepts an emergency_contact_relationship of exactly 60 characters', async () => {
+      await expect(
+        updateProfile('emergency_contact_relationship', 'x'.repeat(60)),
+      ).resolves.toBeDefined()
+    })
+
+    it('still accepts a null relationship, the unset value every row starts with', async () => {
+      await expect(updateProfile('emergency_contact_relationship', null)).resolves.toBeDefined()
     })
   })
 
